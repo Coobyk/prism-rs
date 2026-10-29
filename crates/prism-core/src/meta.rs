@@ -151,7 +151,7 @@ impl VersionData {
         out.release_time = json["releaseTime"].as_str().map(String::from);
         out.jar = json["jar"].as_str().map(String::from);
         out.inherits_from = json["inheritsFrom"].as_str().map(String::from);
-        out.java_version = json["javaVersion"].is_null().not().then(|| {
+        out.java_version = (!json["javaVersion"].is_null()).then(|| {
             serde_json::from_value(json["javaVersion"].clone()).unwrap_or(MoJavaVersion {
                 component: "java-runtime-delta".into(),
                 majorVersion: 21,
