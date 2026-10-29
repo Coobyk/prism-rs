@@ -119,7 +119,11 @@ impl InstanceWindow {
                 let result = self.app.read(cx).block_on(handle);
                 let list = match result {
                     Ok(Ok(v)) => v,
-                    Ok(Err(e)) | Err(e) => {
+                    Ok(Err(e)) => {
+                        tracing::warn!("loader versions failed: {e}");
+                        Vec::new()
+                    }
+                    Err(e) => {
                         tracing::warn!("loader versions failed: {e}");
                         Vec::new()
                     }
