@@ -109,7 +109,7 @@ impl InstanceWindow {
                     .px_3()
                     .py_2()
                     .text_size(px(13.))
-                    .bg(if active { rgb(0x3d5a80) } else { gpui_kit::transparent() })
+                    .bg(if active { rgb(0x3d5a80) } else { rgba(0x00000000) })
                     .hover(|s| s.bg(rgb(0x333333)))
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
                         this.page = page;
