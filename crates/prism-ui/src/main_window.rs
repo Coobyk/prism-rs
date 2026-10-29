@@ -89,7 +89,7 @@ impl MainWindow {
             .flex_col()
             .gap_3()
             .p_3()
-            .overflow_y(Overflow::Scroll);
+            .overflow_y_scroll();
         for (group, indices) in ordered {
             if !group.is_empty() {
                 container = container.child(
@@ -106,19 +106,19 @@ impl MainWindow {
                 .gap_2()
                 .w_full();
             for idx in indices {
-                let (id, name, _) = &instances[idx];
-                grid = grid.child(self.render_instance_tile(&id.clone(), &name.clone(), cx));
+                let (id, name, _) = instances[idx].clone();
+                grid = grid.child(self.render_instance_tile(id, name, cx));
             }
             container = container.child(grid);
         }
         container
     }
 
-    fn render_instance_tile(&self, id: &str, name: &str, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_instance_tile(&self, id: String, name: String, cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
         let selected = {
             let app = app.read(cx);
-            app.selected.as_deref() == Some(id)
+            app.selected.as_deref() == Some(id.as_str())
         };
         let tile_bg = if selected { rgb(0x3d5a80) } else { rgb(0x2b2b2b) };
 
