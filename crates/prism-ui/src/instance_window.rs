@@ -126,7 +126,7 @@ impl InstanceWindow {
                 let handle = self.search_handle.take().unwrap();
                 let results = self.search_results.clone();
                 let status = self.search_status.clone();
-                match self.app.read(cx).runtime.block_on(handle) {
+                match self.app.read(cx).block_on(handle) {
                     Ok(Ok(hits)) => {
                         *results.lock().unwrap_or_else(|p| p.into_inner()) = hits;
                         *status.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
@@ -269,7 +269,7 @@ impl InstanceWindow {
         )
     }
 
-    fn render_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         match self.page {
             Page::Log => self.render_log_page(cx),
             Page::Version => self.render_version_page(cx),
@@ -568,6 +568,7 @@ impl InstanceWindow {
     }
 
     fn render_notes_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let notes = self.instance(cx).notes;
         div()
             .flex_1()
             .flex()
