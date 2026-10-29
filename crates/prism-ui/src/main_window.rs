@@ -292,7 +292,8 @@ impl MainWindow {
             .and_then(|i| i.group.clone())
             .unwrap_or_default();
 
-        let app_entity = self.app.clone();
+        let selected2 = selected.clone();
+        let _ = selected2;
         div()
             .w(px(160.))
             .flex()

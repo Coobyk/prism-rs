@@ -3,6 +3,7 @@
 use crate::state::App;
 use crate::main_window::MainWindow;
 use gpui_kit::component::button::ButtonVariants;
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 
