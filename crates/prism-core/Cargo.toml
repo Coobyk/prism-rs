@@ -1,0 +1,11 @@
+[package]
+name = "prism-core"
+description = "Core domain logic for prism-rs: instances, settings, metadata, launching"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
