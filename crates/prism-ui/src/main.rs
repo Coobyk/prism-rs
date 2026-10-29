@@ -19,8 +19,11 @@ fn main() {
         .init();
 
     // Headless CLI: verify/test the launch pipeline without a GUI.
-    // Usage: prism-rs prepare <mc-version> [--offline-name NAME]
+    // Usage: prism-rs prepare <mc-version> | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && args[1] == "import" && args.len() >= 3 {
+        return headless_import(&args[2]);
+    }
     if args.len() >= 3 && args[1] == "prepare" {
         let code = headless_prepare(&args[2]);
         std::process::exit(code);
@@ -37,6 +40,26 @@ fn main() {
             })
             .expect("failed to open main window");
         });
+}
+
+fn headless_import(path: &str) -> i32 {
+    let paths = prism_core::Paths::new();
+    paths.ensure().expect("failed to create data dirs");
+    let downloader = std::sync::Arc::new(prism_core::net::Downloader::new());
+    match prism_core::import::import_sync(&paths, std::path::Path::new(path), Some(&downloader)) {
+        Ok(inst) => {
+            println!("Imported: {} ({})", inst.name, inst.id);
+            println!(
+                "loader: {:?}",
+                prism_core::instance::loader_of(&inst)
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!("Import failed: {e}");
+            1
+        }
+    }
 }
 
 fn headless_prepare(version: &str) -> i32 {
