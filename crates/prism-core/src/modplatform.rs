@@ -1,6 +1,7 @@
 //! Mod platform integrations. Mirrors `launcher/modplatform/`.
 //! Modrinth first (api.modrinth.com/v2), CurseForge next.
 
+pub mod flame;
 pub mod modrinth;
 
 use serde::{Deserialize, Serialize};
