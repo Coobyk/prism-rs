@@ -80,6 +80,21 @@ fn headless_prepare(version: &str) -> i32 {
         for arg in &prepared.command {
             println!("  {arg}");
         }
+
+        // Emit a runnable script (run paths through the same substitution).
+        let script = format!(
+            "#!/bin/sh\ncd '{}'\nexec {}\n",
+            prepared.working_dir.display(),
+            prepared
+                .command
+                .iter()
+                .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let script_path = paths.root.join("launch-headless.sh");
+        std::fs::write(&script_path, script).unwrap();
+        println!("\nLaunch script written to {}", script_path.display());
     });
     0
 }
