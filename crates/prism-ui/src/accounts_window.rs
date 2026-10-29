@@ -3,6 +3,7 @@
 //! MSALoginDialog.
 
 use crate::state::App;
+use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use std::sync::Arc;
@@ -61,7 +62,7 @@ impl AccountsWindow {
         let status2 = status.clone();
         let start_result = self.app.read(cx).block_on(started);
         match start_result {
-            Ok(start) => {
+            Ok(Ok(start)) => {
                 *device_flow2.lock().unwrap_or_else(|p| p.into_inner()) = Some(start);
                 // Step 2: poll in the background until the user signs in.
                 let df = device_flow2.clone();
@@ -75,6 +76,9 @@ impl AccountsWindow {
                 });
                 *handle_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(poll);
                 *status2.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
+            }
+            Ok(Err(e)) => {
+                *status2.lock().unwrap_or_else(|p| p.into_inner()) = format!("Could not start login: {e}");
             }
             Err(e) => {
                 *status2.lock().unwrap_or_else(|p| p.into_inner()) = format!("Could not start login: {e}");
