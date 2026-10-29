@@ -4,6 +4,7 @@ mod accounts_window;
 mod dialogs;
 mod instance_window;
 mod main_window;
+mod settings_window;
 mod state;
 
 use gpui_kit::*;

@@ -67,9 +67,7 @@ impl MainWindow {
             )
             .child(toolbar_separator())
             .child(Button::new("folders").label("Folders").on_click(cx.listener(Self::on_view_instances_folder)))
-            .child(Button::new("settings").label("Settings").on_click(|_, _, _| {
-                // TODO: open the settings window.
-            }))
+            .child(Button::new("settings").label("Settings").on_click(cx.listener(Self::on_open_settings)))
             .child(Button::new("help").label("Help").on_click(|_, _, _| {}))
             .child(Button::new("check-updates").label("Check for Updates").on_click(|_, _, _| {}))
             .child(
@@ -83,6 +81,21 @@ impl MainWindow {
         let app = self.app.clone();
         open_window(WindowOptions::default(), cx, |_window, cx| {
             cx.new(|_| crate::accounts_window::AccountsWindow::new(app.clone()))
+        })
+        .ok();
+    }
+
+    fn on_open_settings(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let app = self.app.clone();
+        let options = WindowOptions {
+            window_min_size: Some(gpui::Size {
+                width: px(560.),
+                height: px(420.),
+            }),
+            ..WindowOptions::default()
+        };
+        open_window(options, cx, |window, cx| {
+            cx.new(|cx| crate::settings_window::SettingsWindow::new(app.clone(), window, cx))
         })
         .ok();
     }

@@ -75,17 +75,18 @@ pub struct LaunchSettings {
 
 impl LaunchSettings {
     pub fn for_instance(inst: &crate::instance::Instance, paths: &Paths) -> LaunchSettings {
+        let global = crate::settings::Settings::load(&paths.global_config());
         LaunchSettings {
             instance_name: inst.name.clone(),
             instance_id: inst.id.clone(),
             game_dir: inst.game_root(),
             mc_version: default_version_for(inst),
             java_path: default_java_path(),
-            min_memory_mb: 512,
-            max_memory_mb: 4096,
+            min_memory_mb: global.get_int("MinMemAlloc", 512).max(128) as u32,
+            max_memory_mb: global.get_int("MaxMemAlloc", 4096).max(256) as u32,
             extra_jvm_args: Vec::new(),
-            window_width: 854,
-            window_height: 480,
+            window_width: global.get_int("MinecraftWinWidth", 854).max(320) as u32,
+            window_height: global.get_int("MinecraftWinHeight", 480).max(240) as u32,
             env: Vec::new(),
         }
         .with_instance_cfg(inst)
