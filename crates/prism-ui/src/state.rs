@@ -196,16 +196,55 @@ impl App {
             };
             let mut profile = prism_core::profile::LaunchProfile::from_mojang(&version_data);
 
-            // 1b. Loader component overlay (Fabric/Quilt).
+            // 1b. Loader component overlay.
             let loader = prism_core::instance::loader_of(&inst);
-            if !matches!(loader, prism_core::loaders::Loader::None) {
-                log_lock(&log).push(format!("Fetching loader profile: {loader:?}"));
-                match prism_core::loaders::fetch_loader_profile(downloader.client(), &loader, &settings.mc_version).await {
-                    Ok(lvd) => profile.apply_loader(&lvd),
-                    Err(e) => {
-                        log_lock(&log).push(format!("Fatal: loader profile fetch failed: {e}"));
-                        state_lock(&state, |s| *s = InstanceRunState::Crashed(format!("loader: {e}")));
+            match &loader {
+                prism_core::loaders::Loader::None => {}
+                prism_core::loaders::Loader::Forge { .. } | prism_core::loaders::Loader::NeoForge { .. } => {
+                    log_lock(&log).push(format!("Preparing loader: {loader:?}"));
+                    // The installer expects a vanilla layout: game_dir/versions/<mc>/<mc>.jar.
+                    let mc_dir = settings.game_dir.clone();
+                    let versions_dir = mc_dir.join("versions").join(&settings.mc_version);
+                    if let Err(e) = tokio::fs::create_dir_all(&versions_dir).await {
+                        log_lock(&log).push(format!("Fatal: {e}"));
+                        state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
                         return;
+                    }
+                    let client_jar_src = launcher.client_jar_path(&settings.mc_version);
+                    let client_jar_dst = versions_dir.join(format!("{}.jar", settings.mc_version));
+                    if !client_jar_dst.exists() {
+                        if let Err(e) = tokio::fs::copy(&client_jar_src, &client_jar_dst).await {
+                            log_lock(&log).push(format!("Fatal: vanilla jar copy: {e}"));
+                            state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
+                            return;
+                        }
+                    }
+                    match prism_core::loaders::ensure_forge_installed(
+                        &settings.java_path,
+                        &loader,
+                        &settings.mc_version,
+                        &mc_dir,
+                        &downloader,
+                    )
+                    .await
+                    {
+                        Ok(lvd) => profile.apply_loader(&lvd),
+                        Err(e) => {
+                            log_lock(&log).push(format!("Fatal: forge install failed: {e}"));
+                            state_lock(&state, |s| *s = InstanceRunState::Crashed(format!("forge: {e}")));
+                            return;
+                        }
+                    }
+                }
+                _ => {
+                    log_lock(&log).push(format!("Fetching loader profile: {loader:?}"));
+                    match prism_core::loaders::fetch_loader_profile(downloader.client(), &loader, &settings.mc_version).await {
+                        Ok(lvd) => profile.apply_loader(&lvd),
+                        Err(e) => {
+                            log_lock(&log).push(format!("Fatal: loader profile fetch failed: {e}"));
+                            state_lock(&state, |s| *s = InstanceRunState::Crashed(format!("loader: {e}")));
+                            return;
+                        }
                     }
                 }
             }

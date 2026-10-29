@@ -330,7 +330,7 @@ impl Launcher {
         Ok(())
     }
 
-    fn client_jar_path(&self, version: &str) -> PathBuf {
+    pub fn client_jar_path(&self, version: &str) -> PathBuf {
         self.paths.cache_dir().join("versions").join(version).join(format!("{version}.jar"))
     }
 
@@ -366,10 +366,19 @@ impl Launcher {
         let natives_dir = settings.game_dir.join("bin");
         let client_jar = self.client_jar_path(&profile.minecraft_version);
 
+        // Classpath entries: prefer libraries installed by loader installers
+        // inside the instance (game_dir/libraries), then the shared cache.
         let mut classpath: Vec<String> = profile
             .classpath()
             .iter()
-            .map(|p| libraries_dir.join(p).to_string_lossy().to_string())
+            .map(|p| {
+                let in_instance = settings.game_dir.join("libraries").join(p);
+                if in_instance.exists() {
+                    in_instance.to_string_lossy().to_string()
+                } else {
+                    libraries_dir.join(p).to_string_lossy().to_string()
+                }
+            })
             .collect();
         classpath.push(client_jar.to_string_lossy().to_string());
         let classpath_str = classpath.join(if cfg!(windows) { ";" } else { ":" });
