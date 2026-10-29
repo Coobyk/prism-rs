@@ -19,7 +19,8 @@ fn main() {
     // Usage: prism-rs prepare <mc-version> [--offline-name NAME]
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 3 && args[1] == "prepare" {
-        return headless_prepare(&args[2]);
+        let code = headless_prepare(&args[2]);
+        std::process::exit(code);
     }
 
     gpui_kit::application()
