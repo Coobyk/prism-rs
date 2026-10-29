@@ -16,6 +16,8 @@ pub mod net;
 pub mod news;
 pub mod paths;
 pub mod profile;
+pub mod resources;
+pub mod settings;
 
 pub use auth::AccountList;
 pub use instance::{Instance, InstanceGroups, InstanceList};

@@ -416,6 +416,9 @@ impl Launcher {
             tokens.insert("auth_xuid".into(), "0".to_string());
             tokens.insert("clientId".into(), MSA_CLIENT_ID.to_string());
         }
+        // Mojang manifests use both spellings of the client id token.
+        tokens.insert("classpath".into(), classpath_str.clone());
+        tokens.insert("clientid".into(), tokens["clientId"].clone());
 
         let substitute = |arg: &str| -> String {
             let mut out = arg.to_string();
