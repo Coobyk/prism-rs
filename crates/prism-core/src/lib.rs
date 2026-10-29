@@ -9,4 +9,5 @@ pub mod ini;
 pub mod instance;
 pub mod paths;
 
+pub use instance::{Instance, InstanceGroups, InstanceList};
 pub use paths::Paths;

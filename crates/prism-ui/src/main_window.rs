@@ -8,10 +8,9 @@
 //! - bottom news toolbar and status bar.
 
 use crate::state::{format_play_time, App};
+use gpui_kit::base::{Disableable, InteractiveElementExt};
 use gpui_kit::component::button::Button;
 use gpui_kit::*;
-use prism_core::instance::Instance;
-use std::sync::Arc;
 
 pub struct MainWindow {
     app: gpui::Entity<App>,
@@ -37,9 +36,8 @@ impl MainWindow {
             .child(
                 Button::new("add-instance")
                     .label("+ Add Instance")
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, _, _cx| {
                         // TODO: open the NewInstanceDialog page flow.
-                        cx.notify();
                         let _ = app.clone();
                     }),
             )
@@ -84,7 +82,14 @@ impl MainWindow {
             }
         }
 
-        let mut container = div().flex_1().flex().flex_col().gap_3().p_3().overflow_y_scroll();
+        let mut container = div()
+            .id("instance-list")
+            .flex_1()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .overflow_y(Overflow::Scroll);
         for (group, indices) in ordered {
             if !group.is_empty() {
                 container = container.child(
@@ -139,10 +144,9 @@ impl MainWindow {
                 cx.notify();
             }))
             .on_double_click(cx.listener(move |this, _event, _window, cx| {
-                let app = this.app.clone();
                 // TODO: launch the instance.
                 cx.notify();
-                let _ = app;
+                let _ = &this.app;
             }))
             .child(
                 div()
@@ -279,10 +283,4 @@ impl Render for MainWindow {
 
 fn toolbar_separator() -> impl IntoElement {
     div().w(px(1.)).h(px(24.)).mx_1().bg(rgb(0x444444))
-}
-
-// Keep the Instance import used for future launch plumbing.
-#[allow(dead_code)]
-fn _instance_type_check(_i: &Instance) {
-    let _ = Arc::new(());
 }
