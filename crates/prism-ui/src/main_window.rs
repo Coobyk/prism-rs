@@ -22,8 +22,11 @@ pub struct MainWindow {
 
 impl MainWindow {
     pub fn new(app: gpui::Entity<App>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // Kick off the version manifest fetch for the create dialog.
-        app.update(cx, |app, _| app.start_manifest_fetch());
+        // Kick off the version manifest + news fetches.
+        app.update(cx, |app, _| {
+            app.start_manifest_fetch();
+            app.start_news_fetch();
+        });
         MainWindow {
             app,
             create_dialog: None,
@@ -34,6 +37,7 @@ impl MainWindow {
 
     fn poll_manifest(&mut self, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _| app.poll_manifest());
+        self.app.update(cx, |app, _| app.poll_news());
     }
 
 
@@ -498,6 +502,13 @@ impl MainWindow {
             .iter()
             .map(|i| i.total_time_played)
             .sum();
+        let latest_news = self
+            .app
+            .read(cx)
+            .news
+            .first()
+            .map(|n| n.title.clone())
+            .unwrap_or_else(|| "No news".to_string());
 
         div()
             .flex()
@@ -517,6 +528,8 @@ impl MainWindow {
                     .text_size(px(12.))
                     .text_color(rgb(0x99aabb))
                     .child("News")
+                    .child(latest_news)
+                    .child(div().flex_1())
                     .child("More News…"),
             )
             .child(

@@ -92,7 +92,10 @@ impl App {
             return;
         }
         let handle = self.news_handle.take().unwrap();
-        self.news = self.block_on(handle);
+        match self.block_on(handle) {
+            Ok(news) => self.news = news,
+            Err(e) => tracing::error!("news join failed: {e}"),
+        }
     }
 
     pub fn reload_instances(&mut self) {
