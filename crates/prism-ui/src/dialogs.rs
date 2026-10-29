@@ -226,3 +226,138 @@ fn confirm_create(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     this.create_dialog = None;
     cx.notify();
 }
+
+/// A simple one-field prompt: rename or change-group.
+pub struct PromptState {
+    pub kind: PromptKind,
+    pub target_id: String,
+    pub input: Entity<InputState>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum PromptKind {
+    Rename,
+    ChangeGroup,
+}
+
+impl PromptState {
+    pub fn new(kind: PromptKind, target_id: String, initial: String, window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
+        let placeholder = match kind {
+            PromptKind::Rename => "Instance name",
+            PromptKind::ChangeGroup => "Group name (empty = none)",
+        };
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        input.update(cx, |s, cx| {
+            s.set_value(initial, window, cx);
+        });
+        PromptState {
+            kind,
+            target_id,
+            input,
+            error: None,
+        }
+    }
+
+    pub fn render(&self, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement {
+        let title = match self.kind {
+            PromptKind::Rename => "Rename Instance",
+            PromptKind::ChangeGroup => "Change Group",
+        };
+        let input = self.input.clone();
+
+        let backdrop = div()
+            .id("prompt-backdrop")
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .bg(gpui_kit::black().opacity(0.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .on_click(cx.listener(|this: &mut MainWindow, _ev, _window, cx| {
+                this.prompt = None;
+                cx.notify();
+            }));
+
+        let mut panel = div()
+            .id("prompt-dialog")
+            .w(px(380.))
+            .bg(rgb(0x2b2b2b))
+            .rounded_lg()
+            .border_1()
+            .border_color(rgb(0x444444))
+            .p_4()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
+            .child(Input::new(&input));
+
+        if let Some(e) = &self.error {
+            panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
+        }
+
+        panel = panel.child(
+            div()
+                .flex()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("prompt-cancel")
+                        .label("Cancel")
+                        .on_click(cx.listener(|this: &mut MainWindow, _ev, _window, cx| {
+                            this.prompt = None;
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("prompt-ok")
+                        .primary()
+                        .label("OK")
+                        .on_click(cx.listener(confirm_prompt)),
+                ),
+        );
+
+        let _ = window;
+        backdrop.child(panel)
+    }
+}
+
+fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<MainWindow>) {
+    let Some(prompt) = this.prompt.as_ref() else {
+        return;
+    };
+    let value = prompt.input.read(cx).value().trim().to_string();
+    let kind = prompt.kind;
+    let target = prompt.target_id.clone();
+
+    if kind == PromptKind::Rename && value.is_empty() {
+        this.prompt.as_mut().unwrap().error = Some("Name cannot be empty.".to_string());
+        cx.notify();
+        return;
+    }
+
+    this.app.update(cx, |app, _cx| {
+        match kind {
+            PromptKind::Rename => {
+                if let Some(inst) = app.instances.get_mut(&target) {
+                    inst.name = value.clone();
+                    let inst = inst.clone();
+                    let _ = inst.save();
+                }
+            }
+            PromptKind::ChangeGroup => {
+                app.instances
+                    .groups
+                    .set_group(&target, if value.is_empty() { None } else { Some(value.as_str()) });
+                let _ = app.instances.groups.save(&app.paths.instances_dir());
+            }
+        }
+        app.reload_instances();
+    });
+    this.prompt = None;
+    cx.notify();
+}

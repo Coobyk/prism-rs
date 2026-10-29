@@ -7,15 +7,16 @@
 //!   toolbar (name, Launch, Kill, Edit, ...)
 //! - bottom news toolbar, status bar and a live console panel.
 
-use crate::dialogs::CreateInstanceState;
+use crate::dialogs::{CreateInstanceState, PromptState};
 use crate::state::{format_play_time, App, InstanceRunState};
 use gpui_kit::base::{Disableable, InteractiveElementExt};
 use gpui_kit::component::button::Button;
 use gpui_kit::*;
 
 pub struct MainWindow {
-    pub app: gpui::Entity<App>,
+    pub(crate) app: gpui::Entity<App>,
     pub create_dialog: Option<CreateInstanceState>,
+    pub prompt: Option<PromptState>,
     console_open: bool,
     console_filter: String,
 }
@@ -30,6 +31,7 @@ impl MainWindow {
         MainWindow {
             app,
             create_dialog: None,
+            prompt: None,
             console_open: false,
             console_filter: String::new(),
         }
@@ -330,7 +332,10 @@ impl MainWindow {
                 self.sidebar_button("edit", "Edit", enabled)
                     .on_click(cx.listener(Self::on_edit)),
             )
-            .child(self.sidebar_button("change-group", "Change Group", enabled))
+            .child(
+                self.sidebar_button("change-group", "Change Group", enabled)
+                    .on_click(cx.listener(Self::on_change_group)),
+            )
             .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
             .child(self.sidebar_button("export", "Export", enabled))
             .child(self.sidebar_button("copy", "Copy", enabled))
@@ -349,18 +354,45 @@ impl MainWindow {
         btn
     }
 
-    fn on_rename(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Cycle name with a " (renamed)" suffix as placeholder for the rename
-        // dialog; a proper inline-rename editor follows.
-        self.app.update(cx, |app, _cx| {
-            if let Some(id) = app.selected.clone() {
-                if let Some(inst) = app.instances.get_mut(&id) {
-                    inst.name = format!("{} (renamed)", inst.name);
-                    let inst = inst.clone();
-                    let _ = inst.save();
-                }
-            }
-        });
+    fn on_rename(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.app.read(cx).selected.clone() else {
+            return;
+        };
+        let current = self
+            .app
+            .read(cx)
+            .instances
+            .get(&id)
+            .map(|i| i.name.clone())
+            .unwrap_or_default();
+        self.prompt = Some(crate::dialogs::PromptState::new(
+            crate::dialogs::PromptKind::Rename,
+            id,
+            current,
+            window,
+            cx,
+        ));
+        cx.notify();
+    }
+
+    fn on_change_group(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.app.read(cx).selected.clone() else {
+            return;
+        };
+        let current = self
+            .app
+            .read(cx)
+            .instances
+            .get(&id)
+            .and_then(|i| i.group.clone())
+            .unwrap_or_default();
+        self.prompt = Some(crate::dialogs::PromptState::new(
+            crate::dialogs::PromptKind::ChangeGroup,
+            id,
+            current,
+            window,
+            cx,
+        ));
         cx.notify();
     }
 
@@ -572,6 +604,10 @@ impl Render for MainWindow {
             .create_dialog
             .as_mut()
             .map(|d| d.render(&self.app.clone(), window, cx));
+        let prompt_dialog = self
+            .prompt
+            .as_ref()
+            .map(|p| p.render(window, cx));
 
         div()
             .size_full()
@@ -592,6 +628,7 @@ impl Render for MainWindow {
             .children(console_open.then(|| self.render_console(cx)))
             .child(self.render_bottom_bar(cx))
             .children(create_dialog)
+            .children(prompt_dialog)
     }
 }
 
