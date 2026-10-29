@@ -13,6 +13,7 @@ pub mod launch;
 pub mod meta;
 pub mod modplatform;
 pub mod net;
+pub mod news;
 pub mod paths;
 pub mod profile;
 

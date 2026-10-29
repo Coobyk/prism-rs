@@ -167,12 +167,12 @@ impl VersionData {
         }
         if let Some(args) = json["arguments"].as_object() {
             let mut arguments = Arguments::default();
-            for v in args["game"].as_array().unwrap_or(&vec![]) {
+            for v in args.get("game").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
                 if let Some(a) = parse_arg_value(v) {
                     arguments.game.push(a);
                 }
             }
-            for v in args["jvm"].as_array().unwrap_or(&vec![]) {
+            for v in args.get("jvm").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
                 if let Some(a) = parse_arg_value(v) {
                     arguments.jvm.push(a);
                 }
@@ -220,10 +220,10 @@ impl VersionData {
 
 fn artifact_from(a: &serde_json::Map<String, serde_json::Value>) -> MoArtifact {
     MoArtifact {
-        path: a["path"].as_str().map(String::from),
-        url: a["url"].as_str().unwrap_or_default().to_string(),
-        sha1: a["sha1"].as_str().map(String::from),
-        size: a["size"].as_u64(),
+        path: a.get("path").and_then(|v| v.as_str()).map(String::from),
+        url: a.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        sha1: a.get("sha1").and_then(|v| v.as_str()).map(String::from),
+        size: a.get("size").and_then(|v| v.as_u64()),
     }
 }
 
@@ -262,8 +262,8 @@ fn parse_rule(r: &serde_json::Value) -> Option<Rule> {
         _ => return None,
     };
     let os = r["os"].as_object().map(|o| RuleOs {
-        name: o["name"].as_str().map(String::from),
-        arch: o["arch"].as_str().map(String::from),
+        name: o.get("name").and_then(|v| v.as_str()).map(String::from),
+        arch: o.get("arch").and_then(|v| v.as_str()).map(String::from),
     });
     let features = r["features"].as_object().map(|f| {
         f.iter()
