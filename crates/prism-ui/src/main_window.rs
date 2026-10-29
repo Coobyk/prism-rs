@@ -71,6 +71,11 @@ impl MainWindow {
                     .label("+ Add Instance")
                     .on_click(cx.listener(Self::on_add_instance)),
             )
+            .child(
+                Button::new("import-instance")
+                    .label("Import")
+                    .on_click(cx.listener(Self::on_import)),
+            )
             .child(toolbar_separator())
             .child(Button::new("folders").label("Folders").on_click(cx.listener(Self::on_view_instances_folder)))
             .child(Button::new("settings").label("Settings").on_click(cx.listener(Self::on_open_settings)))
@@ -116,6 +121,17 @@ impl MainWindow {
 
     fn on_add_instance(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.open_create_dialog(window, cx);
+    }
+
+    fn on_import(&mut self, _ev: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.prompt = Some(crate::dialogs::PromptState::new(
+            crate::dialogs::PromptKind::ImportPath,
+            String::new(),
+            String::new(),
+            window,
+            cx,
+        ));
+        cx.notify();
     }
 
     fn on_view_instances_folder(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
@@ -610,6 +626,26 @@ impl Render for MainWindow {
             .as_ref()
             .map(|p| p.render(window, cx));
 
+        let toast = self
+            .app
+            .read(cx)
+            .toast
+            .as_ref()
+            .filter(|(_, t)| t.elapsed().as_secs() < 5)
+            .map(|(msg, _)| {
+                div()
+                    .absolute()
+                    .bottom(px(56.))
+                    .left(px(16.))
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(0x2f4f2f))
+                    .rounded_md()
+                    .text_size(px(12.))
+                    .child(msg.clone())
+                    .into_any_element()
+            });
+
         div()
             .size_full()
             .flex()
@@ -630,6 +666,7 @@ impl Render for MainWindow {
             .child(self.render_bottom_bar(cx))
             .children(create_dialog)
             .children(prompt_dialog)
+            .children(toast)
     }
 }
 

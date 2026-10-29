@@ -240,6 +240,7 @@ pub struct PromptState {
 pub enum PromptKind {
     Rename,
     ChangeGroup,
+    ImportPath,
 }
 
 impl PromptState {
@@ -247,6 +248,7 @@ impl PromptState {
         let placeholder = match kind {
             PromptKind::Rename => "Instance name",
             PromptKind::ChangeGroup => "Group name (empty = none)",
+            PromptKind::ImportPath => "Path or URL to .zip/.mrpack",
         };
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         input.update(cx, |s, cx| {
@@ -264,6 +266,7 @@ impl PromptState {
         let title = match self.kind {
             PromptKind::Rename => "Rename Instance",
             PromptKind::ChangeGroup => "Change Group",
+            PromptKind::ImportPath => "Import Instance",
         };
         let input = self.input.clone();
 
@@ -355,6 +358,23 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
                     .groups
                     .set_group(&target, if value.is_empty() { None } else { Some(value.as_str()) });
                 let _ = app.instances.groups.save(&app.paths.instances_dir());
+            }
+            PromptKind::ImportPath => {
+                // Local path (possibly a URL later). Run the import
+                // synchronously — packs can take a moment.
+                let source = std::path::PathBuf::from(&value);
+                if !source.exists() {
+                    app.toast = Some((format!("Import source not found: {value}"), std::time::Instant::now()));
+                } else {
+                    match prism_core::import::import_sync(&app.paths, &source, Some(&app.runtime.downloader)) {
+                        Ok(inst) => {
+                            app.toast = Some((format!("Imported: {}", inst.name), std::time::Instant::now()));
+                        }
+                        Err(e) => {
+                            app.toast = Some((format!("Import failed: {e}"), std::time::Instant::now()));
+                        }
+                    }
+                }
             }
         }
         app.reload_instances();
