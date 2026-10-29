@@ -21,7 +21,7 @@ impl MainWindow {
         MainWindow { app }
     }
 
-    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         let app = self.app.clone();
         div()
             .id("main-toolbar")
@@ -121,6 +121,7 @@ impl MainWindow {
             app.selected.as_deref() == Some(id.as_str())
         };
         let tile_bg = if selected { rgb(0x3d5a80) } else { rgb(0x2b2b2b) };
+        let id2 = id.clone();
 
         div()
             .id(SharedString::from(format!("tile-{id}")))
@@ -134,11 +135,12 @@ impl MainWindow {
             .bg(tile_bg)
             .hover(|s| s.bg(rgb(0x353535)))
             .on_click(cx.listener(move |this, _event, _window, cx| {
+                let id = id.clone();
                 this.app.update(cx, |app, _| {
-                    app.selected = if app.selected.as_deref() == Some(id) {
+                    app.selected = if app.selected.as_deref() == Some(id.as_str()) {
                         None
                     } else {
-                        Some(id.to_string())
+                        Some(id.clone())
                     };
                 });
                 cx.notify();
@@ -146,6 +148,7 @@ impl MainWindow {
             .on_double_click(cx.listener(move |this, _event, _window, cx| {
                 // TODO: launch the instance.
                 cx.notify();
+                let _ = id2.clone();
                 let _ = &this.app;
             }))
             .child(

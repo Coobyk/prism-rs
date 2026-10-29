@@ -7,6 +7,8 @@
 
 pub mod ini;
 pub mod instance;
+pub mod meta;
+pub mod net;
 pub mod paths;
 
 pub use instance::{Instance, InstanceGroups, InstanceList};
