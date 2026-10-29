@@ -42,6 +42,7 @@ pub struct App {
     pub running: BTreeMap<String, RunningInstance>,
     pub manifest: Option<Arc<VersionManifest>>,
     pub manifest_loading: bool,
+    pub manifest_handle: Option<tokio::task::JoinHandle<Result<VersionManifest, prism_core::net::NetError>>>,
     pub toast: Option<(String, std::time::Instant)>,
 }
 
@@ -65,6 +66,7 @@ impl App {
             running: BTreeMap::new(),
             manifest: None,
             manifest_loading: false,
+            manifest_handle: None,
             toast: None,
         }
     }
@@ -257,30 +259,42 @@ impl App {
         }
     }
 
-    pub fn ensure_manifest(&mut self) {
-        if self.manifest.is_some() || self.manifest_loading {
+    pub fn start_manifest_fetch(&mut self) {
+        if self.manifest.is_some() || self.manifest_handle.is_some() {
             return;
         }
         self.manifest_loading = true;
         let downloader = self.runtime.downloader.clone();
-        let handle = self.runtime.handle();
-        let manifest_fut = {
-            let handle = handle.clone();
-            async move {
-                handle.spawn(async move {
-                    prism_core::meta::VersionManifest::fetch(downloader.client()).await
-                })
-                .await
+        self.manifest_handle = Some(self.runtime.spawn(async move {
+            prism_core::meta::VersionManifest::fetch(downloader.client()).await
+        }));
+    }
+
+    /// Non-blocking poll of the in-flight manifest fetch (safe to call every
+    /// render).
+    pub fn poll_manifest(&mut self) {
+        let finished = self
+            .manifest_handle
+            .as_ref()
+            .map(|h| h.is_finished())
+            .unwrap_or(false);
+        if !finished {
+            return;
+        }
+        let handle = self.manifest_handle.take().unwrap();
+        match self.block_on(handle) {
+            Ok(Ok(m)) => {
+                self.manifest = Some(Arc::new(m));
+                self.manifest_loading = false;
             }
-        };
-        // Resolve synchronously via block_on on the core runtime: the UI
-        // keeps running on GPUI's own executor.
-        let result = self.runtime.block_on(manifest_fut);
-        self.manifest_loading = false;
-        match result {
-            Ok(Ok(m)) => self.manifest = Some(Arc::new(m)),
-            Ok(Err(e)) => tracing::error!("manifest fetch failed: {e}"),
-            Err(e) => tracing::error!("manifest join failed: {e}"),
+            Ok(Err(e)) => {
+                tracing::error!("manifest fetch failed: {e}");
+                self.manifest_loading = false;
+            }
+            Err(e) => {
+                tracing::error!("manifest join failed: {e}");
+                self.manifest_loading = false;
+            }
         }
     }
 }

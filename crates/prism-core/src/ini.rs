@@ -24,7 +24,7 @@ impl IniFile {
             let Some((key, value)) = line.split_once('=') else {
                 continue;
             };
-            entries.insert(unquote(key.trim()), unescape_value(value.trim()));
+            entries.insert(unquote(key.trim()), unescape_value(&unquote(value.trim())));
         }
         IniFile { entries }
     }

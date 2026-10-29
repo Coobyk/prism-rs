@@ -1,5 +1,6 @@
 //! prism-rs: PrismLauncher rewritten in Rust with GPUI.
 
+mod dialogs;
 mod main_window;
 mod state;
 
@@ -20,8 +21,8 @@ fn main() {
             gpui_kit::init(cx);
 
             let app = cx.new(|_| App::new());
-            gpui_kit::open_window(WindowOptions::default(), cx, |_, cx| {
-                cx.new(|_| main_window::MainWindow::new(app.clone()))
+            gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| main_window::MainWindow::new(app.clone(), window, cx))
             })
             .expect("failed to open main window");
         });
