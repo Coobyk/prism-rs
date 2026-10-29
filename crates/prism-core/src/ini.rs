@@ -119,7 +119,32 @@ impl IniFile {
     }
 
     pub fn set(&mut self, key: &str, value: impl Into<String>) {
-        self.entries.insert(key.to_string(), value.into());
+        let value = value.into();
+        // Keep the preserved section structure in step: update the key where
+        // it already lives, otherwise append it to the default section.
+        let mut updated = false;
+        for (_, kvs) in self.sections.iter_mut() {
+            for (k, v) in kvs.iter_mut() {
+                if k == key {
+                    *v = value.clone();
+                    updated = true;
+                }
+            }
+        }
+        if !updated {
+            let target = self.default_section.clone();
+            match self
+                .sections
+                .iter_mut()
+                .find(|(name, _)| *name == target)
+            {
+                Some((_, kvs)) => kvs.push((key.to_string(), value.clone())),
+                None => self
+                    .sections
+                    .push((target, vec![(key.to_string(), value.clone())])),
+            }
+        }
+        self.entries.insert(key.to_string(), value);
     }
 
     pub fn remove(&mut self, key: &str) {
@@ -196,7 +221,9 @@ mod tests {
         ini.set("MaxMemAlloc", "16384");
         let out = ini.serialize();
         assert!(out.starts_with("[General]\n"), "sections preserved: {out}");
-        assert!(out.contains("[UI]\nmods_Page\\Columns=\"AAAA\"\n"), "UI section kept: {out}");
+        // QSettings quoting: the base64 value needed quotes in the source
+        // file but re-serializes bare since it needs no escaping now.
+        assert!(out.contains("[UI]\nmods_Page\\Columns=AAAA\n"), "UI section kept: {out}");
         assert!(out.contains("name=26.3 Coobyk\n"), "unquoted value kept: {out}");
         assert!(out.contains("MaxMemAlloc=16384\n"));
     }
