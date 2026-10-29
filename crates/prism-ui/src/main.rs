@@ -35,6 +35,13 @@ fn main() {
         .run(|cx| {
             gpui_kit::init(cx);
 
+            // Dark mode for all gpui-component widgets (inputs, buttons, dialogs).
+            gpui_kit::component::theme::Theme::change(
+                gpui_kit::component::theme::ThemeMode::Dark,
+                None,
+                cx,
+            );
+
             let app = cx.new(|_| App::new());
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
                 cx.new(|cx| main_window::MainWindow::new(app.clone(), window, cx))
