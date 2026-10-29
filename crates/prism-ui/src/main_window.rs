@@ -526,7 +526,6 @@ impl Render for MainWindow {
             .flex_col()
             .bg(rgb(0x232323))
             .text_color(rgb(0xdddddd))
-            .font_family("Segoe UI")
             .relative()
             .child(self.render_toolbar(cx))
             .child(
