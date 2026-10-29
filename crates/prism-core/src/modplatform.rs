@@ -61,6 +61,8 @@ pub enum PlatformError {
     Net(#[from] crate::net::NetError),
     #[error("request failed: {0}")]
     Request(String),
+    #[error("http: {0}")]
+    Http(#[from] reqwest::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
