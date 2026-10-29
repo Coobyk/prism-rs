@@ -21,6 +21,8 @@ pub enum ImportError {
     Json(#[from] serde_json::Error),
     #[error("net: {0}")]
     Net(#[from] crate::net::NetError),
+    #[error("platform: {0}")]
+    Platform(#[from] crate::modplatform::PlatformError),
     #[error("{0}")]
     Other(String),
 }

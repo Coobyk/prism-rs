@@ -44,6 +44,8 @@ pub struct App {
     pub manifest: Option<Arc<VersionManifest>>,
     pub manifest_loading: bool,
     pub manifest_handle: Option<tokio::task::JoinHandle<Result<VersionManifest, prism_core::net::NetError>>>,
+    pub news: Vec<prism_core::news::NewsEntry>,
+    pub news_handle: Option<tokio::task::JoinHandle<Vec<prism_core::news::NewsEntry>>>,
     pub toast: Option<(String, std::time::Instant)>,
 }
 
@@ -68,8 +70,29 @@ impl App {
             manifest: None,
             manifest_loading: false,
             manifest_handle: None,
+            news: Vec::new(),
+            news_handle: None,
             toast: None,
         }
+    }
+
+    pub fn start_news_fetch(&mut self) {
+        if self.news_handle.is_some() {
+            return;
+        }
+        let downloader = self.runtime.downloader.clone();
+        self.news_handle = Some(self.runtime.spawn(async move {
+            prism_core::news::fetch_news(&downloader).await
+        }));
+    }
+
+    pub fn poll_news(&mut self) {
+        let finished = self.news_handle.as_ref().map(|h| h.is_finished()).unwrap_or(false);
+        if !finished {
+            return;
+        }
+        let handle = self.news_handle.take().unwrap();
+        self.news = self.block_on(handle);
     }
 
     pub fn reload_instances(&mut self) {
