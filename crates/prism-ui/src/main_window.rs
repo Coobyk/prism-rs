@@ -297,7 +297,7 @@ impl MainWindow {
             .child(toolbar_separator())
             .child(
                 self.sidebar_button("edit", "Edit", enabled)
-                    .on_click(cx.listener(Self::on_toggle_console)),
+                    .on_click(cx.listener(Self::on_edit)),
             )
             .child(self.sidebar_button("change-group", "Change Group", enabled))
             .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
@@ -350,9 +350,22 @@ impl MainWindow {
         cx.notify();
     }
 
-    fn on_toggle_console(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        self.console_open = !self.console_open;
-        cx.notify();
+    fn on_edit(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.app.read(cx).selected.clone() else {
+            return;
+        };
+        let app = self.app.clone();
+        let options = WindowOptions {
+            window_min_size: Some(gpui::Size {
+                width: px(760.),
+                height: px(520.),
+            }),
+            ..WindowOptions::default()
+        };
+        open_window(options, cx, |_window, cx| {
+            cx.new(|_| crate::instance_window::InstanceWindow::new(app, id))
+        })
+        .ok();
     }
 
     fn on_view_folder(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
