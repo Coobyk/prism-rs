@@ -11,5 +11,6 @@ path = "src/main.rs"
 [dependencies]
 prism-core = { workspace = true }
 gpui-kit = { version = "0.8", features = ["assets"] }
+tokio = { version = "1", features = ["io-util"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

@@ -49,7 +49,7 @@ impl MainWindow {
 
     // -- toolbar ------------------------------------------------------------
 
-    fn render_toolbar(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("main-toolbar")
             .flex()

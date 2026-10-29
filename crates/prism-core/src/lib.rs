@@ -16,5 +16,6 @@ pub mod net;
 pub mod paths;
 pub mod profile;
 
+pub use auth::AccountList;
 pub use instance::{Instance, InstanceGroups, InstanceList};
 pub use paths::Paths;

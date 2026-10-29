@@ -128,7 +128,7 @@ impl CreateInstanceState {
                     .py_1()
                     .rounded_sm()
                     .text_size(px(12.))
-                    .bg(if is_selected { rgb(0x3d5a80) } else { gpui_kit::transparent() })
+                    .bg(if is_selected { rgb(0x3d5a80) } else { rgba(0x00000000) })
                     .hover(|s| s.bg(rgb(0x333333)))
                     .on_click(cx.listener(move |this: &mut MainWindow, _ev, _window, cx| {
                         if let Some(d) = this.create_dialog.as_mut() {
