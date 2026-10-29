@@ -158,11 +158,12 @@ impl VersionData {
             })
         });
         if let Some(a) = json["assetIndex"].as_object() {
+            let get = |k: &str| a.get(k).cloned().unwrap_or_default();
             out.asset_index = Some(MoAssetIndex {
-                id: a["id"].as_str().unwrap_or_default().to_string(),
-                url: a["url"].as_str().unwrap_or_default().to_string(),
-                sha1: a["sha1"].as_str().map(String::from),
-                total_size: a["totalSize"].as_u64(),
+                id: get("id").as_str().unwrap_or_default().to_string(),
+                url: get("url").as_str().unwrap_or_default().to_string(),
+                sha1: get("sha1").as_str().map(String::from),
+                total_size: get("totalSize").as_u64(),
             });
         }
         if let Some(args) = json["arguments"].as_object() {
@@ -183,10 +184,10 @@ impl VersionData {
             let name = lib["name"].as_str().unwrap_or_default().to_string();
             let mut downloads = MoDownloads::default();
             if let Some(d) = lib["downloads"].as_object() {
-                if let Some(a) = d["artifact"].as_object() {
+                if let Some(a) = d.get("artifact").and_then(|v| v.as_object()) {
                     downloads.artifact = Some(artifact_from(a));
                 }
-                if let Some(cls) = d["classifiers"].as_object() {
+                if let Some(cls) = d.get("classifiers").and_then(|v| v.as_object()) {
                     for (k, v) in cls {
                         if let Some(v) = v.as_object() {
                             downloads.classifiers.insert(k.clone(), artifact_from(v));
@@ -232,9 +233,9 @@ fn parse_arg_value(v: &serde_json::Value) -> Option<ArgValue> {
         serde_json::Value::String(s) => Some(ArgValue::Str(s.clone())),
         serde_json::Value::Object(o) => {
             let mut value = Vec::new();
-            match &o["value"] {
-                serde_json::Value::String(s) => value.push(s.clone()),
-                serde_json::Value::Array(arr) => {
+            match o.get("value") {
+                Some(serde_json::Value::String(s)) => value.push(s.clone()),
+                Some(serde_json::Value::Array(arr)) => {
                     for x in arr {
                         if let Some(s) = x.as_str() {
                             value.push(s.to_string());
@@ -244,7 +245,7 @@ fn parse_arg_value(v: &serde_json::Value) -> Option<ArgValue> {
                 _ => return None,
             }
             let mut rules = Vec::new();
-            for r in o["rules"].as_array().unwrap_or(&vec![]) {
+            for r in o.get("rules").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
                 if let Some(rule) = parse_rule(r) {
                     rules.push(rule);
                 }
@@ -256,7 +257,7 @@ fn parse_arg_value(v: &serde_json::Value) -> Option<ArgValue> {
 }
 
 fn parse_rule(r: &serde_json::Value) -> Option<Rule> {
-    let action = match r["action"].as_str()? {
+    let action = match r.get("action").and_then(|v| v.as_str())? {
         "allow" => RuleAction::Allow,
         "disallow" => RuleAction::Disallow,
         _ => return None,
