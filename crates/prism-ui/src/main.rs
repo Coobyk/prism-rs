@@ -22,7 +22,8 @@ fn main() {
     // Usage: prism-rs prepare <mc-version> | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
     if args.len() >= 2 && args[1] == "import" && args.len() >= 3 {
-        return headless_import(&args[2]);
+        let code = headless_import(&args[2]);
+        std::process::exit(code);
     }
     if args.len() >= 3 && args[1] == "prepare" {
         let code = headless_prepare(&args[2]);
