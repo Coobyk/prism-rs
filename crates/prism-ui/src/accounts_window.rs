@@ -160,6 +160,7 @@ impl Render for AccountsWindow {
         for account in &accounts {
             let is_active = active.as_deref() == Some(account.id.as_str());
             let id = account.id.clone();
+            let id2 = account.id.clone();
             list = list.child(
                 div()
                     .flex()
@@ -205,7 +206,7 @@ impl Render for AccountsWindow {
                         Button::new(SharedString::from(format!("rm-{}", account.id)))
                             .label("Remove")
                             .on_click(cx.listener(move |this, _ev, _window, cx| {
-                                this.remove_account(id.clone(), cx);
+                                this.remove_account(id2.clone(), cx);
                             })),
                     ),
             );
