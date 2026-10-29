@@ -234,8 +234,14 @@ impl MainWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .text_size(px(if running { 24. } else { 28. }))
-                    .child(if running { "▶" } else { "🟩" }),
+                    .text_size(px(28.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0x9fdcb8))
+                    .child(if running {
+                        "▶".to_string()
+                    } else {
+                        name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".to_string())
+                    }),
             )
             .child(
                 div()
