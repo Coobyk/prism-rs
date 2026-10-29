@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     fn temp_paths() -> (Paths, tempfile_guard::TempDir) {
-        let dir = tempfile_guard::temp_dir();
+        let dir = tempfile_guard::TempDir::new();
         let paths = Paths { root: dir.path.clone() };
         (paths, dir)
     }

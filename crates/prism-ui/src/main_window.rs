@@ -50,7 +50,7 @@ impl MainWindow {
             .child(Button::new("accounts").label("Accounts"))
     }
 
-    fn render_instance_grid(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_instance_grid(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let app = self.app.clone();
         let instances: Vec<(String, String, Option<String>)> = {
             let app = app.read(cx);
@@ -69,7 +69,8 @@ impl MainWindow {
                 .items_center()
                 .justify_center()
                 .text_color(rgb(0x888888))
-                .child("Add an instance to get started");
+                .child("Add an instance to get started")
+                .into_any_element();
         }
 
         // Group instances, preserving group order then ungrouped.
@@ -111,7 +112,7 @@ impl MainWindow {
             }
             container = container.child(grid);
         }
-        container
+        container.into_any_element()
     }
 
     fn render_instance_tile(&self, id: String, name: String, cx: &mut Context<Self>) -> impl IntoElement {
