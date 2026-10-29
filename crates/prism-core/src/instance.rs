@@ -233,6 +233,60 @@ fn unique_dir_name(instances_dir: PathBuf, name: &str) -> PathBuf {
     candidate
 }
 
+/// Read the loader component from an instance's mmc-pack.json.
+pub fn loader_of(inst: &Instance) -> crate::loaders::Loader {
+    let pack_path = inst.root.join("mmc-pack.json");
+    let Ok(text) = std::fs::read_to_string(&pack_path) else {
+        return crate::loaders::Loader::None;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return crate::loaders::Loader::None;
+    };
+    for comp in v["components"].as_array().unwrap_or(&vec![]) {
+        let uid = comp["uid"].as_str().unwrap_or_default();
+        let ver = comp["version"].as_str().unwrap_or_default().to_string();
+        match uid {
+            "net.fabricmc.fabric-loader" => return crate::loaders::Loader::Fabric { version: ver },
+            "org.quiltmc.quilt-loader" => return crate::loaders::Loader::Quilt { version: ver },
+            "net.minecraftforge" => return crate::loaders::Loader::Forge { version: ver },
+            "net.neoforged" => return crate::loaders::Loader::NeoForge { version: ver },
+            _ => {}
+        }
+    }
+    crate::loaders::Loader::None
+}
+
+/// Set (or clear) the loader component in an instance's mmc-pack.json.
+pub fn set_loader(inst: &Instance, loader: &crate::loaders::Loader) -> std::io::Result<()> {
+    let pack_path = inst.root.join("mmc-pack.json");
+    let mut pack: serde_json::Value = std::fs::read_to_string(&pack_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or(serde_json::json!({"components": [], "formatVersion": 1}));
+
+    let components = pack["components"]
+        .as_array_mut()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "bad mmc-pack.json"))?;
+    let loader_uids = [
+        "net.fabricmc.fabric-loader",
+        "org.quiltmc.quilt-loader",
+        "net.minecraftforge",
+        "net.neoforged",
+    ];
+    components.retain(|c| !loader_uids.contains(&c["uid"].as_str().unwrap_or_default()));
+
+    let uid = loader.uid();
+    if let Some(version) = loader.version() {
+        components.push(serde_json::json!({
+            "uid": uid,
+            "version": version,
+            "important": true
+        }));
+    }
+    std::fs::write(pack_path, serde_json::to_string_pretty(&pack).unwrap_or_default())?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

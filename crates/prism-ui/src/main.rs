@@ -45,7 +45,21 @@ fn headless_prepare(version: &str) -> i32 {
     runtime.handle().block_on(async {
         println!("Fetching version metadata for {version}…");
         let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
-        let profile = prism_core::profile::LaunchProfile::from_mojang(&vd);
+        let mut profile = prism_core::profile::LaunchProfile::from_mojang(&vd);
+        // Loader overlay if the caller set PRISM_RS_LOADER (e.g. "0.16.14").
+        if let Ok(loader_version) = std::env::var("PRISM_RS_FABRIC") {
+            if !loader_version.is_empty() {
+                let loader = prism_core::loaders::Loader::Fabric { version: loader_version };
+                let lvd = prism_core::loaders::fetch_loader_profile(
+                    runtime.downloader.client(),
+                    &loader,
+                    version,
+                )
+                .await
+                .expect("loader profile fetch failed");
+                profile.apply_loader(&lvd);
+            }
+        }
         println!(
             "mainClass: {}\nlibraries: {} (+{} natives)\nassets: {}\njava: {:?}",
             profile.main_class,

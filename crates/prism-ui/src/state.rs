@@ -168,7 +168,21 @@ impl App {
                     return;
                 }
             };
-            let profile = prism_core::profile::LaunchProfile::from_mojang(&version_data);
+            let mut profile = prism_core::profile::LaunchProfile::from_mojang(&version_data);
+
+            // 1b. Loader component overlay (Fabric/Quilt).
+            let loader = prism_core::instance::loader_of(&inst);
+            if !matches!(loader, prism_core::loaders::Loader::None) {
+                log_lock(&log).push(format!("Fetching loader profile: {loader:?}"));
+                match prism_core::loaders::fetch_loader_profile(downloader.client(), &loader, &settings.mc_version).await {
+                    Ok(lvd) => profile.apply_loader(&lvd),
+                    Err(e) => {
+                        log_lock(&log).push(format!("Fatal: loader profile fetch failed: {e}"));
+                        state_lock(&state, |s| *s = InstanceRunState::Crashed(format!("loader: {e}")));
+                        return;
+                    }
+                }
+            }
             log_lock(&log).push(format!(
                 "Resolved profile: mainClass={}, libraries={}, natives={}",
                 profile.main_class,

@@ -99,6 +99,27 @@ impl LaunchProfile {
     pub fn is_legacy(&self) -> bool {
         self.legacy_arguments.is_some() || self.main_class.contains("minecraft.server.MinecraftServer")
     }
+
+    /// Overlay a loader profile (Fabric/Quilt `profile/json`): its main
+    /// class, libraries and arguments are applied on top of the Mojang base.
+    pub fn apply_loader(&mut self, loader_vd: &VersionData) {
+        let features = BTreeMap::new();
+        self.main_class = loader_vd.main_class.clone();
+
+        for lib in &loader_vd.libraries {
+            if meta::rules_allow(&lib.rules, &features) {
+                push_library(lib, &mut self.libraries, &mut self.natives);
+            }
+        }
+
+        // Merge the loader's structured arguments after the base ones.
+        if let Some(loader_args) = &loader_vd.arguments {
+            let base = self.modern_arguments.get_or_insert_with(Default::default);
+            base.jvm.extend(loader_args.jvm.iter().cloned());
+            base.game.extend(loader_args.game.iter().cloned());
+        }
+        // Loader profiles never carry legacy string args.
+    }
 }
 
 fn push_library(lib: &MoLibrary, libraries: &mut Vec<ResolvedLibrary>, natives: &mut Vec<ResolvedLibrary>) {

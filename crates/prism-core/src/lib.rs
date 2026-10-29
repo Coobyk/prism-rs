@@ -10,6 +10,7 @@ pub mod ini;
 pub mod instance;
 pub mod java;
 pub mod launch;
+pub mod loaders;
 pub mod meta;
 pub mod modplatform;
 pub mod net;
