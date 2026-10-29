@@ -17,6 +17,7 @@ pub enum InstanceRunState {
     Finished,
 }
 
+#[derive(Clone)]
 pub struct RunningInstance {
     pub log: Arc<Mutex<Vec<String>>>,
     pub state: Arc<Mutex<InstanceRunState>>,
@@ -188,51 +189,56 @@ impl App {
             log_lock(&log).push(format!("Command: {}", prepared.command.join(" ")));
             match prepared.spawn() {
                 Ok(mut child) => {
-                    *pid_lock(&running.pid) = child.id();
+                    *pid_lock(&running.pid) = Some(child.id());
                     state_lock(&state, |s| *s = InstanceRunState::Running);
-                    log_lock(&log).push(format!("Minecraft process ID: {}", child.id().unwrap_or(0)));
+                    log_lock(&log).push(format!("Minecraft process ID: {}", child.id()));
 
-                    // Pump stdout/stderr into the log.
+                    // Pump stdout/stderr into the log (std threads: the child
+                    // handles are plain std::process).
                     if let Some(stdout) = child.stdout.take() {
                         let log2 = log.clone();
-                        tokio::spawn(async move {
-                            use tokio::io::AsyncBufReadExt;
-                            let reader = tokio::io::BufReader::new(stdout);
-                            let mut lines = reader.lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
+                        std::thread::spawn(move || {
+                            use std::io::BufRead;
+                            let reader = std::io::BufReader::new(stdout);
+                            for line in reader.lines().map_while(Result::ok) {
                                 log_lock(&log2).push(line);
                             }
                         });
                     }
                     if let Some(stderr) = child.stderr.take() {
                         let log2 = log.clone();
-                        tokio::spawn(async move {
-                            use tokio::io::AsyncBufReadExt;
-                            let reader = tokio::io::BufReader::new(stderr);
-                            let mut lines = reader.lines();
-                            while let Ok(Some(line)) = lines.next_line().await {
+                        std::thread::spawn(move || {
+                            use std::io::BufRead;
+                            let reader = std::io::BufReader::new(stderr);
+                            for line in reader.lines().map_while(Result::ok) {
                                 log_lock(&log2).push(line);
                             }
                         });
                     }
 
-                    let status = child.wait().await;
-                    match status {
-                        Ok(code) if code.success() => {
-                            state_lock(&state, |s| *s = InstanceRunState::Finished);
-                            log_lock(&log).push("Game exited normally".to_string());
+                    // Wait on a dedicated thread so the async task returns.
+                    let log2 = log.clone();
+                    let state2 = state.clone();
+                    let pid2 = running.pid.clone();
+                    std::thread::spawn(move || {
+                        let status = child.wait();
+                        match status {
+                            Ok(code) if code.success() => {
+                                state_lock(&state2, |s| *s = InstanceRunState::Finished);
+                                log_lock(&log2).push("Game exited normally".to_string());
+                            }
+                            Ok(code) => {
+                                let e = format!("exit code {code}");
+                                state_lock(&state2, |s| *s = InstanceRunState::Crashed(e.clone()));
+                                log_lock(&log2).push(format!("Game crashed: {e}"));
+                            }
+                            Err(e) => {
+                                state_lock(&state2, |s| *s = InstanceRunState::Crashed(e.to_string()));
+                                log_lock(&log2).push(format!("Process error: {e}"));
+                            }
                         }
-                        Ok(code) => {
-                            let e = format!("exit code {code}");
-                            state_lock(&state, |s| *s = InstanceRunState::Crashed(e.clone()));
-                            log_lock(&log).push(format!("Game crashed: {e}"));
-                        }
-                        Err(e) => {
-                            state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
-                            log_lock(&log).push(format!("Process error: {e}"));
-                        }
-                    }
-                    *pid_lock(&running.pid) = None;
+                        *pid_lock(&pid2) = None;
+                    });
                 }
                 Err(e) => {
                     let msg = format!("Could not launch Minecraft: {e}");

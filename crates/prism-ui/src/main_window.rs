@@ -14,7 +14,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::*;
 
 pub struct MainWindow {
-    app: gpui::Entity<App>,
+    pub app: gpui::Entity<App>,
     pub create_dialog: Option<CreateInstanceState>,
     console_open: bool,
     console_filter: String,
