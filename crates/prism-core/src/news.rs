@@ -37,12 +37,7 @@ fn first_link_href(xml: &str) -> Option<String> {
 
 fn all_entries(xml: &str) -> Vec<NewsEntry> {
     // Atom (<entry>) and RSS (<item>) both supported.
-    let (tag, items) = if xml.contains("<entry>") {
-        ("entry", true)
-    } else {
-        ("item", true)
-    };
-    let _ = items;
+    let tag = if xml.contains("<entry>") { "entry" } else { "item" };
     let open = format!("<{tag}>");
     let close = format!("</{tag}>");
     let mut out = Vec::new();
@@ -61,17 +56,30 @@ fn all_entries(xml: &str) -> Vec<NewsEntry> {
             .or_else(|| first_element(item, "updated"))
             .unwrap_or_default();
         out.push(NewsEntry {
-            title: first_element(item, "title").unwrap_or_default(),
+            title: strip_cdata(&first_element(item, "title").unwrap_or_default()),
             link,
             pub_date: date,
             content: first_element(item, "description")
                 .or_else(|| first_element(item, "content:encoded"))
                 .or_else(|| first_element(item, "content"))
+                .map(|c| strip_cdata(&c))
                 .unwrap_or_default(),
         });
         rest = &rest[item_end..];
     }
     out
+}
+
+/// Unwrap `<![CDATA[...]]>` wrappers, which many feeds use.
+fn strip_cdata(text: &str) -> String {
+    let mut out = text.to_string();
+    while let Some(start) = out.find("<![CDATA[") {
+        let Some(rel_end) = out[start..].find("]]>") else { break };
+        let end = start + rel_end;
+        let inner = out[start + 9..end].to_string();
+        out = format!("{}{}{}", &out[..start], inner, &out[end + 3..]);
+    }
+    out.trim().to_string()
 }
 
 /// Fetch and parse the news feed. Offline-safe: returns an empty list on
@@ -115,5 +123,12 @@ mod tests {
         assert_eq!(items[0].title, "Release 1");
         assert_eq!(items[0].link, "https://prismlauncher.org/r1");
         assert_eq!(items[0].content, "News body");
+    }
+
+    #[test]
+    fn strips_cdata() {
+        let xml = r#"<feed><entry><title><![CDATA[Prism Launcher 11.1]]></title></entry></feed>"#;
+        let items = all_entries(xml);
+        assert_eq!(items[0].title, "Prism Launcher 11.1");
     }
 }

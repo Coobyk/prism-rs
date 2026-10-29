@@ -3,7 +3,7 @@
 
 use crate::state::App;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 
@@ -121,7 +121,6 @@ impl Render for SettingsWindow {
                     .gap_3()
                     .child(
                         Button::new("apply-settings")
-                            .primary()
                             .label("Apply")
                             .on_click(cx.listener(Self::apply)),
                     )

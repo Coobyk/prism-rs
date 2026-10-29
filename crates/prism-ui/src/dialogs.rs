@@ -2,7 +2,6 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
@@ -168,7 +167,6 @@ impl CreateInstanceState {
                 )
                 .child(
                     gpui_kit::component::button::Button::new("ok")
-                        .primary()
                         .label("OK")
                         .on_click(cx.listener(confirm_create)),
                 ),
@@ -319,7 +317,6 @@ impl PromptState {
                 )
                 .child(
                     Button::new("prompt-ok")
-                        .primary()
                         .label("OK")
                         .on_click(cx.listener(confirm_prompt)),
                 ),
