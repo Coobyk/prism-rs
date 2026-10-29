@@ -1,5 +1,6 @@
 //! prism-rs: PrismLauncher rewritten in Rust with GPUI.
 
+mod accounts_window;
 mod dialogs;
 mod instance_window;
 mod main_window;

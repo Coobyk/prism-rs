@@ -75,8 +75,16 @@ impl MainWindow {
             .child(
                 Button::new("accounts")
                     .label(self.accounts_button_label(cx))
-                    .on_click(cx.listener(Self::on_cycle_account)),
+                    .on_click(cx.listener(Self::on_open_accounts)),
             )
+    }
+
+    fn on_open_accounts(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let app = self.app.clone();
+        open_window(WindowOptions::default(), cx, |_window, cx| {
+            cx.new(|_| crate::accounts_window::AccountsWindow::new(app.clone()))
+        })
+        .ok();
     }
 
     fn accounts_button_label(&self, cx: &Context<Self>) -> String {
