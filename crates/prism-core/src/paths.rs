@@ -11,12 +11,17 @@ pub struct Paths {
 
 impl Paths {
     pub fn new() -> Paths {
-        let root = std::env::var_os("PRISM_RS_DATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                dirs_data().join("prismlauncher-rs")
-            });
-        Paths { root }
+        // Explicit override, then auto-detect an existing PrismLauncher
+        // install so its instances, icons and settings are used in place.
+        if let Some(root) = std::env::var_os("PRISM_RS_DATA").map(PathBuf::from) {
+            return Paths { root };
+        }
+        for candidate in self::prism_data_candidates() {
+            if candidate.join("instances").is_dir() {
+                return Paths { root: candidate };
+            }
+        }
+        Paths { root: dirs_data().join("prismlauncher-rs") }
     }
 
     pub fn instances_dir(&self) -> PathBuf {
@@ -101,4 +106,21 @@ fn dirs_data() -> PathBuf {
         }
     }
     PathBuf::from(".")
+}
+
+/// Known data-directory locations of PrismLauncher itself, in probe order.
+fn prism_data_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        out.push(home.join(".local/share/PrismLauncher"));
+        out.push(home.join(".local/share/prismlauncher"));
+        out.push(home.join(".var/app/org.prismlauncher.PrismLauncher/data/PrismLauncher"));
+        #[cfg(target_os = "macos")]
+        out.push(home.join("Library/Application Support/PrismLauncher"));
+    }
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        out.push(PathBuf::from(xdg).join("PrismLauncher"));
+    }
+    out
 }

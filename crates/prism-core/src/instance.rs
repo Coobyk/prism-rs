@@ -44,9 +44,15 @@ impl Instance {
         })
     }
 
-    /// The Minecraft game directory (`gameRoot`, `.minecraft` unless overridden).
+    /// The Minecraft game directory. PrismLauncher (and MultiMC) use
+    /// `minecraft` on Linux/Windows; older layouts may have `.minecraft`.
     pub fn game_root(&self) -> PathBuf {
-        self.root.join(".minecraft")
+        let mc = self.root.join("minecraft");
+        if mc.is_dir() {
+            mc
+        } else {
+            self.root.join(".minecraft")
+        }
     }
 
     pub fn mods_dir(&self) -> PathBuf {
@@ -168,7 +174,7 @@ impl InstanceList {
         mc_version: &str,
     ) -> Result<Instance, std::io::Error> {
         let dir = unique_dir_name(paths.instances_dir(), name);
-        std::fs::create_dir_all(dir.join(".minecraft"))?;
+        std::fs::create_dir_all(dir.join("minecraft"))?;
 
         let mut inst = Instance {
             id: dir.file_name().unwrap().to_string_lossy().to_string(),

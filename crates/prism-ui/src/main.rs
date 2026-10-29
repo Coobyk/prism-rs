@@ -25,6 +25,10 @@ fn main() {
         let code = headless_import(&args[2]);
         std::process::exit(code);
     }
+    if args.len() >= 2 && args[1] == "instances" {
+        let code = headless_instances();
+        std::process::exit(code);
+    }
     if args.len() >= 3 && args[1] == "prepare" {
         let code = headless_prepare(&args[2]);
         std::process::exit(code);
@@ -48,6 +52,56 @@ fn main() {
             })
             .expect("failed to open main window");
         });
+}
+
+fn headless_instances() -> i32 {
+    let paths = prism_core::Paths::new();
+    println!("Data root: {}", paths.root.display());
+    match prism_core::InstanceList::load(&paths) {
+        Ok(list) => {
+            if list.instances.is_empty() {
+                println!("No instances found.");
+            }
+            for inst in &list.instances {
+                let loader = prism_core::instance::loader_of(inst);
+                let mc = prism_core::launch::LaunchSettings::for_instance(inst, &paths).mc_version;
+                let group = inst.group.clone().unwrap_or_else(|| "-".to_string());
+                let java = prism_core::launch::LaunchSettings::for_instance(inst, &paths)
+                    .java_path
+                    .display()
+                    .to_string();
+                println!(
+                    "- {:?} (mc {}, {:?}, group {}, game dir: {})",
+                    inst.name,
+                    mc,
+                    loader,
+                    group,
+                    inst.game_root().display()
+                );
+                println!("  java: {java}");
+                let mods = prism_core::resources::scan_folder(
+                    &inst.mods_dir(),
+                    prism_core::modplatform::ResourceType::Mod,
+                );
+                if !mods.is_empty() {
+                    println!("  mods ({}):", mods.len());
+                    for m in mods.iter().take(10) {
+                        println!(
+                            "    {} {} {:?}",
+                            m.title.clone().unwrap_or_else(|| m.file_name.clone()),
+                            m.version.clone().unwrap_or_default(),
+                            m.loader
+                        );
+                    }
+                }
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("Failed to scan instances: {e}");
+            1
+        }
+    }
 }
 
 fn headless_import(path: &str) -> i32 {

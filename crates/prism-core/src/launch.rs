@@ -113,7 +113,7 @@ impl LaunchSettings {
                 self.java_path = PathBuf::from(v);
             }
         }
-        if let Some(v) = cfg.get("jvmArgs") {
+        if let Some(v) = cfg.get("JvmArgs").or_else(|| cfg.get("jvmArgs")) {
             if !v.is_empty() {
                 self.extra_jvm_args = v.split_whitespace().map(String::from).collect();
             }
@@ -139,7 +139,11 @@ fn default_version_for(inst: &crate::instance::Instance) -> String {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
             for comp in v["components"].as_array().unwrap_or(&vec![]) {
                 if comp["uid"] == "net.minecraft" {
-                    return comp["version"].as_str().unwrap_or("1.20.1").to_string();
+                    return comp["version"]
+                        .as_str()
+                        .or_else(|| comp["cachedVersion"].as_str())
+                        .unwrap_or("1.20.1")
+                        .to_string();
                 }
             }
         }
