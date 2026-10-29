@@ -8,6 +8,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use prism_core::modplatform::{LocalResource, ResourceType};
 use prism_core::Instance;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
@@ -16,6 +17,7 @@ pub enum Page {
     Mods,
     ResourcePacks,
     ShaderPacks,
+    BrowseMods,
     Notes,
     Settings,
     Worlds,
@@ -30,6 +32,7 @@ impl Page {
             Page::Mods => "Mods",
             Page::ResourcePacks => "Resource Packs",
             Page::ShaderPacks => "Shader Packs",
+            Page::BrowseMods => "Browse Mods (Modrinth)",
             Page::Notes => "Notes",
             Page::Settings => "Settings",
             Page::Worlds => "Worlds",
@@ -42,6 +45,7 @@ impl Page {
             Page::Log,
             Page::Version,
             Page::Mods,
+            Page::BrowseMods,
             Page::ResourcePacks,
             Page::ShaderPacks,
             Page::Worlds,
@@ -56,6 +60,12 @@ pub struct InstanceWindow {
     pub app: gpui::Entity<App>,
     pub instance_id: String,
     pub page: Page,
+    // Modrinth browse state.
+    search_input: Option<gpui::Entity<gpui_kit::component::input::InputState>>,
+    search_results: Arc<std::sync::Mutex<Vec<prism_core::modplatform::modrinth::SearchResult>>>,
+    search_handle: Option<tokio::task::JoinHandle<Result<Vec<prism_core::modplatform::modrinth::SearchResult>, String>>>,
+    search_status: Arc<std::sync::Mutex<String>>,
+    installing: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
 }
 
 impl InstanceWindow {
@@ -64,7 +74,130 @@ impl InstanceWindow {
             app,
             instance_id,
             page: Page::Log,
+            search_input: None,
+            search_results: Arc::new(std::sync::Mutex::new(Vec::new())),
+            search_handle: None,
+            search_status: Arc::new(std::sync::Mutex::new(String::new())),
+            installing: Arc::new(std::sync::Mutex::new(Default::default())),
         }
+    }
+
+    fn start_search(&mut self, query: &str, cx: &mut Context<Self>) {
+        let app = self.app.read(cx);
+        let runtime = app.runtime.clone();
+        let Some(inst) = app.instances.get(&self.instance_id).cloned() else {
+            return;
+        };
+        drop(app);
+        let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &self.app.read(cx).paths).mc_version;
+        let loader = prism_core::instance::loader_of(&inst);
+        let loader_name = match loader {
+            prism_core::loaders::Loader::Fabric { .. } => Some("fabric"),
+            prism_core::loaders::Loader::Quilt { .. } => Some("quilt"),
+            prism_core::loaders::Loader::Forge { .. } => Some("forge"),
+            prism_core::loaders::Loader::NeoForge { .. } => Some("neoforge"),
+            prism_core::loaders::Loader::None => None,
+        };
+
+        let results = self.search_results.clone();
+        let status = self.search_status.clone();
+        *status.lock().unwrap_or_else(|p| p.into_inner()) = "Searching…".to_string();
+        let query = query.to_string();
+        self.search_handle = Some(runtime.spawn(async move {
+            let api = prism_core::modplatform::modrinth::ModrinthApi::with_client(
+                prism_core::net::Downloader::new().client().clone(),
+            );
+            match api.search(&query, prism_core::modplatform::ResourceType::Mod, Some(&mc_version), 25).await {
+                Ok(resp) => Ok(resp.hits),
+                Err(e) => Err(e.to_string()),
+            }
+            .map_err(|e: String| {
+                status.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                e
+            })
+        }));
+        let _ = loader_name;
+        cx.notify();
+    }
+
+    fn poll_search(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = &self.search_handle {
+            if handle.is_finished() {
+                let handle = self.search_handle.take().unwrap();
+                let results = self.search_results.clone();
+                let status = self.search_status.clone();
+                match self.app.read(cx).runtime.block_on(handle) {
+                    Ok(Ok(hits)) => {
+                        *results.lock().unwrap_or_else(|p| p.into_inner()) = hits;
+                        *status.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
+                    }
+                    Ok(Err(e)) => {
+                        *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Search failed: {e}");
+                    }
+                    Err(e) => {
+                        *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Search failed: {e}");
+                    }
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    fn install_mod(&mut self, project: prism_core::modplatform::modrinth::SearchResult, cx: &mut Context<Self>) {
+        let app = self.app.read(cx);
+        let runtime = app.runtime.clone();
+        let downloader = app.runtime.downloader.clone();
+        let Some(inst) = app.instances.get(&self.instance_id).cloned() else {
+            return;
+        };
+        let paths = app.paths.clone();
+        drop(app);
+
+        let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &paths).mc_version;
+        let loader = prism_core::instance::loader_of(&inst);
+        let loader_name = match loader {
+            prism_core::loaders::Loader::Fabric { .. } => "fabric",
+            prism_core::loaders::Loader::Quilt { .. } => "quilt",
+            prism_core::loaders::Loader::Forge { .. } => "forge",
+            prism_core::loaders::Loader::NeoForge { .. } => "neoforge",
+            prism_core::loaders::Loader::None => "",
+        };
+        let loaders: Vec<&str> = if loader_name.is_empty() { vec![] } else { vec![loader_name] };
+
+        let slug = project.slug.clone();
+        let title = project.title.clone();
+        {
+            let mut installing = self.installing.lock().unwrap_or_else(|p| p.into_inner());
+            if installing.contains(&slug) {
+                return;
+            }
+            installing.insert(slug.clone());
+        }
+
+        let status = self.search_status.clone();
+        let installing = self.installing.clone();
+        runtime.spawn(async move {
+            let api = prism_core::modplatform::modrinth::ModrinthApi::with_client(
+                prism_core::net::Downloader::new().client().clone(),
+            );
+            let result = async {
+                let versions = api.versions(&project.project_id, &loaders, &[&mc_version]).await?;
+                let version = versions.first().ok_or_else(|| prism_core::modplatform::PlatformError::Request("no compatible version".into()))?;
+                let file = api.primary_file(version).ok_or_else(|| prism_core::modplatform::PlatformError::Request("no file".into()))?.clone();
+                let game_root = inst.game_root();
+                api.install_file(&downloader, &game_root, &file, prism_core::modplatform::ResourceType::Mod).await?;
+                Ok::<(), prism_core::modplatform::PlatformError>(())
+            }.await;
+            match result {
+                Ok(()) => {
+                    *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Installed {title}");
+                }
+                Err(e) => {
+                    *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Install failed: {e}");
+                }
+            }
+            installing.lock().unwrap_or_else(|p| p.into_inner()).remove(&slug);
+        });
     }
 
     fn instance(&self, cx: &Context<Self>) -> Instance {
@@ -147,6 +280,7 @@ impl InstanceWindow {
             Page::Settings => self.render_settings_page(cx),
             Page::Worlds => self.render_worlds_page(cx),
             Page::Screenshots => self.render_screenshots_page(cx),
+            Page::BrowseMods => self.render_browse_mods_page(cx),
         }
     }
 
@@ -327,8 +461,113 @@ impl InstanceWindow {
             .into_any_element()
     }
 
+    fn render_browse_mods_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        self.poll_search(cx);
+        let inst = self.instance(cx);
+        let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &self.app.read(cx).paths).mc_version;
+
+        // Lazily create the search input (needs a window; done in render()).
+        let Some(input) = self.search_input.clone() else {
+            return div().into_any_element();
+        };
+        let query = input.read(cx).value().to_string();
+
+        let status = self.search_status.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let results = self.search_results.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let installing = self.installing.lock().unwrap_or_else(|p| p.into_inner()).clone();
+
+        let mut panel = div()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .child(self.page_header(cx, format!("Modrinth • Minecraft {mc_version}")).into_any_element());
+
+        let mut search_row = div().flex().gap_2().p_2().items_center();
+        search_row = search_row
+            .child(div().flex_1().child(gpui_kit::component::input::Input::new(&input)))
+            .child(
+                Button::new("modrinth-search")
+                    .label("Search")
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        let q = this
+                            .search_input
+                            .as_ref()
+                            .map(|i| i.read(cx).value().to_string())
+                            .unwrap_or_default();
+                        if !q.trim().is_empty() {
+                            this.start_search(&q, cx);
+                        }
+                    })),
+            );
+        panel = panel.child(search_row);
+
+        if !status.is_empty() {
+            panel = panel.child(
+                div()
+                    .px_3()
+                    .text_size(px(12.))
+                    .text_color(rgb(0x8fb4d9))
+                    .child(status),
+            );
+        }
+
+        let mut list = div()
+            .id("modrinth-list")
+            .flex_1()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .p_2();
+        for r in &results {
+            let slug = r.slug.clone();
+            let is_installing = installing.contains(&slug);
+            let project = r.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(0x2b2b2b))
+                    .rounded_md()
+                    .child(
+                        div()
+                            .flex_1()
+                            .flex()
+                            .flex_col()
+                            .child(div().text_ellipsis().child(r.title.clone()))
+                            .child(
+                                div()
+                                    .text_size(px(10.))
+                                    .text_color(rgb(0x888888))
+                                    .text_ellipsis()
+                                    .child(r.description.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(10.))
+                            .text_color(rgb(0x666666))
+                            .child(format!("{} downloads", r.downloads)),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("install-{slug}")))
+                            .label(if is_installing { "Installing…" } else { "Install" })
+                            .disabled(is_installing)
+                            .on_click(cx.listener(move |this, _ev, _window, _cx| {
+                                this.install_mod(project.clone(), _cx);
+                            })),
+                    ),
+            );
+        }
+        panel = panel.child(list);
+        panel.into_any_element()
+    }
+
     fn render_notes_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let notes = self.instance(cx).notes;
         div()
             .flex_1()
             .flex()
@@ -467,7 +706,14 @@ impl InstanceWindow {
 }
 
 impl Render for InstanceWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.search_input.is_none() {
+            self.search_input =
+                Some(cx.new(|cx| {
+                    gpui_kit::component::input::InputState::new(window, cx)
+                        .placeholder("Search Modrinth…")
+                }));
+        }
         let running = matches!(
             self.app.read(cx).run_state(&self.instance_id),
             InstanceRunState::Running | InstanceRunState::Preparing
