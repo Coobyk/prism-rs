@@ -160,6 +160,8 @@ pub enum LaunchError {
     VersionNotFound(String),
     #[error("zip: {0}")]
     Zip(String),
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// A fully prepared launch: resolved command line, ready to spawn.
@@ -218,6 +220,15 @@ impl Launcher {
             tokio::fs::create_dir_all(parent).await?;
         }
         let _ = tokio::fs::write(&cache_path, serde_json::to_vec(&json).unwrap_or_default()).await;
+        // Keep the client-jar download URL alongside the cached metadata.
+        if let Some(url) = json["downloads"]["client"]["url"].as_str() {
+            let url_path = self
+                .paths
+                .metadata_dir()
+                .join("net.minecraft")
+                .join(format!("{version_id}.client-url"));
+            let _ = tokio::fs::write(&url_path, url).await;
+        }
         Ok(vd)
     }
 
@@ -228,18 +239,15 @@ impl Launcher {
         // Client jar.
         let client_jar = self.client_jar_path(&profile.minecraft_version);
         if !client_jar.exists() {
-            let vd = self.version_data_cache(&profile.minecraft_version);
-            let client_url = vd
-                .as_ref()
-                .and_then(|v| serde_json::to_value(v).ok())
-                .and_then(|_| None::<String>); // resolved in fetch_version_data below
-            let _ = client_url;
-            // The client download URL lives in the raw version json; keep a
-            // copy of it when caching (see cache_version_raw).
             let url = self
                 .cached_client_url(&profile.minecraft_version)
                 .await
-                .unwrap_or_else(|| format!("https://s3.amazonaws.com/Minecraft.Download/versions/{0}/{0}.jar", profile.minecraft_version));
+                .unwrap_or_else(|| {
+                    format!(
+                        "https://s3.amazonaws.com/Minecraft.Download/versions/{0}/{0}.jar",
+                        profile.minecraft_version
+                    )
+                });
             self.downloader
                 .download(&DownloadRequest::new(url, &client_jar))
                 .await?;
