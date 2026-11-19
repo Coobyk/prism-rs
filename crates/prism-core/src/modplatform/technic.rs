@@ -565,12 +565,8 @@ pub fn apply_forge_patch(
     let jar = game.join("bin/modpack.jar");
     let bundled_root = instance.canonicalize()?.join(BUNDLED_LIBRARIES);
     let library_root = game.join("libraries");
-    let (libraries, natives) = (profile.libraries.len(), profile.natives.len());
-    profile.apply_loader(&patch);
-    for library in profile.libraries[libraries..]
-        .iter_mut()
-        .chain(&mut profile.natives[natives..])
-    {
+    let (libraries, natives) = profile.apply_loader_with_libraries(&patch);
+    for library in libraries.iter_mut().chain(natives) {
         if bundled_forge(&library.spec) {
             let embedded = bundled_root.join(checked_maven_path(&library.spec)?);
             library.path = if embedded.is_file() {
