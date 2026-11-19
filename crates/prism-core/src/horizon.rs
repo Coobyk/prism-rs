@@ -44,7 +44,7 @@ pub enum HorizonError {
     Json(#[from] serde_json::Error),
     #[error("Horizon launcher did not return a valid Horizon instance")]
     InvalidInstance,
-    #[error("Horizon instance {0:?} was not found at its linked game folder. Check it in the Horizon launcher.")]
+    #[error("Horizon instance {0:?} was not found. Check it in the Horizon launcher.")]
     MissingInstance(String),
     #[error("Cannot verify the Prism link for Horizon instance {0:?}. The instance may have been replaced, or the link may predate identity checks.")]
     UnverifiedLink(String),
@@ -77,11 +77,10 @@ impl HorizonLauncher {
         Ok(instances)
     }
 
-    pub fn play(&self, id: &str, home: &Path, token: Option<uuid::Uuid>) -> Result<Child, HorizonError> {
-        if !self.list()?.iter().any(|instance| instance.id == id && instance.home == home) {
-            return Err(HorizonError::MissingInstance(id.to_string()));
-        }
-        let found = std::fs::read_to_string(home.join(LINK_MARKER))
+    pub fn play(&self, id: &str, token: Option<uuid::Uuid>) -> Result<(Child, PathBuf), HorizonError> {
+        let instance = self.list()?.into_iter().find(|instance| instance.id == id)
+            .ok_or_else(|| HorizonError::MissingInstance(id.to_string()))?;
+        let found = std::fs::read_to_string(instance.home.join(LINK_MARKER))
             .ok()
             .and_then(|text| text.parse().ok());
         if token.is_none() || found != token {
@@ -94,6 +93,7 @@ impl HorizonLauncher {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
+            .map(|child| (child, instance.home))
             .map_err(|source| self.start_error(source))
     }
 
@@ -188,7 +188,9 @@ esac
         assert_eq!(listed[0].id, instance.id);
 
         let token = mark_link(&instance.home).unwrap();
-        let output = launcher.play(&instance.id, &instance.home, Some(token)).unwrap().wait_with_output().unwrap();
+        let (child, home) = launcher.play(&instance.id, Some(token)).unwrap();
+        assert_eq!(home, instance.home);
+        let output = child.wait_with_output().unwrap();
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(String::from_utf8(output.stderr).unwrap().trim(), "error: Sign in with a Microsoft account");
     }
@@ -200,7 +202,7 @@ esac
         let error = launcher.create("wrong argument").unwrap_err().to_string();
         assert!(error.contains("exit status: 2"));
         assert!(error.contains("Horizon rejected the instance name"));
-        let error = launcher.play("a-name", Path::new("/different-home"), Some(uuid::Uuid::new_v4())).unwrap_err();
+        let error = launcher.play("missing", Some(uuid::Uuid::new_v4())).unwrap_err();
         assert!(matches!(error, HorizonError::MissingInstance(_)));
 
         fs::remove_file(&fake.0).unwrap();
@@ -219,7 +221,23 @@ esac
         mark_link(&fake.1).unwrap();
 
         for token in [Some(token), None] {
-            assert!(matches!(launcher.play("a-name", &fake.1, token), Err(HorizonError::UnverifiedLink(_))));
+            assert!(matches!(launcher.play("a-name", token), Err(HorizonError::UnverifiedLink(_))));
         }
+    }
+
+    #[test]
+    fn moved_home_is_resolved_by_its_link_token() {
+        let fake = FakeLauncher::new();
+        let launcher = fake.launcher();
+        let token = mark_link(&fake.1).unwrap();
+        let moved = fake.1.with_file_name("moved home");
+        fs::rename(&fake.1, &moved).unwrap();
+        fs::write(fake.1.with_file_name("list.json"), serde_json::json!([
+            {"id":"a-name","name":"A name with spaces","home":moved,"java":null}
+        ]).to_string()).unwrap();
+
+        let (child, home) = launcher.play("a-name", Some(token)).unwrap();
+        assert_eq!(home, moved);
+        assert_eq!(child.wait_with_output().unwrap().status.code(), Some(1));
     }
 }

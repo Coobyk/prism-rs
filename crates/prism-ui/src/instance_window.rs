@@ -357,7 +357,7 @@ impl InstanceWindow {
                         .disabled(running)
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             let id = this.instance_id.clone();
-                            this.app.update(cx, |app, _cx| app.start_launch(&id));
+                            this.app.update(cx, |app, cx| app.start_launch(&id, cx));
                             cx.notify();
                         })),
                 ),

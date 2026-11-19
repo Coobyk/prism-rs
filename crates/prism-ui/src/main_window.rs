@@ -256,9 +256,9 @@ impl MainWindow {
             }))
             .on_double_click(cx.listener(move |this, _event, _window, cx| {
                 let id = id2.clone();
-                this.app.update(cx, |app, _cx| {
+                this.app.update(cx, |app, cx| {
                     app.selected = Some(id.clone());
-                    app.start_launch(&id);
+                    app.start_launch(&id, cx);
                 });
                 cx.notify();
             }))
@@ -443,7 +443,7 @@ impl MainWindow {
         let id = self.app.read(cx).selected.clone();
         if let Some(id) = id {
             self.console_open = true;
-            self.app.update(cx, |app, _cx| app.start_launch(&id));
+            self.app.update(cx, |app, cx| app.start_launch(&id, cx));
         }
         cx.notify();
     }

@@ -158,7 +158,7 @@ impl App {
 
     /// Kick off launching the instance. The heavy lifting runs on the core
     /// tokio runtime; progress lands in `running[id]`.
-    pub fn start_launch(&mut self, id: &str) {
+    pub fn start_launch(&mut self, id: &str, cx: &mut gpui_kit::Context<Self>) {
         if self.is_running(id) {
             return;
         }
@@ -171,11 +171,35 @@ impl App {
         if let InstanceKind::Horizon { id, home, token } = inst.kind {
             let config = self.paths.global_config();
             log_lock(&running.log).push(format!("Launching Horizon instance {:?}", inst.name));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let log = running.log.clone();
             self.runtime.handle().spawn_blocking(move || {
                 let settings = prism_core::settings::Settings::load(&config);
                 let launcher = HorizonLauncher::from_settings(&settings);
-                monitor_launch(running, "Horizon", launcher.play(&id, &home, token));
+                let result = launcher.play(&id, token).map(|(child, current_home)| {
+                    if home != current_home {
+                        let _ = tx.send(current_home);
+                    }
+                    child
+                });
+                monitor_launch(running, "Horizon", result);
             });
+            cx.spawn(async move |this, cx| {
+                if let Ok(current_home) = rx.await {
+                    let _ = this.update(cx, |app, cx| {
+                        let Some(instance) = app.instances.get_mut(&inst.id) else { return };
+                        let InstanceKind::Horizon { home, token: current_token, .. } = &mut instance.kind else { return };
+                        if *current_token != token {
+                            return;
+                        }
+                        *home = current_home;
+                        if let Err(error) = instance.save() {
+                            log_lock(&log).push(format!("Could not save the moved Horizon game folder: {error}"));
+                        }
+                        cx.notify();
+                    });
+                }
+            }).detach();
             return;
         }
 
