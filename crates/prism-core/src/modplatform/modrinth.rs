@@ -2,10 +2,11 @@
 //! `.mrpack` modpack import. Mirrors `launcher/modplatform/modrinth/`.
 
 use super::{install_path, PlatformError, ResourceType};
+use crate::datapacks::World;
 use crate::loaders::Loader;
 use crate::net::{DownloadRequest, Downloader};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const API_BASE: &str = "https://api.modrinth.com/v2";
@@ -17,6 +18,8 @@ pub struct SearchResult {
     pub description: String,
     pub project_id: String,
     pub project_type: String,
+    #[serde(default)]
+    pub categories: Vec<String>,
     #[serde(default)]
     pub icon_url: Option<String>,
     #[serde(default)]
@@ -60,6 +63,17 @@ pub struct ModFile {
 
 pub struct ModrinthApi {
     http: reqwest::Client,
+}
+
+pub struct StagedDataPack {
+    _directory: tempfile::TempDir,
+    path: PathBuf,
+}
+
+impl StagedDataPack {
+    pub fn install(self, world: &World) -> std::io::Result<()> {
+        world.add_zip(&self.path)
+    }
 }
 
 impl ModrinthApi {
@@ -158,6 +172,9 @@ impl ModrinthApi {
         file: &ModFile,
         resource_type: ResourceType,
     ) -> Result<std::path::PathBuf, PlatformError> {
+        if resource_type == ResourceType::DataPack {
+            return Err(PlatformError::Request("data packs require a world".into()));
+        }
         Ok(downloader
             .download(&install_request(game_root, file, resource_type)?)
             .await?)
@@ -173,6 +190,9 @@ impl ModrinthApi {
         mc_version: &str,
         loader: &Loader,
     ) -> Result<std::path::PathBuf, PlatformError> {
+        if resource_type == ResourceType::DataPack {
+            return Err(PlatformError::Request("data packs require a world".into()));
+        }
         if project.project_type != resource_type.modrinth_project_type() {
             return Err(PlatformError::Request("wrong project type".into()));
         }
@@ -189,6 +209,42 @@ impl ModrinthApi {
         }
         Ok(path)
     }
+
+    pub async fn download_datapack(
+        &self,
+        downloader: &Arc<Downloader>,
+        project: &SearchResult,
+        mc_version: &str,
+    ) -> Result<StagedDataPack, PlatformError> {
+        if !is_datapack_project(project) {
+            return Err(PlatformError::Request("wrong project type".into()));
+        }
+        let versions = self.versions(&project.project_id, &["datapack"], &[mc_version]).await?;
+        let file = datapack_file(&versions, mc_version).ok_or_else(|| {
+            PlatformError::Request(format!("no compatible data pack ZIP for Minecraft {mc_version}"))
+        })?;
+        let directory = tempfile::tempdir()?;
+        let request = install_request(directory.path(), file, ResourceType::DataPack)?;
+        let path = downloader.download(&request).await?;
+        Ok(StagedDataPack { _directory: directory, path })
+    }
+}
+
+fn is_datapack_project(project: &SearchResult) -> bool {
+    project.project_type == "datapack"
+        || (project.project_type == "mod" && project.categories.iter().any(|category| category == "datapack"))
+}
+
+fn datapack_file<'a>(versions: &'a [ModVersion], mc_version: &str) -> Option<&'a ModFile> {
+    versions.iter()
+        .filter(|version| {
+            version.loaders.iter().any(|loader| loader == "datapack")
+                && version.game_versions.iter().any(|version| version == mc_version)
+        })
+        .find_map(|version| {
+            let mut zips = version.files.iter().filter(|file| file.filename.ends_with(".zip"));
+            zips.clone().find(|file| file.primary).or_else(|| zips.next())
+        })
 }
 
 impl Default for ModrinthApi {
@@ -327,6 +383,36 @@ mod tests {
         assert_eq!(modrinth_loader(ResourceType::Mod, &forge), Some("forge"));
         assert_eq!(modrinth_loader(ResourceType::ResourcePack, &forge), None);
         assert_eq!(modrinth_loader(ResourceType::ShaderPack, &forge), None);
+    }
+
+    #[test]
+    fn datapack_downloads_accept_v2_mod_hits_but_choose_only_compatible_datapack_zips() {
+        let mut hit: SearchResult = serde_json::from_value(serde_json::json!({
+            "slug": "terralith", "title": "Terralith", "description": "",
+            "project_id": "8oi3bsk5", "project_type": "mod",
+            "categories": ["datapack", "fabric", "forge", "worldgen"]
+        })).unwrap();
+        assert!(is_datapack_project(&hit));
+        hit.categories.clear();
+        assert!(!is_datapack_project(&hit));
+        hit.project_type = "datapack".into();
+        assert!(is_datapack_project(&hit));
+
+        let version = |loader: &str, mc: &str, filename: &str| -> ModVersion {
+            serde_json::from_value(serde_json::json!({
+                "id": "id", "project_id": "id", "name": "test", "version_number": "1.0",
+                "loaders": [loader], "game_versions": [mc],
+                "files": [{"filename": filename, "url": "https://example.com", "size": 1, "primary": true}]
+            })).unwrap()
+        };
+        let versions = [
+            version("fabric", "1.20.1", "mod.jar"),
+            version("datapack", "1.21", "wrong-version.zip"),
+            version("datapack", "1.20.1", "wrong-format.jar"),
+            version("datapack", "1.20.1", "datapack.zip"),
+        ];
+        assert_eq!(datapack_file(&versions, "1.20.1").unwrap().filename, "datapack.zip");
+        assert!(datapack_file(&versions, "1.19").is_none());
     }
 
     #[test]
