@@ -162,6 +162,10 @@ Working today:
 - Version manifest browsing, loader install (Fabric/Quilt from meta APIs, Forge/NeoForge via
   installer)
 - Modrinth: browse and install mods, resource packs, and shader packs; import `.mrpack` modpacks
+- Import a Modrinth modpack or release URL to create a managed instance. **Edit → Managed Pack**
+  shows the installed version, available versions, and changelogs, and updates selected versions
+  while Minecraft is closed. Pack-owned files and overrides are replaced; existing saves and
+  untracked files are kept. Local archives without a recorded provider project remain unmanaged.
 - CurseForge: import modpack zips
 - Offline accounts; MSA device-code login implemented end-to-end
 - Global + per-instance settings (memory, Java, window size). Java arguments inherit the global setting unless the instance overrides them.

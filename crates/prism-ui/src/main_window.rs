@@ -518,6 +518,8 @@ impl MainWindow {
         let Some(id) = self.app.read(cx).selected.clone() else {
             return;
         };
+        let managed = self.app.read(cx).instances.get(&id)
+            .is_some_and(prism_core::managed_pack::ManagedPack::present);
         let app = self.app.clone();
         let options = WindowOptions {
             window_min_size: Some(gpui::Size {
@@ -527,7 +529,7 @@ impl MainWindow {
             ..WindowOptions::default()
         };
         open_window(options, cx, |_window, cx| {
-            cx.new(|_| crate::instance_window::InstanceWindow::new(app, id))
+            cx.new(|_| crate::instance_window::InstanceWindow::new(app, id, managed))
         })
         .ok();
     }
@@ -553,6 +555,14 @@ impl MainWindow {
         let id = self.app.read(cx).selected.clone();
         self.app.update(cx, |app, _cx| {
             if let Some(id) = id {
+                let Some(instance) = app.instances.get(&id) else { return };
+                let _lock = match crate::instance_lock::acquire(&app.paths, instance) {
+                    Ok(lock) => lock,
+                    Err(error) => {
+                        app.toast = Some((format!("Could not remove instance: {error}"), std::time::Instant::now()));
+                        return;
+                    }
+                };
                 let _ = prism_core::InstanceList::remove(&app.paths, &id);
                 if app.selected.as_deref() == Some(id.as_str()) {
                     app.selected = None;

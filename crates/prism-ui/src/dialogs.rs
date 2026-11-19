@@ -814,7 +814,7 @@ impl PromptState {
         let placeholder = match kind {
             PromptKind::Rename => "Instance name",
             PromptKind::ChangeGroup => "Group name (empty = none)",
-            PromptKind::ImportPath => "Local path to .zip or .mrpack",
+            PromptKind::ImportPath => "Local archive path or Modrinth modpack URL",
             PromptKind::Export => "Destination path (must not already exist)",
             PromptKind::Copy => "Instance name",
         };
@@ -989,6 +989,39 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     let value = prompt.input.read(cx).value().trim().to_string();
     let kind = prompt.kind;
     let target = prompt.target_id.clone();
+    if kind == PromptKind::ImportPath {
+        if let Some((project, version)) = prism_core::managed_pack::import_source(&value) {
+            let app = this.app.clone();
+            let state = app.read(cx);
+            let paths = state.paths.clone();
+            let downloader = state.runtime.downloader.clone();
+            let task = state.runtime.spawn(async move {
+                prism_core::managed_pack::install_modrinth(&paths, &downloader, &project, version.as_deref()).await
+            });
+            this.prompt = None;
+            this.app.update(cx, |app, _| {
+                app.toast = Some(("Installing managed pack…".into(), std::time::Instant::now()));
+            });
+            cx.spawn(async move |_, cx| {
+                let result = task.await;
+                let _ = app.update(cx, |app, cx| {
+                    let message = match result {
+                        Ok(Ok(instance)) => {
+                            app.reload_instances();
+                            app.selected = Some(instance.id);
+                            format!("Imported: {}", instance.name)
+                        }
+                        Ok(Err(error)) => format!("Import failed: {error}"),
+                        Err(error) => format!("Import failed: {error}"),
+                    };
+                    app.toast = Some((message, std::time::Instant::now()));
+                    cx.notify();
+                });
+            }).detach();
+            cx.notify();
+            return;
+        }
+    }
     if kind == PromptKind::Copy {
         if value.is_empty() {
             this.prompt.as_mut().unwrap().error = Some("Name cannot be empty.".into());
@@ -1123,8 +1156,6 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
                 let _ = app.instances.groups.save(&app.paths.instances_dir());
             }
             PromptKind::ImportPath => {
-                // Local path (possibly a URL later). Run the import
-                // synchronously — packs can take a moment.
                 let source = std::path::PathBuf::from(&value);
                 if !source.exists() {
                     app.toast = Some((format!("Import source not found: {value}"), std::time::Instant::now()));
