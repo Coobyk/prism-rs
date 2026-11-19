@@ -20,6 +20,7 @@ pub mod launch;
 pub mod loaders;
 pub mod logs;
 pub mod meta;
+pub mod mod_list;
 pub mod modplatform;
 pub mod net;
 pub mod news;

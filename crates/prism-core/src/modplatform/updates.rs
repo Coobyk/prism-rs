@@ -173,6 +173,32 @@ fn read_index(mods: &Path) -> BTreeMap<String, Vec<IndexedMod>> {
     result
 }
 
+pub(crate) struct ModListMetadata {
+    pub name: String,
+    pub homepage: Option<String>,
+    pub version: Option<String>,
+}
+
+pub(crate) fn mod_list_metadata(mods: &Path) -> BTreeMap<String, ModListMetadata> {
+    read_index(mods).into_iter().filter_map(|(filename, entries)| {
+        let [entry] = entries.as_slice() else { return None };
+        let index = &entry.index;
+        let (homepage, version) = if let Some(provider) = &index.update.modrinth {
+            let mut url = reqwest::Url::parse("https://modrinth.com/mod/").unwrap();
+            url.path_segments_mut().unwrap().pop_if_empty().push(&provider.project);
+            (Some(url.to_string()), Some(provider.version.clone()))
+        } else if let Some(provider) = &index.update.curseforge {
+            (
+                Some(format!("https://www.curseforge.com/projects/{}", provider.project)),
+                Some(provider.file.to_string()),
+            )
+        } else {
+            (None, None)
+        };
+        Some((filename, ModListMetadata { name: index.name.clone(), homepage, version }))
+    }).collect()
+}
+
 fn save_index(path: &Path, index: &Index, previous: Option<&str>) -> Result<(), PlatformError> {
     let dir = path
         .parent()

@@ -22,6 +22,8 @@ use datapacks_page::DataPacksPage;
 #[path = "logs_page.rs"]
 mod logs_page;
 use logs_page::LogsPages;
+#[path = "mod_list_dialog.rs"]
+mod mod_list_dialog;
 #[path = "screenshots_page.rs"]
 mod screenshots_page;
 use screenshots_page::ScreenshotsPage;
@@ -704,7 +706,14 @@ impl InstanceWindow {
                 .child(Button::new("check-mod-updates")
                     .label("Check for Updates")
                     .disabled(self.mod_updates.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx)))),
+                    .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx))))
+                .child(Button::new("export-mod-list")
+                    .label("Export Mod List")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(instance) = this.app.read(cx).instances.get(&this.instance_id).cloned() {
+                            mod_list_dialog::open(instance, cx);
+                        }
+                    }))),
             );
         }
         if let Some(page) = browser_page {

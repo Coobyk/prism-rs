@@ -55,6 +55,9 @@ pub struct LocalResource {
     pub version: Option<String>,
     pub loader: Option<String>,
     pub description: Option<String>,
+    pub mod_id: Option<String>,
+    pub authors: Vec<String>,
+    pub homepage: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

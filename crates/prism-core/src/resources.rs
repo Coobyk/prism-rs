@@ -3,6 +3,7 @@
 //! Mirrors `launcher/minecraft/mod/`.
 
 use super::modplatform::{LocalResource, ResourceType};
+use serde_json::Value;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -21,14 +22,17 @@ pub fn scan_folder(folder: &Path, resource_type: ResourceType) -> Vec<LocalResou
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        let (title, version, loader, description) = read_metadata(&path);
+        let metadata = read_jar_metadata(&path).unwrap_or_default();
         out.push(LocalResource {
             file_name,
             path,
-            title,
-            version,
-            loader,
-            description,
+            title: metadata.title,
+            version: metadata.version,
+            loader: metadata.loader,
+            description: metadata.description,
+            mod_id: metadata.mod_id,
+            authors: metadata.authors,
+            homepage: metadata.homepage,
         });
     }
     // Keep .disabled entries too, marked by name, sorted by filename.
@@ -49,18 +53,28 @@ fn is_resource_file(path: &Path) -> bool {
     name.ends_with(".jar") || name.ends_with(".zip") || name.ends_with(".litemod")
 }
 
-/// Read embedded metadata from a jar/zip. Tolerant: returns Nones on any
-/// failure.
-fn read_metadata(path: &Path) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
-    match read_jar_metadata(path) {
-        Ok(meta) => meta,
-        Err(_) => (None, None, None, None),
-    }
+#[derive(Default)]
+struct ResourceMetadata {
+    title: Option<String>,
+    version: Option<String>,
+    loader: Option<String>,
+    description: Option<String>,
+    mod_id: Option<String>,
+    authors: Vec<String>,
+    homepage: Option<String>,
 }
 
-fn read_jar_metadata(
-    path: &Path,
-) -> Result<(Option<String>, Option<String>, Option<String>, Option<String>), String> {
+fn string(value: &Value) -> Option<String> {
+    value.as_str().filter(|s| !s.trim().is_empty()).map(String::from)
+}
+
+fn authors(value: &Value) -> Vec<String> {
+    value.as_array().into_iter().flatten()
+        .filter_map(|author| string(author).or_else(|| string(&author["name"])))
+        .collect()
+}
+
+fn read_jar_metadata(path: &Path) -> Result<ResourceMetadata, String> {
     let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| e.to_string())?;
 
@@ -69,28 +83,35 @@ fn read_jar_metadata(
         let mut text = String::new();
         use std::io::Read;
         f.read_to_string(&mut text).map_err(|e| e.to_string())?;
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            return Ok((
-                v.get("name").and_then(|x| x.as_str()).map(String::from),
-                v.get("version").and_then(|x| x.as_str()).map(String::from),
-                Some("fabric".to_string()),
-                v.get("description").and_then(|x| x.as_str()).map(String::from),
-            ));
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            return Ok(ResourceMetadata {
+                title: string(&v["name"]),
+                version: string(&v["version"]),
+                loader: Some("fabric".into()),
+                description: string(&v["description"]),
+                mod_id: string(&v["id"]),
+                authors: authors(&v["authors"]),
+                homepage: string(&v["contact"]["homepage"]),
+            });
         }
     }
 
-    // Forge/NeoForge: META-INF/mods.toml or mods.toml (basic TOML-ish scan)
-    for name in ["META-INF/mods.toml", "mods.toml"] {
+    for name in ["META-INF/neoforge.mods.toml", "META-INF/mods.toml", "mods.toml"] {
         if let Ok(mut f) = archive.by_name(name) {
             let mut text = String::new();
             use std::io::Read;
             f.read_to_string(&mut text).map_err(|e| e.to_string())?;
-            return Ok((
-                toml_scalar(&text, "displayName"),
-                toml_scalar(&text, "version"),
-                Some("forge".to_string()),
-                toml_scalar(&text, "description"),
-            ));
+            return Ok(ResourceMetadata {
+                title: toml_scalar(&text, "displayName"),
+                version: toml_scalar(&text, "version"),
+                loader: Some("forge".into()),
+                description: toml_scalar(&text, "description"),
+                mod_id: toml_scalar(&text, "modId"),
+                authors: toml_scalar(&text, "authors").into_iter()
+                    .flat_map(|names| names.split(',').map(str::trim).filter(|s| !s.is_empty()).map(String::from).collect::<Vec<_>>())
+                    .collect(),
+                homepage: toml_scalar(&text, "displayURL"),
+            });
         }
     }
 
@@ -99,14 +120,18 @@ fn read_jar_metadata(
         let mut text = String::new();
         use std::io::Read;
         f.read_to_string(&mut text).map_err(|e| e.to_string())?;
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-            let first = v.as_array().and_then(|a| a.first()).cloned().unwrap_or_default();
-            return Ok((
-                first.get("name").and_then(|x| x.as_str()).map(String::from),
-                first.get("version").and_then(|x| x.as_str()).map(String::from),
-                Some("forge".to_string()),
-                first.get("description").and_then(|x| x.as_str()).map(String::from),
-            ));
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
+            let first = v.as_array().or_else(|| v["modList"].as_array())
+                .and_then(|list| list.first()).unwrap_or(&Value::Null);
+            return Ok(ResourceMetadata {
+                title: string(&first["name"]),
+                version: string(&first["version"]),
+                loader: Some("forge".into()),
+                description: string(&first["description"]),
+                mod_id: string(&first["modid"]),
+                authors: authors(&first["authorList"]),
+                homepage: string(&first["url"]),
+            });
         }
     }
 
@@ -115,18 +140,23 @@ fn read_jar_metadata(
         let mut text = String::new();
         use std::io::Read;
         f.read_to_string(&mut text).map_err(|e| e.to_string())?;
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+        if let Ok(v) = serde_json::from_str::<Value>(&text) {
             let loader = &v["quilt_loader"];
-            return Ok((
-                loader.get("id").and_then(|x| x.as_str()).map(String::from),
-                loader.get("version").and_then(|x| x.as_str()).map(String::from),
-                Some("quilt".to_string()),
-                v["metadata"].get("description").and_then(|x| x.as_str()).map(String::from),
-            ));
+            let metadata = &loader["metadata"];
+            return Ok(ResourceMetadata {
+                title: string(&metadata["name"]).or_else(|| string(&loader["id"])),
+                version: string(&loader["version"]),
+                loader: Some("quilt".into()),
+                description: string(&metadata["description"]).or_else(|| string(&v["metadata"]["description"])),
+                mod_id: string(&loader["id"]),
+                authors: metadata["contributors"].as_object().into_iter()
+                    .flat_map(|contributors| contributors.keys().cloned()).collect(),
+                homepage: string(&metadata["contact"]["homepage"]),
+            });
         }
     }
 
-    Ok((None, None, None, None))
+    Ok(ResourceMetadata::default())
 }
 
 /// Extract a bare `key = "value"` scalar from loosely-parsed TOML text.
