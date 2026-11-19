@@ -423,7 +423,7 @@ pub fn render(
                         .child(
                             Button::new(SharedString::from(format!("atl-mod-{i}")))
                                 .label(if checked { "[x]" } else { "[ ]" })
-                                .w(px(40.))
+                                .w(px(48.))
                                 .flex_shrink_0()
                                 .border_1()
                                 .border_color(rgb(0x777777))
@@ -444,14 +444,14 @@ pub fn render(
                 if !details.is_empty() {
                     body = body.child(
                         div()
-                            .pl_12()
+                            .pl(px(56.))
                             .text_sm()
                             .text_color(rgb(0xb8b8b8))
                             .child(details.join(" · ")),
                     );
                 }
                 if !e.description.is_empty() {
-                    body = body.child(div().pl_12().child(rich(
+                    body = body.child(div().pl(px(56.)).child(rich(
                         format!("atl-mod-description-{i}"),
                         e.description.clone(),
                     )));
