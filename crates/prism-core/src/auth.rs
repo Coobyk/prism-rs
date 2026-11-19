@@ -73,7 +73,7 @@ impl AccountList {
         let refreshed = refresh(account.clone())
             .await
             .map_err(|_| AuthError::SignInAgain)?;
-        *self = Self::edit(path, |updated| {
+        *self = Self::edit_inner(path, false, |updated| {
             for stored in &mut updated.accounts {
                 if stored.id == account.id && stored.refresh_token == account.refresh_token {
                     *stored = refreshed.clone();
@@ -91,6 +91,14 @@ impl AccountList {
     }
 
     pub fn edit(path: &Path, edit: impl FnOnce(&mut Self)) -> io::Result<Self> {
+        Self::edit_inner(path, true, edit)
+    }
+
+    fn edit_inner(
+        path: &Path,
+        recover_invalid: bool,
+        edit: impl FnOnce(&mut Self),
+    ) -> io::Result<Self> {
         let parent = account_dir(path);
         std::fs::create_dir_all(parent)?;
         let lock = std::fs::File::options()
@@ -99,8 +107,19 @@ impl AccountList {
             .truncate(false)
             .open(path.with_extension("lock"))?;
         fs2::FileExt::lock_exclusive(&lock)?;
-        let mut accounts = match std::fs::read_to_string(path) {
-            Ok(json) => serde_json::from_str(&json)?,
+        let mut accounts = match std::fs::read(path) {
+            Ok(json) => match serde_json::from_slice(&json) {
+                Ok(accounts) => accounts,
+                Err(_) if recover_invalid => {
+                    let mut backup = tempfile::Builder::new()
+                        .prefix("accounts.json.corrupt-")
+                        .tempfile_in(parent)?;
+                    backup.write_all(&json)?;
+                    backup.keep().map_err(|error| error.error)?;
+                    Self::default()
+                }
+                Err(error) => return Err(error.into()),
+            },
             Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
             Err(error) => return Err(error),
         };
@@ -456,6 +475,23 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_edits_recover_from_invalid_json_and_keep_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let malformed = b"{not valid JSON";
+        std::fs::write(&path, malformed).unwrap();
+        AccountList::edit(&path, |accounts| {
+            accounts.add_offline("Player");
+        }).unwrap();
+        let backup = std::fs::read_dir(dir.path()).unwrap()
+            .map(|entry| entry.unwrap())
+            .find(|entry| entry.file_name().to_string_lossy().starts_with("accounts.json.corrupt-"))
+            .unwrap();
+        assert_eq!(std::fs::read(backup.path()).unwrap(), malformed);
+        assert_eq!(AccountList::load(&path).accounts[0].player_name, "Player");
+    }
 
     #[test]
     fn changing_active_account_preserves_credentials_refreshed_on_disk() {
