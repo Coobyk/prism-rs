@@ -15,7 +15,6 @@ use prism_core::modplatform::{LocalResource, ResourceType};
 use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
 use prism_core::{Instance, InstanceKind};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
 #[path = "datapacks_page.rs"]
 mod datapacks_page;
@@ -26,6 +25,9 @@ use logs_page::LogsPages;
 #[path = "screenshots_page.rs"]
 mod screenshots_page;
 use screenshots_page::ScreenshotsPage;
+#[path = "version_page.rs"]
+mod version_page;
+use version_page::VersionPage;
 #[path = "worlds_page.rs"]
 mod worlds_page;
 use worlds_page::WorldsPage;
@@ -235,8 +237,7 @@ pub struct InstanceWindow {
     browsers: HashMap<Browser, BrowserState>,
     mod_updates: ModUpdates,
     // Loader install state.
-    loader_options: Arc<std::sync::Mutex<Vec<String>>>,
-    loader_handle: Option<tokio::task::JoinHandle<Result<Vec<String>, String>>>,
+    version_editor: VersionPage,
     servers: Option<ServerList>,
     servers_snapshot: Option<ServerListSnapshot>,
     server_selected: Option<usize>,
@@ -258,8 +259,7 @@ impl InstanceWindow {
             page: Page::Log,
             browsers: HashMap::new(),
             mod_updates: ModUpdates::default(),
-            loader_options: Arc::new(std::sync::Mutex::new(Vec::new())),
-            loader_handle: None,
+            version_editor: VersionPage::default(),
             servers: None,
             servers_snapshot: None,
             server_selected: None,
@@ -272,73 +272,6 @@ impl InstanceWindow {
             worlds: WorldsPage::default(),
             settings_editor: None,
         }
-    }
-
-    fn fetch_loader_versions(&mut self, kind: &'static str, cx: &mut Context<Self>) {
-        let app = self.app.read(cx);
-        let runtime = app.runtime.clone();
-        let client = app.runtime.downloader.client().clone();
-        let Some(inst) = app.instances.get(&self.instance_id).cloned() else {
-            return;
-        };
-        drop(app);
-        let mc_version =
-            prism_core::launch::LaunchSettings::for_instance(&inst, &self.app.read(cx).paths).mc_version;
-        let loader = match kind {
-            "fabric" => prism_core::loaders::Loader::Fabric { version: String::new() },
-            _ => prism_core::loaders::Loader::Quilt { version: String::new() },
-        };
-        let options = self.loader_options.clone();
-        *options.lock().unwrap_or_else(|p| p.into_inner()) = Vec::new();
-        self.loader_handle = Some(runtime.spawn(async move {
-            prism_core::loaders::loader_versions(&client, &loader, &mc_version)
-                .await
-                .map(|v| v.into_iter().take(12).collect())
-        }));
-        cx.notify();
-    }
-
-    fn poll_loader_versions(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = &self.loader_handle {
-            if handle.is_finished() {
-                let handle = self.loader_handle.take().unwrap();
-                let options = self.loader_options.clone();
-                let result = self.app.read(cx).block_on(handle);
-                let list = match result {
-                    Ok(Ok(v)) => v,
-                    Ok(Err(e)) => {
-                        tracing::warn!("loader versions failed: {e}");
-                        Vec::new()
-                    }
-                    Err(e) => {
-                        tracing::warn!("loader versions failed: {e}");
-                        Vec::new()
-                    }
-                };
-                *options.lock().unwrap_or_else(|p| p.into_inner()) = list;
-                cx.notify();
-            }
-        }
-    }
-
-    fn set_instance_loader(&mut self, kind: &'static str, version: String, cx: &mut Context<Self>) {
-        let loader = if version.is_empty() {
-            prism_core::loaders::Loader::None
-        } else {
-            match kind {
-                "fabric" => prism_core::loaders::Loader::Fabric { version },
-                _ => prism_core::loaders::Loader::Quilt { version },
-            }
-        };
-        let instance_id = self.instance_id.clone();
-        self.app.update(cx, |app, _cx| {
-            if let Some(inst) = app.instances.get(&instance_id).cloned() {
-                let _ = prism_core::instance::set_loader(&inst, &loader);
-            }
-        });
-        *self.loader_options.lock().unwrap_or_else(|p| p.into_inner()) = Vec::new();
-        self.app.update(cx, |app, _cx| app.reload_instances());
-        cx.notify();
     }
 
     fn start_search(&mut self, provider: Browser, cx: &mut Context<Self>) {
@@ -620,6 +553,10 @@ impl InstanceWindow {
                                 this.load_screenshots(None, cx);
                             }
                             this.screenshots.on_navigation();
+                            this.version_editor.on_navigation();
+                            if page == Page::Version {
+                                this.refresh_version(cx);
+                            }
                         }
                         this.page = page;
                         cx.notify();
@@ -683,101 +620,6 @@ impl InstanceWindow {
                     .child(div().text_ellipsis().text_size(px(15.)).font_weight(FontWeight::BOLD).child(inst.name))
                     .child(div().text_ellipsis().text_size(px(11.)).text_color(rgb(0x888888)).child(subtitle)),
             )
-    }
-
-    fn render_version_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        self.poll_loader_versions(cx);
-        let inst = self.instance(cx);
-        let loader = prism_core::instance::loader_of(&inst);
-        let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &self.app.read(cx).paths)
-            .mc_version;
-
-        let mut rows: Vec<(String, String)> = vec![("net.minecraft".to_string(), mc_version.clone())];
-        match &loader {
-            prism_core::loaders::Loader::None => {}
-            l => rows.push((l.uid().to_string(), l.version().unwrap_or("?").to_string())),
-        }
-
-        let mut list = div().flex().flex_col().gap_1().p_3();
-        for (uid, version) in &rows {
-            list = list.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(0x2b2b2b))
-                    .rounded_md()
-                    .child(div().child(uid.clone()))
-                    .child(div().text_color(rgb(0x8fb4d9)).child(version.clone())),
-            );
-        }
-
-        // Loader install / remove.
-        let loader_options = self.loader_options.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        list = list.child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .p_3()
-                .pt_4()
-                .child(
-                    Button::new("install-fabric")
-                        .label("Install Fabric")
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.fetch_loader_versions("fabric", cx);
-                        })),
-                )
-                .child(
-                    Button::new("install-quilt")
-                        .label("Install Quilt")
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.fetch_loader_versions("quilt", cx);
-                        })),
-                )
-                .children((!matches!(loader, prism_core::loaders::Loader::None)).then(|| {
-                    Button::new("remove-loader")
-                        .label("Remove Loader")
-                        .on_click(cx.listener(|this, _ev, _window, cx| {
-                            this.set_instance_loader("fabric", String::new(), cx);
-                        }))
-                })),
-        );
-
-        for version in &loader_options {
-            let v = version.clone();
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("loader-{version}")))
-                    .flex()
-                    .justify_between()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(0x243244))
-                    .rounded_md()
-                    .hover(|s| s.bg(rgb(0x2c3d52)))
-                    .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        this.set_instance_loader("fabric", v.clone(), cx);
-                    }))
-                    .child(format!("fabric-loader {version}"))
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(0x8fb4d9))
-                            .child("click to install"),
-                    ),
-            );
-        }
-
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(self.page_header(cx, "Installed components".to_string()).into_any_element())
-            .child(div().id("version-scroll").flex_1().overflow_y_scroll().child(list))
-            .into_any_element()
     }
 
     fn render_resources_page(&self, cx: &mut Context<Self>, rtype: ResourceType) -> gpui::AnyElement {

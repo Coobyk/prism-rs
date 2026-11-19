@@ -166,10 +166,11 @@ Working today:
 - News feed, grouped instance list, persistent config
 - Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
 - Direct instance launch from the CLI and Linux desktop shortcuts
+- Version page: change Minecraft, loader, and LWJGL versions; manage ordered jar mods and extra classpath JARs shared by GUI and CLI launch
 
 Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
-import, CurseForge export, themes/translations, updater, jar mods, profiling tools, per-instance console window
-options.
+import, CurseForge export, themes/translations, updater, generic component JSON editing and import,
+custom client-JAR replacement, Java agents, profiling tools, and per-instance console window options.
 
 ## License
 
