@@ -354,7 +354,27 @@ impl MainWindow {
                     .on_click(cx.listener(Self::on_change_group)),
             )
             .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
-            .child(self.sidebar_button("export", "Export", enabled))
+            .child(
+                self.sidebar_button("export", "Export", enabled)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let selected = this.app.read(cx).selected.clone();
+                        if let Some(id) = selected {
+                            let instance = this.app.read(cx).instances.get(&id).cloned();
+                            let mut prompt = PromptState::new(
+                                crate::dialogs::PromptKind::Export,
+                                id,
+                                String::new(),
+                                window,
+                                cx,
+                            );
+                            if let Some(instance) = instance {
+                                prompt.set_export_defaults(&instance, window, cx);
+                            }
+                            this.prompt = Some(prompt);
+                            cx.notify();
+                        }
+                    })),
+            )
             .child(self.sidebar_button("copy", "Copy", enabled))
             .child(
                 self.sidebar_button("delete", "Delete", enabled)
