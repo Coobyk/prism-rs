@@ -157,6 +157,7 @@ impl TechnicWindow {
         self.status = "Downloading and installing Technic pack…".into();
         cx.spawn(async move |this, cx| {
             let result = task.await;
+            let failed = !matches!(&result, Ok(Ok(_)));
             let status = match result {
                 Ok(Ok(instance)) => {
                     let message = format!("Installed {}", instance.name);
@@ -172,11 +173,20 @@ impl TechnicWindow {
                 Ok(Err(error)) => format!("Import failed: {error}"),
                 Err(error) => format!("Import failed: {error}"),
             };
-            let _ = this.update(cx, |this, cx| {
-                this.busy = false;
-                this.status = status;
-                cx.notify();
-            });
+            let shown_in_window = this
+                .update(cx, |this, cx| {
+                    this.busy = false;
+                    this.status.clone_from(&status);
+                    cx.notify();
+                })
+                .is_ok();
+            if failed && !shown_in_window {
+                let _ = app.update(cx, |state, cx| {
+                    state.toast = Some((status, std::time::Instant::now()));
+                    cx.notify();
+                });
+                let _ = owner.update(cx, |_, cx| cx.notify());
+            }
         })
         .detach();
         cx.notify();
