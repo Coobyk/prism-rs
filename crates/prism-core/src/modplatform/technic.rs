@@ -327,7 +327,6 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
     let jar = game.join("bin/modpack.jar");
     let external = game.join("bin/version.json");
     let mut fml = String::new();
-    let mut legacy = Loader::None;
     let mut jar_mod = false;
     let version = if jar.is_file() {
         let mut zip = zip::ZipArchive::new(fs::File::open(&jar)?)
@@ -337,15 +336,6 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
             fml = jar_text(&mut zip, "fmlversion.properties")?.unwrap_or_default();
         } else {
             jar_mod = true;
-            if let Some(data) = jar_text(&mut zip, "forgeversion.properties")? {
-                let version = ["major", "minor", "revision", "build"]
-                    .iter()
-                    .map(|part| property(&data, &format!("forge.{part}.number")))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(|| problem("Invalid Technic forgeversion.properties."))?
-                    .join(".");
-                legacy = Loader::Forge { version };
-            }
         }
         version
     } else if external.is_file() {
@@ -365,7 +355,7 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
             loader_from_version(&json, minecraft),
         )
     } else {
-        (checked_minecraft(fallback)?, legacy)
+        (checked_minecraft(fallback)?, Loader::None)
     };
     Ok(Recipe {
         minecraft,
@@ -531,19 +521,19 @@ mod tests {
     }
 
     #[test]
-    fn legacy_jar_is_installed_as_a_jar_mod_with_forge_metadata() {
+    fn legacy_jar_with_bundled_forge_is_installed_without_a_second_loader() {
         let dir = tempfile::tempdir().unwrap();
         let game = dir.path().join("game");
         fixture(&game, &[
-            ("old.class", "fixture"),
+            ("net/minecraftforge/common/MinecraftForge.class", "fixture"),
             ("forgeversion.properties", "forge.major.number=7\nforge.minor.number=8\nforge.revision.number=1\nforge.build.number=738"),
         ]);
         let paths = Paths {
             root: dir.path().join("launcher"),
         };
-        let instance = install_staged(&paths, "Legacy", &game, "1.5.2").unwrap();
+        let instance = install_staged(&paths, "Legacy", &game, "1.4.7").unwrap();
         let profile = Pack::load(&instance.root).unwrap();
-        assert_eq!(profile.version("net.minecraftforge"), Some("7.8.1.738"));
+        assert_eq!(profile.version("net.minecraftforge"), None);
         assert_eq!(profile.archive_paths(ArchiveKind::JarMod).unwrap().len(), 1);
     }
 
