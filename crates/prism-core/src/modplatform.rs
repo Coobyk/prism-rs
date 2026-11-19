@@ -3,6 +3,7 @@
 
 pub mod flame;
 pub mod modrinth;
+pub mod technic;
 pub mod updates;
 
 use serde::{Deserialize, Serialize};

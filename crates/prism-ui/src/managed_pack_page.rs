@@ -7,7 +7,7 @@ use gpui_kit::*;
 use prism_core::managed_pack::{self, ManagedPack, Snapshot, Version};
 use std::{borrow::Cow, sync::Arc};
 
-fn changelog_markdown(text: &str) -> Cow<'_, str> {
+pub(crate) fn changelog_markdown(text: &str) -> Cow<'_, str> {
     let is_item = |line: &str| {
         let line = line.trim_end();
         line.starts_with("<li>") && line.ends_with("</li>")

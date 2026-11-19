@@ -182,8 +182,10 @@ Working today:
   CSV, or a custom template. Choose whether to include version, authors, URL, and file name.
 - Direct instance launch from the CLI and Linux desktop shortcuts
 - Version page: change Minecraft, loader, and LWJGL versions; manage ordered jar mods and extra classpath JARs shared by GUI and CLI launch
+- **Technic Packs**: browse trending packs or search the Technic Platform, select a build,
+  and install Solder builds or single-ZIP packs as Java instances.
 
-Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
+Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB pack
 import, themes/translations, updater, generic component JSON editing and import,
 custom client-JAR replacement, Java agents, profiling tools, and per-instance console window options.
 
