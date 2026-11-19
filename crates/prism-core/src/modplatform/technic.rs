@@ -157,6 +157,26 @@ fn web_url(text: &str) -> Result<Url, ImportError> {
     Ok(url)
 }
 
+fn forge_library_url(text: &str) -> Result<Url, ImportError> {
+    let mut url = web_url(text)?;
+    if url.scheme() == "http"
+        && matches!(
+            url.host_str(),
+            Some(
+                "files.minecraftforge.net"
+                    | "maven.minecraftforge.net"
+                    | "libraries.minecraft.net"
+                    | "repo1.maven.org"
+                    | "maven.apache.org"
+            )
+        )
+    {
+        url.set_scheme("https")
+            .map_err(|_| problem("Invalid Technic Forge library URL."))?;
+    }
+    Ok(url)
+}
+
 pub async fn details(dl: &Downloader, slug: &str) -> Result<Modpack, ImportError> {
     if !slug_valid(slug) {
         return Err(problem("Invalid Technic pack slug."));
@@ -460,13 +480,12 @@ fn forge_patch(
         {
             Some(
                 "http://files.minecraftforge.net/maven"
-                | "https://files.minecraftforge.net/maven"
-                | "http://maven.minecraftforge.net",
+                | "https://files.minecraftforge.net/maven",
             ) => "https://maven.minecraftforge.net",
             Some(url) => url,
             None => "https://libraries.minecraft.net",
         };
-        lib.url = Some(web_url(repository)?.to_string());
+        lib.url = Some(forge_library_url(repository)?.to_string());
         if let Some(downloads) = &mut lib.downloads {
             if downloads
                 .artifact
@@ -477,13 +496,13 @@ fn forge_patch(
             }
             if let Some(artifact) = &mut downloads.artifact {
                 artifact.path = None;
-                web_url(&artifact.url)?;
+                artifact.url = forge_library_url(&artifact.url)?.to_string();
             }
             downloads
                 .classifiers
                 .retain(|_, artifact| !artifact.url.is_empty());
-            for artifact in downloads.classifiers.values() {
-                web_url(&artifact.url)?;
+            for artifact in downloads.classifiers.values_mut() {
+                artifact.url = forge_library_url(&artifact.url)?.to_string();
             }
         }
     }
@@ -763,6 +782,24 @@ mod tests {
         )
         .unwrap());
         assert!(checked_maven_path("org.example:../outside:1").is_err());
+    }
+
+    #[test]
+    fn known_forge_library_hosts_use_https_but_custom_hosts_are_unchanged() {
+        for host in [
+            "files.minecraftforge.net",
+            "maven.minecraftforge.net",
+            "libraries.minecraft.net",
+            "repo1.maven.org",
+            "maven.apache.org",
+        ] {
+            let url = forge_library_url(&format!("http://{host}/repo/")).unwrap();
+            assert_eq!(url.as_str(), format!("https://{host}/repo/"));
+        }
+        for host in ["repo.example", "repo1.maven.org.example"] {
+            let url = format!("http://{host}/repo/");
+            assert_eq!(forge_library_url(&url).unwrap().as_str(), url);
+        }
     }
 
     #[test]
