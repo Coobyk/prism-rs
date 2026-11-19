@@ -261,6 +261,59 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn unrelated_saves_preserve_legacy_java_selection() {
+        let fixture = Fixture::new();
+        let root = fixture.0.instances_dir().join("test");
+        std::fs::create_dir_all(&root).unwrap();
+        for java_path in [None, Some("/bin/echo")] {
+            let mut cfg = prism_core::ini::IniFile::default();
+            cfg.set("name", "Test");
+            cfg.set("OverrideJavaPath", "/bin/sh");
+            cfg.set("OverrideMemory", "true");
+            if let Some(java_path) = java_path {
+                cfg.set("JavaPath", java_path);
+            }
+            cfg.save(&root.join("instance.cfg")).unwrap();
+            let instance = Instance::load(&root).unwrap();
+            let before = LaunchSettings::for_instance(&instance, &fixture.0);
+            assert_eq!(before.java_path, std::path::Path::new("/bin/sh"));
+            assert!(before.java_path_explicit);
+            let mut baseline = InstanceSettings::load(&root).unwrap();
+            for memory in ["768", "1024"] {
+                let mut form = SettingsForm::resolved(
+                    &LaunchSettings::for_instance(&instance, &fixture.0),
+                    &baseline,
+                );
+                form.values[0] = memory.into();
+                let updated = form.convert(&baseline).unwrap();
+                save_checked(&root, &baseline, &updated).unwrap();
+                let after = LaunchSettings::for_instance(&instance, &fixture.0);
+                assert_eq!(after.java_path, before.java_path);
+                assert_eq!(after.java_path_explicit, before.java_path_explicit);
+                let saved = prism_core::ini::IniFile::load(&root.join("instance.cfg")).unwrap();
+                assert_eq!(saved.get("OverrideJavaLocation"), None);
+                assert_eq!(saved.get("OverrideJavaPath"), Some("/bin/sh"));
+                assert_eq!(saved.get("JavaPath"), java_path);
+                assert_eq!(saved.get("AutomaticJava"), None);
+                baseline = InstanceSettings::load(&root).unwrap();
+            }
+
+            let mut form = SettingsForm::resolved(&before, &baseline);
+            form.values[2] = "/bin/echo".into();
+            let updated = form.convert(&baseline).unwrap();
+            save_checked(&root, &baseline, &updated).unwrap();
+            let after = LaunchSettings::for_instance(&instance, &fixture.0);
+            assert_eq!(after.java_path, std::path::Path::new("/bin/echo"));
+            assert!(after.java_path_explicit);
+            let saved = InstanceSettings::load(&root).unwrap();
+            assert_eq!(saved.override_java_location, Some(true));
+            assert_eq!(saved.legacy_java_path, None);
+            assert_eq!(saved.automatic_java, Some(false));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn unrelated_saves_preserve_automatic_java_but_manual_edits_disable_it() {
         let fixture = Fixture::new();
         let root = fixture.0.instances_dir().join("test");
@@ -491,7 +544,6 @@ impl SettingsForm {
         };
         let mut raw = baseline.clone();
         raw.override_memory = Some(self.overrides[0]);
-        raw.override_java_location = Some(self.overrides[1]);
         raw.override_java_args = Some(self.overrides[2]);
         raw.override_window = Some(self.overrides[3]);
         raw.override_commands = Some(self.overrides[4]);
@@ -507,9 +559,13 @@ impl SettingsForm {
         let java_was_enabled = baseline.override_java_location.unwrap_or(
             baseline.java_path.is_some() || baseline.legacy_java_path.is_some(),
         );
+        if self.overrides[1] != java_was_enabled {
+            raw.override_java_location = Some(self.overrides[1]);
+        }
         if self.overrides[1]
             && (!java_was_enabled || self.values[2].trim() != self.loaded_java_path.trim())
         {
+            raw.override_java_location = Some(true);
             raw.java_path = Some(self.values[2].trim().into());
             raw.legacy_java_path = None;
             if !self.values[2].trim().is_empty() {
