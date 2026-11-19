@@ -6,6 +6,7 @@ use gpui_kit::{
     base::Disableable,
     component::{
         button::{Button, ButtonVariants},
+        checkbox::Checkbox,
         input::{Input, InputEvent, InputState},
         text::TextView,
     },
@@ -417,22 +418,29 @@ pub fn render(
                     .unwrap_or(0xeeeeee);
                 body = body.child(
                     div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .child(
-                            Button::new(SharedString::from(format!("atl-mod-{i}")))
-                                .label(if checked { "[x]" } else { "[ ]" })
-                                .w(px(48.))
-                                .flex_shrink_0()
+                        .relative()
+                        .children((!checked).then(|| {
+                            div()
+                                .absolute()
+                                .left(px(-1.))
+                                .top(px(1.))
+                                .size(px(18.))
+                                .rounded(px(4.))
                                 .border_1()
-                                .border_color(rgb(0x777777))
+                                .border_color(rgb(0x888888))
+                        }))
+                        .child(
+                            Checkbox::new(SharedString::from(format!("atl-mod-{i}")))
+                                .label(e.name.clone())
+                                .checked(checked)
+                                .text_color(rgb(colour))
                                 .disabled(busy)
-                                .on_click(cx.listener(move |this: &mut MainWindow, _, _, cx| {
-                                    modify(this, &name, false, cx)
-                                })),
-                        )
-                        .child(div().text_color(rgb(colour)).child(e.name.clone())),
+                                .on_click(cx.listener(
+                                    move |this: &mut MainWindow, _: &bool, _, cx| {
+                                        modify(this, &name, false, cx)
+                                    },
+                                )),
+                        ),
                 );
                 let mut details = Vec::new();
                 if !e.group.is_empty() {
@@ -444,14 +452,14 @@ pub fn render(
                 if !details.is_empty() {
                     body = body.child(
                         div()
-                            .pl(px(56.))
+                            .pl_6()
                             .text_sm()
                             .text_color(rgb(0xb8b8b8))
                             .child(details.join(" · ")),
                     );
                 }
                 if !e.description.is_empty() {
-                    body = body.child(div().pl(px(56.)).child(rich(
+                    body = body.child(div().pl_6().child(rich(
                         format!("atl-mod-description-{i}"),
                         e.description.clone(),
                     )));
