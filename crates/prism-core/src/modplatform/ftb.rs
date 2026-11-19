@@ -10,7 +10,7 @@ use crate::loaders::Loader;
 use crate::modplatform::{flame::FlameApi, PlatformError};
 use crate::net::{DownloadRequest, Downloader};
 use crate::Paths;
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{stream, StreamExt};
 use serde::Deserialize;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -249,10 +249,21 @@ impl FtbApi {
             return Ok(packs.clone());
         }
         let catalog: Catalog = self.get("/modpack/all").await?;
-        let packs: Vec<_> = stream::iter(catalog.packs.into_iter().map(|id| self.pack(id)))
-            .buffered(3)
-            .try_collect()
-            .await?;
+        let total = catalog.packs.len();
+        let results: Vec<_> = stream::iter(catalog.packs.into_iter().map(|id| async move {
+            let result = self.pack(id).await;
+            if let Err(error) = &result {
+                tracing::warn!(pack_id = id, %error, "Skipping unavailable FTB pack");
+            }
+            result
+        }))
+        .buffered(3)
+        .collect()
+        .await;
+        let packs: Vec<_> = results.into_iter().filter_map(Result::ok).collect();
+        if total > 0 && packs.is_empty() {
+            return Err(invalid("Could not load details for any FTB pack"));
+        }
         *cached = Some(packs.clone());
         Ok(packs)
     }

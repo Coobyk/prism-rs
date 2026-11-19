@@ -18,11 +18,11 @@ fn manifest(base: &str) -> Manifest {
     })).unwrap()
 }
 
-fn server(responses: Vec<(String, String, Vec<u8>)>) -> (String, std::thread::JoinHandle<()>) {
+fn server(mut responses: Vec<(String, String, Vec<u8>)>) -> (String, std::thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let thread = std::thread::spawn(move || {
-        for (path, status, body) in responses {
+        while !responses.is_empty() {
             let (mut socket, _) = listener.accept().unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(5)))
@@ -40,10 +40,11 @@ fn server(responses: Vec<(String, String, Vec<u8>)>) -> (String, std::thread::Jo
                 }
             }
             let request = String::from_utf8_lossy(&request);
-            assert!(
-                request.starts_with(&format!("GET {path} HTTP/1.1")),
-                "{request}"
-            );
+            let index = responses
+                .iter()
+                .position(|(path, _, _)| request.starts_with(&format!("GET {path} HTTP/1.1")))
+                .unwrap_or_else(|| panic!("Unexpected request: {request}"));
+            let (_, status, body) = responses.remove(index);
             assert!(request.to_lowercase().contains("user-agent: prism-rs/"));
             write!(socket, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
             socket.write_all(&body).unwrap();
@@ -237,6 +238,45 @@ async fn catalog_caches_empty_and_handles_errors() {
         assert_eq!(api.catalog(false).await.is_ok(), ok);
         if ok {
             assert!(api.catalog(false).await.unwrap().is_empty());
+        }
+        thread.join().unwrap();
+    }
+}
+
+#[tokio::test]
+async fn catalog_keeps_successful_packs_and_rejects_total_failure() {
+    for any_success in [true, false] {
+        let (base, thread) = server(vec![
+            (
+                "/modpack/all".into(),
+                "200 OK".into(),
+                br#"{"packs":[1,2]}"#.to_vec(),
+            ),
+            (
+                "/modpack/1".into(),
+                "503 Service Unavailable".into(),
+                b"{}".to_vec(),
+            ),
+            (
+                "/modpack/2".into(),
+                if any_success {
+                    "200 OK"
+                } else {
+                    "404 Not Found"
+                }
+                .into(),
+                br#"{"id":2,"name":"Available","versions":[]}"#.to_vec(),
+            ),
+        ]);
+        let api = FtbApi::with_endpoint(Arc::new(Downloader::new()), base);
+        let result = api.catalog(false).await;
+        if any_success {
+            let packs = result.unwrap();
+            assert_eq!(packs.len(), 1);
+            assert_eq!(packs[0].id, 2);
+            assert_eq!(api.catalog(false).await.unwrap()[0].id, 2);
+        } else {
+            assert!(result.is_err());
         }
         thread.join().unwrap();
     }
