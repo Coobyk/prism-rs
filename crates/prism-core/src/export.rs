@@ -64,7 +64,16 @@ fn collect_directory(
         {
             continue;
         }
-        let kind = std::fs::metadata(&path)?;
+        let kind = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(&path)?.is_symlink() {
+                    continue;
+                }
+                return Err(error.into());
+            }
+            Err(error) => return Err(error.into()),
+        };
         if kind.is_dir() {
             collect_directory(&path, game, out, ancestors)?;
         } else if kind.is_file() {
@@ -303,6 +312,44 @@ mod tests {
             version: "1.0".into(),
             summary: "Example".into(),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dangling_mod_links_are_skipped_in_both_formats() {
+        use std::os::unix::fs::symlink;
+
+        let f = Fixture::new();
+        symlink("missing.jar", f.1.mods_dir().join("dangling.jar")).unwrap();
+        std::fs::write(f.1.mods_dir().join("local.jar"), b"local mod").unwrap();
+        let output = f.0.root.join("dangling.zip");
+        export_zip(&f.1, &output).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut zip.by_name("minecraft/mods/local.jar").unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"local mod");
+        assert!(zip.by_name("minecraft/mods/dangling.jar").is_err());
+
+        let output = f.0.root.join("dangling.mrpack");
+        export_mrpack_with_lookup(&f.1, &output, metadata(), |hashes| async move {
+            assert_eq!(hashes, vec![hex::encode(Sha1::digest(b"local mod"))]);
+            Ok(BTreeMap::new())
+        })
+        .await
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        bytes.clear();
+        std::io::Read::read_to_end(
+            &mut zip.by_name("overrides/mods/local.jar").unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"local mod");
+        assert!(zip.by_name("overrides/mods/dangling.jar").is_err());
     }
 
     #[cfg(unix)]
