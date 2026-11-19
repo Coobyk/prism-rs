@@ -456,7 +456,7 @@ pub async fn check(
             Err(error) => report.warnings.push(format!("{filename}: {error}")),
         }
     }
-    let mr = ModrinthApi::with_client(downloader.client().clone());
+    let mr = ModrinthApi::with_client(downloader.client());
     let cf = FlameApi::new();
     let use_curseforge = |index: &Index| {
         index.update.curseforge.is_some()

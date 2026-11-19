@@ -321,7 +321,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 }
                 _ => {
                     let overlay = prism_core::loaders::fetch_loader_profile(
-                        runtime.downloader.client(), &loader, version,
+                        &runtime.downloader.client(), &loader, version,
                     )
                     .await
                     .expect("loader profile fetch failed");
@@ -337,7 +337,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             if !loader_version.is_empty() {
                 let loader = prism_core::loaders::Loader::Fabric { version: loader_version };
                 let lvd = prism_core::loaders::fetch_loader_profile(
-                    runtime.downloader.client(),
+                    &runtime.downloader.client(),
                     &loader,
                     version,
                 )

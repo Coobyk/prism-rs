@@ -13,12 +13,8 @@ pub const API_BASE: &str = "https://api.curseforge.com/v1";
 pub const API_KEY_ENV: &str = "PRISM_RS_CURSEFORGE_API_KEY";
 
 fn configured_api_key() -> Option<HeaderValue> {
-    let key = std::env::var(API_KEY_ENV).ok()?;
-    let key = key.trim();
-    if key.is_empty() {
-        return None;
-    }
-    let mut header = HeaderValue::from_str(key).ok()?;
+    let key = crate::settings::ApiKey::CurseForge.load()?;
+    let mut header = HeaderValue::from_str(&key).ok()?;
     header.set_sensitive(true);
     Some(header)
 }
@@ -112,7 +108,7 @@ impl FlameApi {
     pub fn new() -> Self {
         FlameApi {
             base_url: API_BASE.to_string(),
-            http: reqwest::Client::builder()
+            http: crate::net::configured_http_builder()
                 .user_agent(format!("prism-rs/{}", env!("CARGO_PKG_VERSION")))
                 .timeout(std::time::Duration::from_secs(30))
                 .redirect(reqwest::redirect::Policy::none())
@@ -141,7 +137,7 @@ impl FlameApi {
 
     fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, PlatformError> {
         let key = self.api_key.as_ref().ok_or_else(|| {
-            PlatformError::Request(format!("set {API_KEY_ENV} to a valid CurseForge API key"))
+            PlatformError::Request(format!("set a CurseForge API key in Settings → API Keys or set {API_KEY_ENV}"))
         })?;
         Ok(self.http
             .get(format!("{}{path}", self.base_url))

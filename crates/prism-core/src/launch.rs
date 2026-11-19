@@ -485,7 +485,7 @@ impl Launcher {
             }
         }
 
-        let manifest = meta::VersionManifest::fetch(self.downloader.client()).await?;
+        let manifest = meta::VersionManifest::fetch(&self.downloader.client()).await?;
         let entry = manifest
             .find(version_id)
             .ok_or_else(|| LaunchError::VersionNotFound(version_id.to_string()))?;
@@ -776,7 +776,7 @@ impl Launcher {
                     )
                     .await
                 }
-                _ => loaders::fetch_loader_profile(self.downloader.client(), &loader, version).await,
+                _ => loaders::fetch_loader_profile(&self.downloader.client(), &loader, version).await,
             }
             .map_err(|message| LaunchError::Loader { loader, message })?;
             profile.apply_loader(&overlay);

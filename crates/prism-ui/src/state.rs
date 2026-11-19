@@ -40,6 +40,7 @@ pub struct App {
     pub runtime: Arc<CoreRuntime>,
     pub instances: InstanceList,
     pub accounts: AccountList,
+    pub curseforge_configured: bool,
     pub selected: Option<String>,
     pub running: BTreeMap<String, RunningInstance>,
     pub manifest: Option<Arc<VersionManifest>>,
@@ -63,6 +64,7 @@ impl App {
         });
         App {
             runtime: Arc::new(CoreRuntime::new()),
+            curseforge_configured: prism_core::modplatform::flame::FlameApi::is_configured(),
             paths,
             instances,
             accounts,
@@ -318,7 +320,7 @@ impl App {
         self.manifest_loading = true;
         let downloader = self.runtime.downloader.clone();
         self.manifest_handle = Some(self.runtime.spawn(async move {
-            prism_core::meta::VersionManifest::fetch(downloader.client()).await
+            prism_core::meta::VersionManifest::fetch(&downloader.client()).await
         }));
     }
 

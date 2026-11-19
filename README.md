@@ -157,7 +157,9 @@ Working today:
 - Modrinth: browse and install mods, resource packs, and shader packs; import `.mrpack` modpacks
 - CurseForge: import modpack zips
 - Offline accounts; MSA device-code login implemented end-to-end
-- Global + per-instance settings (memory, Java, window size)
+- Global + per-instance settings (memory, Java, window size). Java arguments inherit the global setting unless the instance overrides them.
+- Launcher HTTP proxy settings (system, direct, HTTP and SOCKS5); the game manages its own network settings.
+- API Keys page for CurseForge and Imgur. Environment variables `PRISM_RS_CURSEFORGE_API_KEY` and `PRISM_RS_IMGUR_CLIENT_ID` override saved values.
 - Live console with log capture, search, copy, and confirmed mclo.gs sharing; kill running instances
 - Other Logs page: browse and decompress Java logs, search, copy, share, and confirm deletion
 - Screenshots page: thumbnail grid, rename, confirmed delete, and opt-in Imgur upload

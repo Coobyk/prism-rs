@@ -169,14 +169,14 @@ enum Browser {
 }
 
 impl Browser {
-    fn prerequisite(self, loader: &Loader) -> Option<String> {
+    fn prerequisite(self, loader: &Loader, curseforge_configured: bool) -> Option<String> {
         if self != Self::CurseForge {
             return None;
         }
         if *loader == Loader::None {
             return Some("Install a mod loader before browsing CurseForge mods.".into());
         }
-        (!FlameApi::is_configured()).then(|| format!("Set {API_KEY_ENV} before opening the launcher to browse CurseForge."))
+        (!curseforge_configured).then(|| format!("Add a key in Settings → API Keys or set {API_KEY_ENV} to browse CurseForge."))
     }
 }
 
@@ -280,11 +280,11 @@ impl InstanceWindow {
             return;
         };
         let target = BrowserTarget::new(inst, app);
-        if provider.prerequisite(&target.loader).is_some() {
+        if provider.prerequisite(&target.loader, app.curseforge_configured).is_some() {
             return;
         }
         let runtime = app.runtime.clone();
-        let client = runtime.downloader.client().clone();
+        let client = runtime.downloader.client();
         let Some(browser) = self.browsers.get_mut(&provider) else {
             return;
         };
@@ -369,7 +369,7 @@ impl InstanceWindow {
         let task = runtime.spawn(async move {
             let _lock = lock;
             match (provider, project) {
-                (Browser::Modrinth(resource_type), BrowserProject::Modrinth(project)) => ModrinthApi::with_client(downloader.client().clone())
+                (Browser::Modrinth(resource_type), BrowserProject::Modrinth(project)) => ModrinthApi::with_client(downloader.client())
                     .install_compatible(&downloader, &target.game_root, &project, resource_type, &target.mc_version, &target.loader)
                     .await,
                 (Browser::CurseForge, BrowserProject::CurseForge(project)) => FlameApi::new()
@@ -772,7 +772,7 @@ impl InstanceWindow {
         if is_datapack && pack_target.is_none() {
             return panel.child(div().p_3().child("Select an existing world on the Data Packs page.")).into_any_element();
         }
-        if let Some(message) = provider.prerequisite(&target.loader) {
+        if let Some(message) = provider.prerequisite(&target.loader, self.app.read(cx).curseforge_configured) {
             return panel.child(div().p_3().text_color(rgb(0x8fb4d9)).child(message)).into_any_element();
         }
 

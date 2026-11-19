@@ -8,6 +8,81 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyMode {
+    System,
+    Direct,
+    Http,
+    Socks5,
+}
+
+impl ProxyMode {
+    pub const ALL: [Self; 4] = [Self::System, Self::Direct, Self::Http, Self::Socks5];
+
+    pub fn config_value(self) -> &'static str {
+        match self {
+            Self::System => "Default",
+            Self::Direct => "None",
+            Self::Http => "HTTP",
+            Self::Socks5 => "SOCKS5",
+        }
+    }
+
+    pub fn from_settings(settings: &crate::settings::Settings) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|mode| settings.get("ProxyType") == Some(mode.config_value()))
+            .unwrap_or(Self::System)
+    }
+}
+
+fn http_builder(settings: &crate::settings::Settings) -> Result<reqwest::ClientBuilder, &'static str> {
+    let mode = ProxyMode::from_settings(settings);
+    let builder = Client::builder();
+    let scheme = match mode {
+        ProxyMode::System => return Ok(builder),
+        ProxyMode::Direct => return Ok(builder.no_proxy()),
+        ProxyMode::Http => "http",
+        ProxyMode::Socks5 => "socks5h",
+    };
+    let host = settings.get("ProxyAddr").or_else(|| settings.get("ProxyHostName")).unwrap_or("127.0.0.1");
+    let port = settings
+        .get("ProxyPort")
+        .unwrap_or("8080")
+        .parse::<u16>()
+        .ok()
+        .filter(|&port| port > 0)
+        .ok_or("Enter a proxy port between 1 and 65535.")?;
+    let host = host.trim();
+    if host.is_empty() || host.contains(['/', '\\', '?', '#', '@', '%']) || host.contains(char::is_whitespace) {
+        return Err("Enter a proxy hostname or IP address, without a scheme or port.");
+    }
+    let host = match host.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => format!("[{ip}]"),
+        Err(_) => reqwest::Url::parse(&format!("http://{host}"))
+            .ok()
+            .filter(|_| !host.contains(':') || (host.starts_with('[') && host.ends_with(']')))
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .ok_or("Enter a proxy hostname or IP address, without a scheme or port.")?,
+    };
+    let mut address = reqwest::Url::parse(&format!("{scheme}://{host}:{port}"))
+        .map_err(|_| "Invalid proxy address.")?;
+    if let Some(user) = settings.get("ProxyUser").filter(|user| !user.is_empty()) {
+        address.set_username(user).map_err(|_| "Invalid proxy credentials.")?;
+        address.set_password(settings.get("ProxyPass")).map_err(|_| "Invalid proxy credentials.")?;
+    }
+    let proxy = reqwest::Proxy::all(address).map_err(|_| "Invalid proxy configuration.")?;
+    Ok(builder.proxy(proxy))
+}
+
+pub(crate) fn configured_http_builder() -> reqwest::ClientBuilder {
+    let settings = crate::settings::Settings::load(&crate::Paths::new().global_config());
+    http_builder(&settings).unwrap_or_else(|error| {
+        tracing::warn!("{error} Check the launcher Proxy settings.");
+        Client::builder().proxy(reqwest::Proxy::all("http://127.0.0.1:0").unwrap())
+    })
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NetError {
     #[error("http error: {0}")]
@@ -64,24 +139,38 @@ fn sha1_hex(bytes: &[u8]) -> String {
 }
 
 pub struct Downloader {
-    client: Client,
+    client: std::sync::RwLock<Client>,
 }
 
 impl Downloader {
     pub fn new() -> Self {
-        let client = Client::builder()
+        Self { client: Self::build_client(configured_http_builder()).expect("failed to build http client").into() }
+    }
+
+    fn build_client(builder: reqwest::ClientBuilder) -> Result<Client, reqwest::Error> {
+        builder
             .user_agent(format!(
                 "prism-rs/{} (github.com/Coobyk/prism-rs)",
                 env!("CARGO_PKG_VERSION")
             ))
             .timeout(Duration::from_secs(120))
             .build()
-            .expect("failed to build http client");
-        Downloader { client }
     }
 
-    pub fn client(&self) -> &Client {
-        &self.client
+    pub fn client(&self) -> Client {
+        self.client.read().unwrap().clone()
+    }
+
+    pub fn update_proxy(
+        &self,
+        settings: &crate::settings::Settings,
+        config_path: &Path,
+    ) -> Result<(), String> {
+        let client = Self::build_client(http_builder(settings)?)
+            .map_err(|_| "Could not configure the launcher proxy.")?;
+        settings.save(config_path).map_err(|error| format!("Save failed: {error}"))?;
+        *self.client.write().unwrap() = client;
+        Ok(())
     }
 
     /// Validate an existing file against an expected SHA-1.
@@ -117,7 +206,7 @@ impl Downloader {
             return Ok(req.dest.clone());
         }
 
-        let response = self.client.get(&req.url).send().await?;
+        let response = self.client().get(&req.url).send().await?;
         if !response.status().is_success() {
             return Err(NetError::Status { status: response.status().as_u16(), url: req.url.clone() });
         }
@@ -191,7 +280,7 @@ impl Downloader {
 
     /// Fetch a URL and parse it as JSON.
     pub async fn get_json(&self, url: &str) -> Result<serde_json::Value, NetError> {
-        let response = self.client.get(url).send().await?;
+        let response = self.client().get(url).send().await?;
         if !response.status().is_success() {
             return Err(NetError::Status { status: response.status().as_u16(), url: url.to_string() });
         }
@@ -200,7 +289,7 @@ impl Downloader {
 
     /// Fetch text (e.g. RSS).
     pub async fn get_text(&self, url: &str) -> Result<String, NetError> {
-        let response = self.client.get(url).send().await?;
+        let response = self.client().get(url).send().await?;
         if !response.status().is_success() {
             return Err(NetError::Status { status: response.status().as_u16(), url: url.to_string() });
         }
@@ -268,6 +357,51 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
 
+    #[tokio::test]
+    async fn saved_http_proxy_routes_downloader_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = socket.local_addr().unwrap().port();
+        let mut settings = crate::settings::Settings::default();
+        settings.set("ProxyType", "HTTP");
+        settings.set("ProxyAddr", "127.0.0.1");
+        settings.set("ProxyPort", port.to_string());
+        let downloader = Downloader::new();
+        let path = dir.path().join("prismlauncher.cfg");
+        downloader.update_proxy(&settings, &path).unwrap();
+        assert_eq!(ProxyMode::from_settings(&crate::settings::Settings::load(&path)), ProxyMode::Http);
+        let server = std::thread::spawn(move || {
+            let (stream, _) = socket.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut stream = BufReader::new(stream);
+            let mut line = String::new();
+            stream.read_line(&mut line).unwrap();
+            assert_eq!(line, "GET http://proxy-test.invalid/check HTTP/1.1\r\n");
+            while !line.is_empty() && line != "\r\n" {
+                line.clear();
+                stream.read_line(&mut line).unwrap();
+            }
+            stream.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").unwrap();
+        });
+        assert_eq!(tokio::time::timeout(Duration::from_secs(5), downloader.get_text("http://proxy-test.invalid/check")).await.unwrap().unwrap(), "ok");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn explicit_proxy_requires_a_host_and_numeric_port() {
+        let mut settings = crate::settings::Settings::default();
+        settings.set("ProxyType", "SOCKS5");
+        settings.set("ProxyPort", "0");
+        assert!(http_builder(&settings).is_err());
+        settings.set("ProxyPort", "1080");
+        for address in ["http://proxy.example", "proxy.example:1080", "user@proxy.example"] {
+            settings.set("ProxyAddr", address);
+            assert!(http_builder(&settings).is_err());
+        }
+        settings.set("ProxyAddr", "::1");
+        assert!(http_builder(&settings).is_ok());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn concurrent_cache_misses_publish_complete_downloads() {
         let dir = tempfile::tempdir().unwrap();
@@ -299,7 +433,7 @@ mod tests {
             });
         });
 
-        let downloader = Downloader { client: Client::builder().no_proxy().build().unwrap() };
+        let downloader = Downloader { client: Client::builder().no_proxy().build().unwrap().into() };
         let req = DownloadRequest::new(url, &dest);
         let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
             tokio::join!(downloader.download(&req), downloader.download(&req))
