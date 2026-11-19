@@ -19,7 +19,7 @@ static REDACTIONS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
         (r"(?i)(\(session id is )[^)\r\n]+", "${1}<SESSION_TOKEN>"),
         (r#"(?i)(new refresh token:\s*")[^"\r\n]+"#, "${1}<TOKEN>"),
         (r#"(?i)("(?:device_code|access_token|refresh_token|identityToken|token|client_secret)"\s*:\s*")[^"\r\n]+"#, "${1}<TOKEN>"),
-        (r#"(?i)(--(?:accessToken|clientToken|username)(?:\s+|=))(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,\]]+)"#, "${1}<REDACTED>"),
+        (r#"(?i)(--(?:accessToken|clientToken|username)(?:["']?[ \t]*,\s*|\s+|=))(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[^\s,\]]+)"#, "${1}<REDACTED>"),
         (r"(?i)(\bsetting user:\s*)[^\s,\]]+", "${1}<USERNAME>"),
         (r"(?i)(\bauthorization:\s*bearer\s+)[^\s,\]]+", "${1}<TOKEN>"),
     ]
@@ -273,6 +273,17 @@ Loaded 42 mods & started +1 job."#;
         assert!(redacted.contains("/home/********/.minecraft"));
         assert!(redacted.contains("Loaded 42 mods & started +1 job."));
         assert_eq!(redacted, anonymize_log(&redacted));
+    }
+
+    #[test]
+    fn anonymizes_comma_delimited_launch_arguments() {
+        let input = r#"[--accessToken, fake-alpha, --clientToken,fake-beta, --username , TestPlayer]
+["--accessToken", "fake-\"quoted", "--version", "1.20.4"]
+[--accessToken=fake-inline, --username ShellPlayer]"#;
+        let expected = r#"[--accessToken, <REDACTED>, --clientToken,<REDACTED>, --username , <REDACTED>]
+["--accessToken", <REDACTED>, "--version", "1.20.4"]
+[--accessToken=<REDACTED>, --username <REDACTED>]"#;
+        assert_eq!(anonymize_log(input), expected);
     }
 
     #[test]
