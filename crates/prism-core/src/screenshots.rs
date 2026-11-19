@@ -135,6 +135,14 @@ impl Screenshot {
     }
 
     pub fn rename(&self, name: &str) -> io::Result<PathBuf> {
+        self.rename_with_link(name, |source, target| fs::hard_link(source, target))
+    }
+
+    fn rename_with_link(
+        &self,
+        name: &str,
+        link: impl FnOnce(&Path, &Path) -> io::Result<()>,
+    ) -> io::Result<PathBuf> {
         let name = name.trim();
         if !plain_name(name)
             || name.ends_with('.')
@@ -159,12 +167,30 @@ impl Screenshot {
             return Ok(display_path);
         }
         let target = self.directory.path.join(name);
-        fs::hard_link(&path, &target)?;
-        if let Err(error) = self.checked_path().and_then(|path| fs::remove_file(path)) {
-            if regular_stamp(&target).is_ok_and(|stamp| stamp == self.stamp) {
-                let _ = fs::remove_file(target);
+        match link(&path, &target) {
+            Ok(()) => {
+                if let Err(error) = self.checked_path().and_then(|path| fs::remove_file(path)) {
+                    if regular_stamp(&target).is_ok_and(|stamp| stamp == self.stamp) {
+                        let _ = fs::remove_file(target);
+                    }
+                    return Err(error);
+                }
             }
-            return Err(error);
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(error),
+            Err(_) => {
+                let path = self.checked_path()?;
+                match fs::symlink_metadata(&target) {
+                    Ok(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "A file already exists with that name.",
+                        ))
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error),
+                }
+                fs::rename(path, &target)?;
+            }
         }
         Ok(display_path)
     }
@@ -296,6 +322,54 @@ mod tests {
         assert_eq!(fs::read(dir.join("renamed.png")).unwrap(), b"changed");
         Screenshot::list(root.path()).unwrap()[1].delete().unwrap();
         assert!(!dir.join("renamed.png").exists());
+    }
+
+    #[test]
+    fn rename_falls_back_without_hard_links() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("screenshots");
+        fs::create_dir(&dir).unwrap();
+        let source = dir.join("original.png");
+        let target = dir.join("renamed.png");
+        fs::write(&source, b"original").unwrap();
+        fs::write(&target, b"taken").unwrap();
+        let shots = Screenshot::list(root.path()).unwrap();
+        let screenshot = &shots[0];
+        let unavailable = |_: &Path, _: &Path| Err(io::ErrorKind::PermissionDenied.into());
+
+        assert_eq!(
+            screenshot
+                .rename_with_link("renamed", unavailable)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"taken");
+        fs::remove_file(&target).unwrap();
+        assert_eq!(
+            screenshot
+                .rename_with_link("renamed", |_, _| Err(io::ErrorKind::AlreadyExists.into()))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            screenshot.rename_with_link("renamed", unavailable).unwrap(),
+            target
+        );
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert!(!source.exists());
+
+        let renamed = &Screenshot::list(root.path()).unwrap()[0];
+        assert!(renamed
+            .rename_with_link("elsewhere", |path, _| {
+                fs::rename(path, &source).unwrap();
+                fs::write(path, b"replacement").unwrap();
+                Err(io::ErrorKind::Unsupported.into())
+            })
+            .is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"replacement");
+        assert!(!dir.join("elsewhere.png").exists());
     }
 
     #[cfg(unix)]
