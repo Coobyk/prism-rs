@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const RUN_SHORTCUT: &str = r#"PRISM_RS_DATA="$1"; export PRISM_RS_DATA; shift; exec "$@""#;
+const RUN_SHORTCUT: &str = r#"PRISM_RS_DATA="$1"; export PRISM_RS_DATA; shift; "$@"; status=$?; if [ "$status" -ne 0 ] && [ -t 0 ]; then echo 'Launch failed. Press Enter to close.'; read -r ignored; fi; exit "$status""#;
 
 pub fn create(paths: &Paths, instance: &Instance) -> io::Result<PathBuf> {
     let desktop = dirs::desktop_dir()
@@ -34,7 +34,7 @@ fn write_shortcut(
         name.trim()
     };
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec=/bin/sh -c {} prism-rs {} {} launch {} --shortcut-token {}\nIcon=applications-games\nTerminal=false\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec=/bin/sh -c {} prism-rs {} {} launch {} --shortcut-token {}\nIcon=applications-games\nTerminal=true\n",
         key_value(name),
         exec_argument(RUN_SHORTCUT)?,
         exec_argument(data)?,
@@ -162,6 +162,7 @@ mod tests {
         );
         let text = fs::read_to_string(path).unwrap();
         assert!(text.contains("Name=../Saves\n"));
+        assert!(text.contains("Terminal=true\n"));
         assert!(text.contains(r#" "/tmp/prism data" "/opt/Prism RS/prism-rs" launch "world-id""#));
     }
 
@@ -171,7 +172,7 @@ mod tests {
         let exe = temp.path().join("prism=rs");
         fs::write(
             &exe,
-            "#!/bin/sh\nprintf '%s\\n' \"$PRISM_RS_DATA\" \"$@\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$PRISM_RS_DATA\" \"$@\"\nexit 23\n",
         )
         .unwrap();
         fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
@@ -181,7 +182,7 @@ mod tests {
             .args(["launch", "world id"])
             .output()
             .unwrap();
-        assert!(output.status.success());
+        assert_eq!(output.status.code(), Some(23));
         assert_eq!(output.stdout, b"/tmp/prism data\nlaunch\nworld id\n");
     }
 }

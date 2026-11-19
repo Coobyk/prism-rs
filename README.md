@@ -40,7 +40,7 @@ prism-rs export my-instance out.zip # export Prism zip (or out.mrpack for Modrin
 On Linux, select an instance and click **Create Shortcut** to add a `.desktop` launcher to
 your desktop. It uses the current launcher binary and data directory, so recreate the
 shortcut if either moves. Some desktop environments ask you to trust a new shortcut before
-opening it.
+opening it. A terminal shows game output and stays open on launch failure.
 
 For automatic CurseForge downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
 your own CurseForge API key before running the CLI or opening the launcher.
