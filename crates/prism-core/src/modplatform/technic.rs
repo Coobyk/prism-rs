@@ -203,7 +203,10 @@ pub async fn install(
     if !pack.builds.iter().any(|value| value == build) {
         return Err(problem("Select an available Technic build."));
     }
-    let scratch = tempfile::tempdir()?;
+    fs::create_dir_all(&paths.root)?;
+    let scratch = tempfile::Builder::new()
+        .prefix(".technic-download-")
+        .tempdir_in(&paths.root)?;
     let (minecraft, archives) = match &pack.source {
         Source::Zip(url) => (pack.minecraft.clone(), vec![(url.clone(), String::new())]),
         Source::Solder(url) => {
