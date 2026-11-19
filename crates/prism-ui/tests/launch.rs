@@ -152,4 +152,10 @@ fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
         .lines()
         .any(|line| line == instance.game_root().to_str().unwrap()));
     assert!(stderr.contains("game stderr"));
+
+    cfg.set("PostExitCommand", "exit 7");
+    cfg.save(&config).unwrap();
+    let output = cli(&paths).args(["launch", &instance.id]).output().unwrap();
+    assert_eq!(output.status.code(), Some(42));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Post-exit command failed"));
 }

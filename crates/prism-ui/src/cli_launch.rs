@@ -68,7 +68,9 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
         Ok::<_, Box<dyn Error>>((child, prepared))
     })?;
     let status = wait_for_game(child)?;
-    prepared.run_post_exit()?;
+    if let Err(error) = prepared.run_post_exit() {
+        eprintln!("Post-exit command failed: {error}");
+    }
     Ok(status)
 }
 
