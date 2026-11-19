@@ -46,7 +46,11 @@ fn collect_directory(
     if !ancestors.insert(canonical.clone()) {
         return Ok(());
     }
-    for entry in std::fs::read_dir(root)? {
+    let mut entries = std::fs::read_dir(root)?.peekable();
+    if entries.peek().is_none() {
+        out.push(root.to_path_buf());
+    }
+    for entry in entries {
         let entry = entry?;
         let path = entry.path();
         let name = entry.file_name();
@@ -119,6 +123,13 @@ pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError>
     collect(&instance.root, &instance.game_root(), &mut files)?;
     let (mut output, mut zip) = writer(instance, output)?;
     for path in files {
+        if path.is_dir() {
+            zip.add_directory(
+                archive_path(path.strip_prefix(&instance.root).unwrap()),
+                SimpleFileOptions::default(),
+            )?;
+            continue;
+        }
         zip.start_file(
             archive_path(path.strip_prefix(&instance.root).unwrap()),
             SimpleFileOptions::default(),
@@ -179,6 +190,7 @@ where
     let game = instance.game_root();
     let mut paths = Vec::new();
     collect(&game, &game, &mut paths)?;
+    paths.retain(|path| !path.is_dir());
     let mut hashes = BTreeMap::new();
     for path in &paths {
         let relative = path.strip_prefix(&game).unwrap();
@@ -379,6 +391,25 @@ mod tests {
         assert!(!imported.game_root().join("crash-reports").exists());
         assert!(export_zip(&f.1, &output).is_err());
         assert!(export_zip(&f.1, &f.1.root.join("bad.zip")).is_err());
+    }
+
+    #[test]
+    fn empty_game_and_nested_directories_survive_zip_round_trip() {
+        let f = Fixture::new();
+        std::fs::remove_dir(f.1.mods_dir()).unwrap();
+        let output = f.0.root.join("vanilla.zip");
+        export_zip(&f.1, &output).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(&output).unwrap()).unwrap();
+        assert!(zip.by_name("minecraft/").unwrap().is_dir());
+        let imported = crate::import::import_sync(&f.0, &output, None).unwrap();
+        assert_eq!(imported.game_root(), imported.root.join("minecraft"));
+        assert!(imported.game_root().is_dir());
+
+        std::fs::create_dir_all(f.1.game_root().join("config/empty")).unwrap();
+        let output = f.0.root.join("nested.zip");
+        export_zip(&f.1, &output).unwrap();
+        let imported = crate::import::import_sync(&f.0, &output, None).unwrap();
+        assert!(imported.game_root().join("config/empty").is_dir());
     }
 
     #[tokio::test]
