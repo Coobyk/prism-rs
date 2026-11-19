@@ -41,6 +41,11 @@ Install the [official Horizon launcher](https://playhorizon.dev/download). Put
 global settings. In **Add Instance**, choose **Horizon** to create a Horizon
 instance, then select it and click **Launch**.
 
+Prism creates a hidden `.prism-horizon-link` file inside the Horizon instance's
+game folder. It lets Prism recognize the same instance after a move and reject
+a replacement that reuses its ID. Keep the marker when moving the folder or
+backing it up; a full game-folder backup that includes hidden files keeps it.
+
 Horizon manages its own game builds, Microsoft accounts, preparation and mods.
 Use the Horizon launcher to install a build and sign in with an account that
 owns Minecraft: Java Edition. The corresponding CLI commands are
