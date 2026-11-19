@@ -62,6 +62,21 @@ pub struct ModrinthApi {
 }
 
 impl ModrinthApi {
+    pub async fn version_files(
+        &self,
+        hashes: &[String],
+    ) -> Result<std::collections::BTreeMap<String, ModVersion>, PlatformError> {
+        Ok(self
+            .http
+            .post(format!("{API_BASE}/version_files"))
+            .json(&serde_json::json!({"hashes": hashes, "algorithm": "sha1"}))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
+    }
+
     pub fn new() -> Self {
         ModrinthApi {
             http: reqwest::Client::builder()
@@ -176,10 +191,12 @@ fn urlencoding_encode(s: &str) -> String {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MrpackIndex {
     #[serde(default)]
+    #[serde(rename = "formatVersion", alias = "format_version")]
     pub format_version: u32,
     #[serde(default)]
     pub game: String,
     #[serde(default)]
+    #[serde(rename = "versionId", alias = "version_id")]
     pub version_id: String,
     #[serde(default)]
     pub name: String,
@@ -200,6 +217,7 @@ pub struct MrpackFile {
     pub env: Option<std::collections::BTreeMap<String, String>>,
     pub downloads: Vec<String>,
     #[serde(default)]
+    #[serde(rename = "fileSize", alias = "file_size")]
     pub file_size: u64,
 }
 

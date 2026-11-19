@@ -357,7 +357,26 @@ impl MainWindow {
                     .on_click(cx.listener(Self::on_change_group)),
             )
             .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
-            .child(self.sidebar_button("export", "Export", enabled && !horizon))
+            .child(
+                self.sidebar_button("export", "Export", enabled && !horizon)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if let Some(instance) = this.app.read(cx).selected_instance()
+                            .filter(|instance| !instance.is_horizon())
+                            .cloned()
+                        {
+                            let mut prompt = PromptState::new(
+                                crate::dialogs::PromptKind::Export,
+                                instance.id.clone(),
+                                String::new(),
+                                window,
+                                cx,
+                            );
+                            prompt.set_export_defaults(&instance, window, cx);
+                            this.prompt = Some(prompt);
+                            cx.notify();
+                        }
+                    })),
+            )
             .child(self.sidebar_button("copy", "Copy", enabled && !horizon))
             .child(
                 self.sidebar_button(

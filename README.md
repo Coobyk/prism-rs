@@ -31,6 +31,7 @@ Headless CLI (used to verify the launch pipeline without a GUI):
 ```sh
 prism-rs prepare 1.20.1          # fetch metadata, download game files, print the java command
 prism-rs import pack.mrpack      # import a Modrinth modpack / MultiMC instance zip
+prism-rs export my-instance out.zip # export Prism zip (or out.mrpack for Modrinth)
 ```
 
 ### Horizon
@@ -46,8 +47,8 @@ owns Minecraft: Java Edition. The corresponding CLI commands are
 `horizon-launcher install latest`, `horizon-launcher account sign-in`, and
 `horizon-launcher prepare` (if the build needs assets prepared).
 **Remove from Prism** removes only the link; the Horizon game folder and saves
-remain. Manage Horizon mods through the official launcher, not Prism's Java mod
-browser.
+remain. Manage Horizon mods, servers, and exports through the official Horizon
+launcher; Prism's mod browser, server editor, and export are for Java instances.
 
 ## Architecture
 
@@ -67,6 +68,7 @@ crates/prism-core
   modplatform/    Modrinth (search/versions/install/.mrpack) and CurseForge (Flame)
   resources.rs    local mod/pack scanning (fabric.mod.json, mods.toml, mcmod.info, quilt)
   import.rs       instance import: .mrpack, CurseForge manifest (partial), MultiMC zips
+  export.rs       Prism zip and Modrinth mrpack export (hash resolution + overrides)
   news.rs         Atom/RSS news feed
 
 crates/prism-ui (GPUI)
@@ -92,9 +94,10 @@ Working today:
 - Global + per-instance settings (memory, Java, window size)
 - Live console with log capture; kill running instances
 - News feed, grouped instance list, persistent config
+- Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
 
 Not yet at parity (tracked in the issue tracker of your heart): CurseForge/ATL/FTB/Technic pack
-import, instance export (Prism zip / mrpack / CurseForge), servers.dat NBT editing, screenshots
+import, CurseForge export, screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options, quick-play singleplayer/multiplayer dialogs.
 
