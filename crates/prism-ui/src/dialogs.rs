@@ -825,7 +825,7 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
             PromptKind::Export | PromptKind::Copy => unreachable!(),
             PromptKind::Rename => {
                 if let Some(inst) = app.instances.get_mut(&target) {
-                    if let Err(error) = inst.rename(&app.paths, value.clone()) {
+                    if let Err(error) = inst.rename(value.clone()) {
                         app.toast = Some((format!("Could not rename instance: {error}"), std::time::Instant::now()));
                     }
                 }

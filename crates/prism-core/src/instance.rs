@@ -35,6 +35,11 @@ pub struct Instance {
 
 impl Instance {
     pub(crate) const SHORTCUT_TOKEN_FILE: &str = ".prism-rs-shortcut-token";
+    const CONFIG_LOCK_FILE: &str = ".prism-rs-config-write.lock";
+
+    pub(crate) fn is_launch_state_file(name: &std::ffi::OsStr) -> bool {
+        name == Self::SHORTCUT_TOKEN_FILE || name == Self::CONFIG_LOCK_FILE
+    }
 
     pub fn shortcut_token(&self) -> std::io::Result<String> {
         std::fs::read_to_string(self.root.join(Self::SHORTCUT_TOKEN_FILE))
@@ -108,11 +113,11 @@ impl Instance {
         matches!(self.kind, InstanceKind::Horizon { .. })
     }
 
-    pub fn save_horizon_home(&mut self, paths: &Paths, new_home: PathBuf) -> std::io::Result<()> {
+    pub fn save_horizon_home(&mut self, new_home: PathBuf) -> std::io::Result<()> {
         let InstanceKind::Horizon { id, token, .. } = &self.kind else {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Not a Horizon link"));
         };
-        self.edit_config(paths, |cfg| {
+        self.edit_config(|cfg| {
             if cfg.get("HorizonInstanceId") != Some(id.as_str())
                 || cfg.get("HorizonLinkToken").and_then(|value| value.parse().ok()) != *token
             {
@@ -127,8 +132,8 @@ impl Instance {
         Ok(())
     }
 
-    pub fn rename(&mut self, paths: &Paths, name: String) -> std::io::Result<()> {
-        self.edit_config(paths, |cfg| {
+    pub fn rename(&mut self, name: String) -> std::io::Result<()> {
+        self.edit_config(|cfg| {
             cfg.set("name", name.as_str());
             Ok(())
         })?;
@@ -138,7 +143,6 @@ impl Instance {
 
     fn edit_config(
         &self,
-        paths: &Paths,
         edit: impl FnOnce(&mut IniFile) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
         use std::io::Write;
@@ -146,7 +150,7 @@ impl Instance {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(paths.root.join(".instance-config-write.lock"))?;
+            .open(self.root.join(Self::CONFIG_LOCK_FILE))?;
         fs2::FileExt::lock_exclusive(&lock)?;
         let path = self.root.join("instance.cfg");
         let mut cfg = IniFile::load(&path)?;
@@ -536,18 +540,19 @@ mod tests {
         })).unwrap();
         let mut instance = InstanceList::link_horizon(&paths, horizon).unwrap();
         let mut stale_gui_instance = instance.clone();
+        std::fs::create_dir(paths.root.join(".instance-config-write.lock")).unwrap();
         let cfg = instance.root.join("instance.cfg");
         let backup = cfg.with_extension("bak");
         std::fs::rename(&cfg, &backup).unwrap();
         std::fs::create_dir(&cfg).unwrap();
 
-        assert!(instance.save_horizon_home(&paths, new_home.clone()).is_err());
+        assert!(instance.save_horizon_home(new_home.clone()).is_err());
         assert_eq!(instance.game_root(), old_home);
 
         std::fs::remove_dir(&cfg).unwrap();
         std::fs::rename(&backup, &cfg).unwrap();
-        instance.save_horizon_home(&paths, new_home.clone()).unwrap();
-        stale_gui_instance.rename(&paths, "Renamed".into()).unwrap();
+        instance.save_horizon_home(new_home.clone()).unwrap();
+        stale_gui_instance.rename("Renamed".into()).unwrap();
         assert_eq!(instance.game_root(), new_home);
         let stored = Instance::load(&instance.root).unwrap();
         assert_eq!(stored.game_root(), new_home);

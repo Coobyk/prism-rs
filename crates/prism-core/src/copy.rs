@@ -119,7 +119,7 @@ fn copy_tree(source: &Path, dest: &Path, relative: &Path, options: &CopyOptions)
     for entry in fs::read_dir(source)? {
         let entry = entry?;
         let name = entry.file_name();
-        if relative.as_os_str().is_empty() && name == Instance::SHORTCUT_TOKEN_FILE {
+        if relative.as_os_str().is_empty() && Instance::is_launch_state_file(&name) {
             continue;
         }
         let lower = name.to_string_lossy().to_ascii_lowercase();

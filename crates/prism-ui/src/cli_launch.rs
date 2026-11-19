@@ -31,7 +31,7 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
             if let Some(mut stored) = Instance::load(&instance.root) {
                 if matches!(&stored.kind, InstanceKind::Horizon { id: stored_id, token: stored_token, .. } if stored_id == id && stored_token == token)
                 {
-                    if let Err(error) = stored.save_horizon_home(&paths, current_home) {
+                    if let Err(error) = stored.save_horizon_home(current_home) {
                         eprintln!("Could not save the moved Horizon game folder: {error}");
                     }
                 }
