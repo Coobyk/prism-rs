@@ -222,19 +222,23 @@ where
     for path in paths {
         let relative = archive_path(path.strip_prefix(&game).unwrap());
         let data = std::fs::read(&path)?;
-        let found = hashes.get(&path).and_then(|hash| {
-            resolved.get(hash).and_then(|version| {
-                version
-                    .files
-                    .iter()
-                    .find(|file| file.hashes.get("sha1") == Some(hash))
-            })
-        });
+        let sha1 = hex::encode(Sha1::digest(&data));
+        let found = hashes
+            .get(&path)
+            .filter(|hash| **hash == sha1)
+            .and_then(|hash| {
+                resolved.get(hash).and_then(|version| {
+                    version
+                        .files
+                        .iter()
+                        .find(|file| file.hashes.get("sha1") == Some(hash))
+                })
+            });
         if let Some(file) = found.filter(|f| !f.url.is_empty()) {
             index.files.push(MrpackFile {
                 path: relative,
                 hashes: BTreeMap::from([
-                    ("sha1".into(), hex::encode(Sha1::digest(&data))),
+                    ("sha1".into(), sha1),
                     ("sha512".into(), hex::encode(Sha512::digest(&data))),
                 ]),
                 env: Some(BTreeMap::from([
@@ -416,6 +420,35 @@ mod tests {
         assert!(zip.by_name("overrides/mods/unknown.jar").is_ok());
         assert!(zip.by_name("overrides/options.txt").is_ok());
         assert!(zip.by_name("overrides/mods/known.jar").is_err());
+    }
+
+    #[tokio::test]
+    async fn changed_resolved_file_is_exported_as_override() {
+        let f = Fixture::new();
+        let jar = f.1.mods_dir().join("changing.jar");
+        std::fs::write(&jar, b"original").unwrap();
+        let output = f.0.root.join("changed.mrpack");
+        export_mrpack_with_lookup(&f.1, &output, metadata(), |hashes| async move {
+            let hash = hex::encode(Sha1::digest(b"original"));
+            assert_eq!(hashes, vec![hash.clone()]);
+            std::fs::write(jar, b"changed").unwrap();
+            let version: ModVersion = serde_json::from_value(serde_json::json!({
+                "id": "1", "project_id": "p", "name": "Original", "version_number": "1",
+                "files": [{"url": "https://cdn.modrinth.com/original.jar", "filename": "original.jar", "primary": true, "size": 8, "hashes": {"sha1": hash}}]
+            })).unwrap();
+            Ok(BTreeMap::from([(hash, version)]))
+        }).await.unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        let index: MrpackIndex =
+            serde_json::from_reader(zip.by_name("modrinth.index.json").unwrap()).unwrap();
+        assert!(index.files.is_empty());
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut zip.by_name("overrides/mods/changing.jar").unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, b"changed");
     }
 
     #[tokio::test]
