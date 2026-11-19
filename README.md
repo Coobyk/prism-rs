@@ -52,6 +52,12 @@ Files unavailable for automatic download are listed in
 `curseforge-missing-files.txt` in the new instance folder and can be added
 manually to the appropriate Minecraft folder (`mods`, `resourcepacks`, or `shaderpacks`).
 
+With that same key, open a Java instance with a mod loader and go to **Mods → Browse
+CurseForge**. Search by name or leave the field blank to browse. **Install** downloads
+the newest compatible, downloadable release for that project (falling back to beta
+or alpha if needed), verifies its checksum, and saves metadata for future updates.
+Install required dependencies separately.
+
 To find packs for a Java instance, open **Resource Packs** or **Shader Packs** and choose
 **Browse Modrinth**. Search by name or leave the field blank to browse, then click
 **Install** to download a compatible file for that instance's Minecraft version.

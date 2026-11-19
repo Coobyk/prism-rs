@@ -2,14 +2,42 @@
 //! Mirrors `launcher/modplatform/flame/`.
 
 use super::{install_path, PlatformError, ResourceType};
+use crate::loaders::Loader;
 use crate::net::{DownloadRequest, Downloader};
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const API_BASE: &str = "https://api.curseforge.com/v1";
 pub const API_KEY_ENV: &str = "PRISM_RS_CURSEFORGE_API_KEY";
+
+fn configured_api_key() -> Option<HeaderValue> {
+    let key = std::env::var(API_KEY_ENV).ok()?;
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let mut header = HeaderValue::from_str(key).ok()?;
+    header.set_sensitive(true);
+    Some(header)
+}
+
+pub(super) fn curseforge_loader(loader: &Loader) -> Option<u8> {
+    match loader {
+        Loader::Forge { .. } => Some(1),
+        Loader::Fabric { .. } => Some(4),
+        Loader::Quilt { .. } => Some(5),
+        Loader::NeoForge { .. } => Some(6),
+        Loader::None => None,
+    }
+}
+
+fn require_loader(loader: &Loader) -> Result<u8, PlatformError> {
+    curseforge_loader(loader).ok_or_else(|| {
+        PlatformError::Request("Install a mod loader before browsing CurseForge mods.".into())
+    })
+}
 
 #[derive(Deserialize)]
 struct FlameProject {
@@ -35,8 +63,8 @@ pub struct FlameSearchHit {
     pub summary: String,
     #[serde(default)]
     pub slug: String,
-    #[serde(default)]
-    pub downloadCount: i64,
+    #[serde(default, rename = "downloadCount")]
+    pub downloads: u64,
     #[serde(default)]
     pub links: serde_json::Value,
 }
@@ -90,15 +118,7 @@ impl FlameApi {
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap(),
-            api_key: std::env::var(API_KEY_ENV).ok().and_then(|key| {
-                let key = key.trim();
-                if key.is_empty() {
-                    return None;
-                }
-                let mut header = HeaderValue::from_str(key).ok()?;
-                header.set_sensitive(true);
-                Some(header)
-            }),
+            api_key: configured_api_key(),
         }
     }
 
@@ -115,6 +135,10 @@ impl FlameApi {
         self.api_key.is_some()
     }
 
+    pub fn is_configured() -> bool {
+        configured_api_key().is_some()
+    }
+
     fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, PlatformError> {
         let key = self.api_key.as_ref().ok_or_else(|| {
             PlatformError::Request(format!("set {API_KEY_ENV} to a valid CurseForge API key"))
@@ -125,26 +149,30 @@ impl FlameApi {
             .header("Accept", "application/json"))
     }
 
-    /// Search mods in the classId=6 (mods) section.
-    pub async fn search(
+    pub async fn search_mods(
         &self,
         query: &str,
         game_version: &str,
-        class_id: i64,
-        limit: u32,
+        loader: &Loader,
     ) -> Result<Vec<FlameSearchHit>, PlatformError> {
-        let path = format!(
-            "/mods/search?gameId=432&classId={class_id}&sortField=2&sortOrder=desc&pageSize={limit}"
-        );
-        let resp = self.get(&path)?
-            .query(&[("searchFilter", query), ("gameVersion", game_version)])
-            .send().await?;
-        if !resp.status().is_success() {
-            return Err(PlatformError::Request(format!("flame search: {}", resp.status())));
+        #[derive(Deserialize)]
+        struct Response {
+            data: Vec<FlameSearchHit>,
         }
-        let json: serde_json::Value = resp.json().await?;
-        let hits: Vec<FlameSearchHit> = serde_json::from_value(json.get("data").cloned().unwrap_or_default())?;
-        Ok(hits)
+
+        let loader = require_loader(loader)?;
+        let mut request = self.get("/mods/search")?
+            .query(&[("gameId", 432), ("classId", 6), ("sortField", 2), ("pageSize", 25)])
+            .query(&[("sortOrder", "desc"), ("gameVersion", game_version)])
+            .query(&[("modLoaderType", loader)]);
+        if !query.trim().is_empty() {
+            request = request.query(&[("searchFilter", query.trim())]);
+        }
+        let resp = request.send().await?;
+        if !resp.status().is_success() {
+            return Err(Self::lookup_error(resp.status(), "CurseForge search".into()));
+        }
+        Ok(resp.json::<Response>().await?.data)
     }
 
     /// List files of a project.
@@ -242,6 +270,68 @@ impl FlameApi {
             }
             _ => PlatformError::Request(format!("{context}: {status}")),
         }
+    }
+
+    pub async fn install_mod(
+        &self,
+        downloader: &Downloader,
+        game_root: &Path,
+        project_id: i64,
+        game_version: &str,
+        loader: &Loader,
+    ) -> Result<PathBuf, PlatformError> {
+        let loader = require_loader(loader)?;
+        let files = self.compatible_files(project_id, game_version, loader).await?;
+        let (file, url, sha1) = files.iter().filter_map(|file| {
+            let url = file.downloadUrl.as_deref().filter(|url| !url.is_empty())?;
+            let sha1 = file.sha1().filter(|hash|
+                hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            )?;
+            if !(1..=3).contains(&file.release_type) || !super::updates::is_jar(&file.fileName)
+                || !file.gameVersions.iter().any(|version| version == game_version)
+            {
+                return None;
+            }
+            let date = chrono::DateTime::parse_from_rfc3339(&file.file_date).ok()?;
+            Some(((std::cmp::Reverse(file.release_type), date, file.id), (file, url, sha1)))
+        })
+        .max_by_key(|(rank, _)| *rank)
+        .map(|(_, candidate)| candidate)
+        .ok_or_else(|| PlatformError::Request(
+            format!("No compatible, downloadable JAR for Minecraft {game_version} with a checksum. Check the project on CurseForge.")
+        ))?;
+
+        let dest = install_path(game_root, ResourceType::Mod, &file.fileName);
+        let disabled = dest.with_file_name(format!("{}.disabled", file.fileName));
+        let ensure_unoccupied = || -> Result<(), PlatformError> {
+            for path in [&dest, &disabled] {
+                match path.symlink_metadata() {
+                    Ok(_) => return Err(PlatformError::Request(format!(
+                        "{} is already in the mods folder", path.file_name().unwrap().to_string_lossy()
+                    ))),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Ok(())
+        };
+        ensure_unoccupied()?;
+        let mods = game_root.join(ResourceType::Mod.folder());
+        std::fs::create_dir_all(&mods)?;
+        let stage = tempfile::tempdir_in(&mods)?;
+        let req = DownloadRequest::new(url, stage.path().join("mod.jar")).with_sha1(sha1);
+        downloader.download(&req).await?;
+        ensure_unoccupied()?;
+        tempfile::TempPath::try_from_path(req.dest)?.persist_noclobber(&dest).map_err(|e| e.error)?;
+        if let Err(error) = super::updates::write_curseforge_index(game_root, project_id, file) {
+            if let Err(rollback) = std::fs::remove_file(&dest) {
+                return Err(PlatformError::Request(format!(
+                    "Could not save mod metadata: {error}; could not remove {}: {rollback}", file.fileName
+                )));
+            }
+            return Err(error);
+        }
+        Ok(dest)
     }
 
     /// Download a file into the instance's resource folder.
@@ -346,6 +436,109 @@ impl FlameManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, Write};
+    use std::net::TcpListener;
+
+    fn reply(listener: &TcpListener, expected: &[&str], status: &str, body: &[u8]) {
+        let (mut socket, _) = listener.accept().unwrap();
+        let mut reader = std::io::BufReader::new(&mut socket);
+        let mut request = String::new();
+        loop {
+            let size = reader.read_line(&mut request).unwrap();
+            if size <= 2 {
+                break;
+            }
+        }
+        let line = request.lines().next().unwrap();
+        for part in expected {
+            assert!(line.contains(part), "missing {part} in {line}");
+        }
+        assert_eq!(request.contains("x-api-key: mock-key"), !line.starts_with("GET /download "));
+        write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+        socket.write_all(body).unwrap();
+    }
+
+    #[tokio::test]
+    async fn searches_compatible_curseforge_mods_and_installs_the_latest_stable_jar() {
+        use sha1::{Digest, Sha1};
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let api = FlameApi::with_test_endpoint(base.clone());
+        let bytes = b"verified mod jar";
+        let hash = hex::encode(Sha1::digest(bytes));
+        let file = |id, name, release, game| serde_json::json!({
+            "id": id,
+            "fileName": name,
+            "displayName": "Example Mod",
+            "fileDate": format!("2026-01-0{id}T00:00:00Z"),
+            "releaseType": release,
+            "gameVersions": [game],
+            "downloadUrl": format!("{base}/download"),
+            "hashes": [{"algo": 1, "value": hash}],
+        });
+        let files = serde_json::json!({
+            "data": [
+                file(5, "wrong-game.jar", 1, "1.21"),
+                file(4, "../unsafe.jar", 1, "1.20.1"),
+                file(3, "beta.jar", 2, "1.20.1"),
+                file(2, "stable.jar", 1, "1.20.1"),
+                file(1, "older.jar", 1, "1.20.1")
+            ],
+            "pagination": {"index": 0, "totalCount": 5}
+        }).to_string();
+        let worker = std::thread::spawn(move || {
+            reply(&listener, &["GET /mods/search?", "classId=6", "gameId=432", "searchFilter=Example+Mod", "gameVersion=1.20.1", "modLoaderType=4"],
+                "200 OK", br#"{"data":[{"id":42,"name":"Example Mod","downloadCount":3}]}"#);
+            let expected_files = ["GET /mods/42/files?", "gameVersion=1.20.1", "modLoaderType=4"];
+            reply(&listener, &expected_files, "200 OK", files.as_bytes());
+            reply(&listener, &["GET /download "], "200 OK", bytes);
+            reply(&listener, &expected_files, "200 OK", files.as_bytes());
+            reply(&listener, &expected_files, "200 OK", files.as_bytes());
+            reply(&listener, &["GET /download "], "200 OK", bytes);
+        });
+
+        let loader = Loader::Fabric { version: "0.16.14".into() };
+        let hits = api.search_mods("Example Mod", "1.20.1", &loader).await.unwrap();
+        assert_eq!((hits[0].id, hits[0].downloads), (42, 3));
+        let temp = tempfile::tempdir().unwrap();
+        let path = api.install_mod(&Downloader::new(), temp.path(), 42, "1.20.1", &loader).await.unwrap();
+        assert_eq!(path, temp.path().join("mods/stable.jar"));
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let index = std::fs::read_to_string(
+            std::fs::read_dir(temp.path().join("mods/.index")).unwrap().next().unwrap().unwrap().path()
+        ).unwrap();
+        let index: toml::Value = toml::from_str(&index).unwrap();
+        assert_eq!(index["update"]["curseforge"]["project-id"].as_integer(), Some(42));
+        assert_eq!(index["update"]["curseforge"]["file-id"].as_integer(), Some(2));
+
+        let disabled = path.with_file_name("stable.jar.disabled");
+        std::fs::rename(&path, &disabled).unwrap();
+        let error = api.install_mod(&Downloader::new(), temp.path(), 42, "1.20.1", &loader).await.unwrap_err();
+        assert!(error.to_string().contains("stable.jar.disabled is already in the mods folder"));
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(disabled).unwrap(), bytes);
+
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::create_dir(blocked.path().join("mods")).unwrap();
+        std::fs::write(blocked.path().join("mods/.index"), b"not a directory").unwrap();
+        assert!(api.install_mod(&Downloader::new(), blocked.path(), 42, "1.20.1", &loader).await.is_err());
+        assert!(!blocked.path().join("mods/stable.jar").exists());
+        worker.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn reports_a_rejected_search_key() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = FlameApi::with_test_endpoint(format!("http://{}", listener.local_addr().unwrap()));
+        let worker = std::thread::spawn(move || {
+            reply(&listener, &["GET /mods/search?"], "403 Forbidden", b"");
+        });
+        let loader = Loader::Forge { version: "47.4.0".into() };
+        assert!(matches!(api.search_mods("", "1.20.1", &loader).await,
+            Err(PlatformError::CurseForgeApiKeyRejected(_))));
+        worker.join().unwrap();
+    }
 
     #[test]
     fn project_classes_route_files_to_the_right_game_folders() {
