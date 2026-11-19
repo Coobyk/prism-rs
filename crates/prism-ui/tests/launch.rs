@@ -28,6 +28,25 @@ fn launch_requires_an_installed_instance_id() {
 }
 
 #[test]
+fn shortcut_rejects_a_replacement_instance_with_the_same_id() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = Paths { root: root.path().into() };
+    let original = InstanceList::create(&paths, "World", "default", "1.20.1").unwrap();
+    let original_token = original.ensure_shortcut_token().unwrap();
+    assert_eq!(original.ensure_shortcut_token().unwrap(), original_token);
+    fs::remove_dir_all(&original.root).unwrap();
+    let replacement = InstanceList::create(&paths, "World", "default", "1.20.1").unwrap();
+    assert_eq!(original.id, replacement.id);
+    assert_ne!(original_token, replacement.ensure_shortcut_token().unwrap());
+    let output = cli(&paths)
+        .args(["launch", &original.id, "--shortcut-token", &original_token])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no longer points to the original instance"));
+}
+
+#[test]
 fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
     let root = tempfile::tempdir().unwrap();
     let paths = Paths {

@@ -29,11 +29,15 @@ fn main() {
     // Headless CLI: verify/test the launch pipeline without a GUI.
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("launch") {
-        let [id] = &args[2..] else {
-            eprintln!("Usage: prism-rs launch <instance-id>");
-            std::process::exit(2);
+        let (id, shortcut_token) = match &args[2..] {
+            [id] => (id, None),
+            [id, flag, token] if flag == "--shortcut-token" => (id, Some(token.as_str())),
+            _ => {
+                eprintln!("Usage: prism-rs launch <instance-id>");
+                std::process::exit(2);
+            }
         };
-        match cli_launch::launch(id) {
+        match cli_launch::launch(id, shortcut_token) {
             Ok(code) => std::process::exit(code),
             Err(error) => {
                 eprintln!("Launch failed: {error}");

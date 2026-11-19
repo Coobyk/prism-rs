@@ -3,7 +3,7 @@ use prism_core::launch::{LaunchSettings, Launcher};
 use prism_core::{AccountList, InstanceKind, InstanceList, Paths};
 use std::{error::Error, io, process::Child};
 
-pub fn launch(id: &str) -> Result<i32, Box<dyn Error>> {
+pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Error>> {
     let mut paths = Paths::new();
     paths.root = std::path::absolute(&paths.root)?;
     let list = InstanceList::load(&paths)?;
@@ -11,6 +11,11 @@ pub fn launch(id: &str) -> Result<i32, Box<dyn Error>> {
         .get(id)
         .ok_or_else(|| format!("Instance not found: {id:?}"))?;
     let _lock = crate::instance_lock::acquire(&paths, instance)?;
+    if let Some(token) = shortcut_token {
+        if !instance.shortcut_token().is_ok_and(|current| current == token) {
+            return Err("This shortcut no longer points to the original instance. Create it again from the launcher.".into());
+        }
+    }
 
     if let InstanceKind::Horizon { id, token, .. } = &instance.kind {
         println!("Launching Horizon instance {:?}", instance.name);

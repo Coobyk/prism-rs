@@ -135,6 +135,8 @@ pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError>
     }
     let mut files = Vec::new();
     collect(&instance.root, &instance.game_root(), &mut files)?;
+    let shortcut_token_file = instance.root.join(Instance::SHORTCUT_TOKEN_FILE);
+    files.retain(|path| path != &shortcut_token_file);
     let (mut output, mut zip) = writer(instance, output)?;
     for path in files {
         if path.is_dir() {

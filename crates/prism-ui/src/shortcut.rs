@@ -14,7 +14,8 @@ pub fn create(paths: &Paths, instance: &Instance) -> io::Result<PathBuf> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Could not locate your desktop"))?;
     let exe = std::env::current_exe()?;
     let data = std::path::absolute(&paths.root)?;
-    write_shortcut(&desktop, &exe, &data, &instance.id, &instance.name)
+    let token = instance.ensure_shortcut_token()?;
+    write_shortcut(&desktop, &exe, &data, &instance.id, &instance.name, &token)
 }
 
 fn write_shortcut(
@@ -23,6 +24,7 @@ fn write_shortcut(
     data: &Path,
     id: &str,
     name: &str,
+    token: &str,
 ) -> io::Result<PathBuf> {
     let exe = utf8_path(exe)?;
     let data = utf8_path(data)?;
@@ -32,12 +34,13 @@ fn write_shortcut(
         name.trim()
     };
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec=/bin/sh -c {} prism-rs {} {} launch {}\nIcon=applications-games\nTerminal=false\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec=/bin/sh -c {} prism-rs {} {} launch {} --shortcut-token {}\nIcon=applications-games\nTerminal=false\n",
         key_value(name),
         exec_argument(RUN_SHORTCUT)?,
         exec_argument(data)?,
         exec_argument(exe)?,
         exec_argument(id)?,
+        exec_argument(token)?,
     );
 
     let stem = file_stem(name);
@@ -148,6 +151,7 @@ mod tests {
             Path::new("/tmp/prism data"),
             "world-id",
             "../Saves",
+            "test-token",
         )
         .unwrap();
         assert_eq!(path, desktop.join("_Saves (2).desktop"));

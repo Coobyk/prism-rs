@@ -34,6 +34,28 @@ pub struct Instance {
 }
 
 impl Instance {
+    pub(crate) const SHORTCUT_TOKEN_FILE: &str = ".prism-rs-shortcut-token";
+
+    pub fn shortcut_token(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(self.root.join(Self::SHORTCUT_TOKEN_FILE))
+    }
+
+    pub fn ensure_shortcut_token(&self) -> std::io::Result<String> {
+        use std::io::{ErrorKind, Write};
+        match self.shortcut_token() {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            result => return result,
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut file = tempfile::NamedTempFile::new_in(&self.root)?;
+        file.write_all(token.as_bytes())?;
+        match file.persist_noclobber(self.root.join(Self::SHORTCUT_TOKEN_FILE)) {
+            Ok(_) => Ok(token),
+            Err(error) if error.error.kind() == ErrorKind::AlreadyExists => self.shortcut_token(),
+            Err(error) => Err(error.error),
+        }
+    }
+
     /// Load a single instance from a directory. Returns None when the
     /// directory does not look like an instance (no `instance.cfg`).
     pub fn load(dir: &Path) -> Option<Instance> {
