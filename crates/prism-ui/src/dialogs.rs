@@ -2,9 +2,86 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
+use prism_core::launch::QuickPlayTarget;
+
+pub struct QuickPlayState {
+    target_id: String,
+    name: String,
+    worlds: Vec<String>,
+    selected: Option<String>,
+    multiplayer: bool,
+    input: Entity<InputState>,
+    error: Option<String>,
+}
+
+impl QuickPlayState {
+    pub fn new(inst: &prism_core::Instance, window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
+        Self {
+            target_id: inst.id.clone(), name: inst.name.clone(), worlds: inst.worlds(),
+            selected: None, multiplayer: false, error: None,
+            input: cx.new(|cx| InputState::new(window, cx).placeholder("mc.example.com:25565")),
+        }
+    }
+
+    pub fn render(&self, cx: &mut Context<MainWindow>) -> impl IntoElement {
+        let mut panel = div().id("quick-play-dialog").w(px(440.)).bg(rgb(0x2b2b2b))
+            .rounded_lg().border_1().border_color(rgb(0x444444)).p_4().flex().flex_col().gap_3()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(format!("Quick Play — {}", self.name)));
+        let mut tabs = div().flex().gap_2();
+        for (multiplayer, label) in [(false, "Singleplayer"), (true, "Multiplayer")] {
+            tabs = tabs.child(Button::new(label).label(if multiplayer == self.multiplayer { format!("• {label}") } else { label.into() })
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if let Some(dialog) = &mut this.quick_play { dialog.multiplayer = multiplayer; dialog.error = None; }
+                    cx.notify();
+                })));
+        }
+        panel = panel.child(tabs);
+        if self.multiplayer {
+            panel = panel.child(div().child("Server address")).child(Input::new(&self.input));
+        } else {
+            let mut list = div().id("quick-worlds").max_h(px(230.)).overflow_y_scroll().flex().flex_col().gap_1();
+            if self.worlds.is_empty() { list = list.child("No worlds in this instance yet."); }
+            for (index, world) in self.worlds.iter().enumerate() {
+                let world = world.clone();
+                list = list.child(div().id(("quick-world", index)).px_3().py_2().rounded_md()
+                    .bg(rgb(if self.selected.as_ref() == Some(&world) { 0x3d5a80 } else { 0x333333 }))
+                    .child(world.clone()).on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.quick_play { dialog.selected = Some(world.clone()); dialog.error = None; }
+                        cx.notify();
+                    })));
+            }
+            panel = panel.child(list);
+        }
+        if let Some(error) = &self.error {
+            panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(error.clone()));
+        }
+        panel = panel.child(div().flex().justify_end().gap_2()
+            .child(Button::new("quick-cancel").label("Cancel").on_click(cx.listener(|this, _, _, cx| { this.quick_play = None; cx.notify(); })))
+            .child(Button::new("quick-join").primary().label(if self.multiplayer { "Join Server" } else { "Join World" })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let Some(dialog) = &this.quick_play else { return; };
+                    let target = if dialog.multiplayer { QuickPlayTarget::parse_server(dialog.input.read(cx).value().as_ref()) }
+                        else { dialog.selected.clone().map(|world| QuickPlayTarget::Singleplayer { world }).ok_or("Select a world".into()) };
+                    match target {
+                        Ok(target) => {
+                            let id = dialog.target_id.clone();
+                            this.quick_play = None;
+                            this.console_open = true;
+                            this.app.update(cx, |app, _| app.start_launch_with(&id, Some(target)));
+                        }
+                        Err(error) => this.quick_play.as_mut().unwrap().error = Some(error),
+                    }
+                    cx.notify();
+                }))));
+        div().id("quick-backdrop").absolute().size_full().top_0().left_0()
+            .bg(gpui_kit::black().opacity(0.5)).flex().items_center().justify_center()
+            .on_click(cx.listener(|this, _, _, cx| { this.quick_play = None; cx.notify(); })).child(panel)
+    }
+}
 
 pub struct CreateInstanceState {
     pub name_input: Entity<InputState>,

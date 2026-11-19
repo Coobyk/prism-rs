@@ -55,6 +55,22 @@ pub const DEFAULT_JVM_ARGUMENTS: &[&str] = &[
 pub const LEGACY_GAME_ARGUMENTS: &str = "--username ${auth_player_name} --version ${version_name} --gameDir ${game_directory} --assetsDir ${game_assets} --uuid ${auth_uuid} --accessToken ${auth_access_token} --userProperties ${user_properties} --userType ${user_type}";
 
 impl LaunchProfile {
+    pub fn supports_quick_play_singleplayer(&self) -> bool {
+        self.has_game_feature("is_quick_play_singleplayer")
+    }
+
+    pub fn supports_quick_play_multiplayer(&self) -> bool {
+        self.has_game_feature("is_quick_play_multiplayer")
+    }
+
+    fn has_game_feature(&self, feature: &str) -> bool {
+        self.modern_arguments.as_ref().is_some_and(|args| args.game.iter().any(|arg| {
+            matches!(arg, meta::ArgValue::Conditional { rules, .. } if rules.iter().any(|rule| {
+                rule.features.as_ref().is_some_and(|features| features.contains_key(feature))
+            }))
+        }))
+    }
+
     /// Resolve a Mojang version JSON into a platform-evaluated profile.
     pub fn from_mojang(vd: &VersionData) -> LaunchProfile {
         let features = BTreeMap::new(); // no optional features (demo/resolution) enabled

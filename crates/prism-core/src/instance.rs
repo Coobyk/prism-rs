@@ -59,6 +59,16 @@ impl Instance {
         self.game_root().join("mods")
     }
 
+    pub fn worlds(&self) -> Vec<String> {
+        let mut worlds: Vec<_> = std::fs::read_dir(self.game_root().join("saves"))
+            .into_iter().flatten().flatten()
+            .filter(|entry| entry.path().is_dir() && entry.path().join("level.dat").is_file())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        worlds.sort_by_key(|name| (name.to_lowercase(), name.clone()));
+        worlds
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
         let mut cfg = IniFile::load(&self.root.join("instance.cfg")).unwrap_or_default();
         cfg.set("name", self.name.clone());
@@ -328,6 +338,20 @@ mod tests {
                 let _ = std::fs::remove_dir_all(&self.path);
             }
         }
+    }
+
+    #[test]
+    fn worlds_filter_and_sort() {
+        let (paths, _guard) = temp_paths();
+        let inst = InstanceList::create(&paths, "Worlds", "default", "1.20.4").unwrap();
+        assert!(inst.worlds().is_empty());
+        let saves = inst.game_root().join("saves");
+        for name in ["zebra", "Alpha", "empty"] {
+            std::fs::create_dir_all(saves.join(name)).unwrap();
+            if name != "empty" { std::fs::write(saves.join(name).join("level.dat"), []).unwrap(); }
+        }
+        std::fs::write(saves.join("file"), []).unwrap();
+        assert_eq!(inst.worlds(), ["Alpha", "zebra"]);
     }
 
     #[test]

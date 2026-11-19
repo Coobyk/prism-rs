@@ -75,12 +75,13 @@ Working today:
 - Offline accounts; MSA device-code login implemented end-to-end
 - Global + per-instance settings (memory, Java, window size)
 - Live console with log capture; kill running instances
+- Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
 - News feed, grouped instance list, persistent config
 
 Not yet at parity (tracked in the issue tracker of your heart): CurseForge/ATL/FTB/Technic pack
 import, instance export (Prism zip / mrpack / CurseForge), servers.dat NBT editing, screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
-options, quick-play singleplayer/multiplayer dialogs.
+options.
 
 ## License
 
