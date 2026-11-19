@@ -4,6 +4,7 @@
 //! instead of the bundled launcher agent).
 
 use crate::meta::{self, VersionData};
+use crate::loaders::{self, Loader};
 use crate::net::{DownloadRequest, Downloader, NetError};
 use crate::profile::{LaunchProfile, ResolvedLibrary, DEFAULT_JVM_ARGUMENTS, LEGACY_GAME_ARGUMENTS};
 use crate::Paths;
@@ -246,6 +247,8 @@ pub enum LaunchError {
     IncompatibleJava { mc: String, path: PathBuf, found: u32, required: Vec<u32> },
     #[error("java download: {0}")]
     JavaDownload(#[from] crate::java::JavaDownloadError),
+    #[error("could not prepare {loader:?}: {message}")]
+    Loader { loader: Loader, message: String },
 }
 
 fn join_majors(majors: &[u32]) -> String {
@@ -385,25 +388,27 @@ impl Launcher {
         }
     }
 
-    pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
-        let libraries_dir = self.paths.libraries_dir();
-
-        // Client jar.
-        let client_jar = self.client_jar_path(&profile.minecraft_version);
+    async fn ensure_client_jar(&self, version: &str) -> Result<PathBuf, LaunchError> {
+        let client_jar = self.client_jar_path(version);
         if !client_jar.exists() {
             let url = self
-                .cached_client_url(&profile.minecraft_version)
+                .cached_client_url(version)
                 .await
                 .unwrap_or_else(|| {
                     format!(
-                        "https://s3.amazonaws.com/Minecraft.Download/versions/{0}/{0}.jar",
-                        profile.minecraft_version
+                        "https://s3.amazonaws.com/Minecraft.Download/versions/{version}/{version}.jar"
                     )
                 });
             self.downloader
                 .download(&DownloadRequest::new(url, &client_jar))
                 .await?;
         }
+        Ok(client_jar)
+    }
+
+    pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
+        let libraries_dir = self.paths.libraries_dir();
+        self.ensure_client_jar(&profile.minecraft_version).await?;
 
         // Libraries.
         // Old versions list some artifacts twice (once plain, once with
@@ -493,6 +498,63 @@ impl Launcher {
         let p = self.paths.metadata_dir().join("net.minecraft").join(format!("{version}.json"));
         let text = std::fs::read_to_string(p).ok()?;
         VersionData::from_json(&serde_json::from_str(&text).ok()?).ok()
+    }
+
+    /// Resolve the game and loader, select Java, and prepare the files for an installed instance.
+    pub async fn prepare_instance(
+        &self,
+        settings: &mut LaunchSettings,
+        loader: Loader,
+        mut progress: impl FnMut(String),
+    ) -> Result<LaunchProfile, LaunchError> {
+        let version_data = self.fetch_version_data(&settings.mc_version).await?;
+        let mut profile = LaunchProfile::from_mojang(&version_data);
+        progress(self.resolve_java(settings, &profile).await?);
+
+        if loader != Loader::None {
+            progress(format!("Preparing loader: {loader:?}"));
+            let version = &settings.mc_version;
+            let overlay = match &loader {
+                Loader::Forge { .. } | Loader::NeoForge { .. } => {
+                    let versions_dir = settings.game_dir.join("versions").join(version);
+                    let destination = versions_dir.join(format!("{version}.jar"));
+                    if !destination.exists() {
+                        let client = self.ensure_client_jar(version).await?;
+                        tokio::fs::create_dir_all(&versions_dir).await?;
+                        tokio::fs::copy(client, destination).await?;
+                    }
+                    loaders::ensure_forge_installed(
+                        &settings.java_path,
+                        &loader,
+                        version,
+                        &settings.game_dir,
+                        &self.downloader,
+                    )
+                    .await
+                }
+                _ => loaders::fetch_loader_profile(self.downloader.client(), &loader, version).await,
+            }
+            .map_err(|message| LaunchError::Loader { loader, message })?;
+            profile.apply_loader(&overlay);
+        }
+
+        progress(format!(
+            "Resolved profile: mainClass={}, libraries={}, natives={}",
+            profile.main_class,
+            profile.libraries.len(),
+            profile.natives.len()
+        ));
+        if matches!(settings.quick_play, Some(QuickPlayTarget::Singleplayer { .. }))
+            && !profile.supports_quick_play_singleplayer()
+        {
+            progress(format!(
+                "Minecraft {} does not support Quick Play singleplayer; launching to the title screen",
+                settings.mc_version
+            ));
+        }
+        self.prepare_files(&profile, settings).await?;
+        progress("Downloads complete".to_string());
+        Ok(profile)
     }
 
     async fn cached_client_url(&self, version: &str) -> Option<String> {

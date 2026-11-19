@@ -1,10 +1,14 @@
 //! prism-rs: PrismLauncher rewritten in Rust with GPUI.
 
 mod accounts_window;
+mod cli_launch;
 mod dialogs;
+mod instance_lock;
 mod instance_window;
 mod main_window;
 mod settings_window;
+#[cfg(target_os = "linux")]
+mod shortcut;
 mod state;
 
 use gpui_kit::*;
@@ -23,8 +27,20 @@ fn main() {
         .init();
 
     // Headless CLI: verify/test the launch pipeline without a GUI.
-    // Usage: prism-rs prepare <mc-version> [--world <name> | --server <host[:port]>] | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("launch") {
+        let [id] = &args[2..] else {
+            eprintln!("Usage: prism-rs launch <instance-id>");
+            std::process::exit(2);
+        };
+        match cli_launch::launch(id) {
+            Ok(code) => std::process::exit(code),
+            Err(error) => {
+                eprintln!("Launch failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.get(1).map(String::as_str) == Some("copy") {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             if args.len() < 4 || args.len() > 5 { return Err("Usage: prism-rs copy <instance-id> <name> [group]".into()); }
@@ -116,8 +132,8 @@ fn headless_instances() -> i32 {
             for inst in &list.instances {
                 if let prism_core::InstanceKind::Horizon { id, home, .. } = &inst.kind {
                     println!(
-                        "- {:?} (Horizon, Horizon ID: {}, group {}, game dir: {})",
-                        inst.name, id, inst.group.as_deref().unwrap_or("-"), home.display()
+                        "- {:?} (id: {:?}, Horizon ID: {}, group {}, game dir: {})",
+                        inst.name, inst.id, id, inst.group.as_deref().unwrap_or("-"), home.display()
                     );
                     continue;
                 }
@@ -129,8 +145,9 @@ fn headless_instances() -> i32 {
                     .display()
                     .to_string();
                 println!(
-                    "- {:?} (mc {}, {:?}, group {}, game dir: {})",
+                    "- {:?} (id: {:?}, mc {}, {:?}, group {}, game dir: {})",
                     inst.name,
+                    inst.id,
                     mc,
                     loader,
                     group,

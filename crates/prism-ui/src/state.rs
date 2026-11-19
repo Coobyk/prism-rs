@@ -176,6 +176,15 @@ impl App {
         };
         let running = RunningInstance::new();
         self.running.insert(id.to_string(), running.clone());
+        let lock = match crate::instance_lock::acquire(&self.paths, &inst) {
+            Ok(lock) => lock,
+            Err(error) => {
+                let message = format!("Could not launch: {error}");
+                log_lock(&running.log).push(message.clone());
+                state_lock(&running.state, |state| *state = InstanceRunState::Crashed(message));
+                return;
+            }
+        };
 
         if let InstanceKind::Horizon { id, home, token } = inst.kind {
             let config = self.paths.global_config();
@@ -191,7 +200,7 @@ impl App {
                     }
                     child
                 });
-                monitor_launch(running, "Horizon", result);
+                monitor_launch(running, "Horizon", result, lock);
             });
             cx.spawn(async move |this, cx| {
                 if let Ok(current_home) = rx.await {
@@ -226,7 +235,6 @@ impl App {
         })
         .detach();
         let launcher = prism_core::launch::Launcher::new(self.paths.clone(), self.runtime.downloader.clone());
-        let downloader = self.runtime.downloader.clone();
         let log = running.log.clone();
         let state = running.state.clone();
 
@@ -245,99 +253,18 @@ impl App {
             log_lock(&log).push(format!("Quick Play: joining {destination}"));
         }
         self.runtime.spawn(async move {
-            // 1. Version metadata.
-            state_lock(&state, |s| *s = InstanceRunState::Preparing);
-            let version_data = match launcher.fetch_version_data(&settings.mc_version).await {
-                Ok(vd) => vd,
-                Err(e) => {
-                    log_lock(&log).push(format!("Fatal: {e}"));
-                    state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
+            let loader = prism_core::instance::loader_of(&inst);
+            let profile = match launcher.prepare_instance(&mut settings, loader, |message| {
+                log_lock(&log).push(message);
+            }).await {
+                Ok(profile) => profile,
+                Err(error) => {
+                    log_lock(&log).push(format!("Fatal: {error}"));
+                    state_lock(&state, |s| *s = InstanceRunState::Crashed(error.to_string()));
                     return;
                 }
             };
-            let mut profile = prism_core::profile::LaunchProfile::from_mojang(&version_data);
-            match launcher.resolve_java(&mut settings, &profile).await {
-                Ok(message) => log_lock(&log).push(message),
-                Err(e) => {
-                    log_lock(&log).push(format!("Fatal: {e}"));
-                    state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
-                    return;
-                }
-            }
 
-            // 1b. Loader component overlay.
-            let loader = prism_core::instance::loader_of(&inst);
-            match &loader {
-                prism_core::loaders::Loader::None => {}
-                prism_core::loaders::Loader::Forge { .. } | prism_core::loaders::Loader::NeoForge { .. } => {
-                    log_lock(&log).push(format!("Preparing loader: {loader:?}"));
-                    // The installer expects a vanilla layout: game_dir/versions/<mc>/<mc>.jar.
-                    let mc_dir = settings.game_dir.clone();
-                    let versions_dir = mc_dir.join("versions").join(&settings.mc_version);
-                    if let Err(e) = tokio::fs::create_dir_all(&versions_dir).await {
-                        log_lock(&log).push(format!("Fatal: {e}"));
-                        state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
-                        return;
-                    }
-                    let client_jar_src = launcher.client_jar_path(&settings.mc_version);
-                    let client_jar_dst = versions_dir.join(format!("{}.jar", settings.mc_version));
-                    if !client_jar_dst.exists() {
-                        if let Err(e) = tokio::fs::copy(&client_jar_src, &client_jar_dst).await {
-                            log_lock(&log).push(format!("Fatal: vanilla jar copy: {e}"));
-                            state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
-                            return;
-                        }
-                    }
-                    match prism_core::loaders::ensure_forge_installed(
-                        &settings.java_path,
-                        &loader,
-                        &settings.mc_version,
-                        &mc_dir,
-                        &downloader,
-                    )
-                    .await
-                    {
-                        Ok(lvd) => profile.apply_loader(&lvd),
-                        Err(e) => {
-                            log_lock(&log).push(format!("Fatal: forge install failed: {e}"));
-                            state_lock(&state, |s| *s = InstanceRunState::Crashed(format!("forge: {e}")));
-                            return;
-                        }
-                    }
-                }
-                _ => {
-                    log_lock(&log).push(format!("Fetching loader profile: {loader:?}"));
-                    match prism_core::loaders::fetch_loader_profile(downloader.client(), &loader, &settings.mc_version).await {
-                        Ok(lvd) => profile.apply_loader(&lvd),
-                        Err(e) => {
-                            log_lock(&log).push(format!("Fatal: loader profile fetch failed: {e}"));
-                            state_lock(&state, |s| *s = InstanceRunState::Crashed(format!("loader: {e}")));
-                            return;
-                        }
-                    }
-                }
-            }
-            log_lock(&log).push(format!(
-                "Resolved profile: mainClass={}, libraries={}, natives={}",
-                profile.main_class,
-                profile.libraries.len(),
-                profile.natives.len()
-            ));
-
-            // 2. Files.
-            if matches!(settings.quick_play, Some(prism_core::launch::QuickPlayTarget::Singleplayer { .. }))
-                && !profile.supports_quick_play_singleplayer()
-            {
-                log_lock(&log).push(format!("Minecraft {} does not support Quick Play singleplayer; launching to the title screen", settings.mc_version));
-            }
-            if let Err(e) = launcher.prepare_files(&profile, &settings).await {
-                log_lock(&log).push(format!("Fatal: {e}"));
-                state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
-                return;
-            }
-            log_lock(&log).push("Downloads complete".to_string());
-
-            // 3. Command + spawn.
             let session = match accounts.session_for_launch(&accounts_path).await {
                 Ok(session) => session,
                 Err(error) => {
@@ -348,8 +275,7 @@ impl App {
             };
             let _ = accounts_tx.send(accounts);
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
-            log_lock(&log).push(format!("Command: {}", prepared.command.join(" ")));
-            monitor_launch(running, "Minecraft", prepared.spawn());
+            monitor_launch(running, "Minecraft", prepared.spawn(), lock);
         });
     }
 
@@ -420,6 +346,7 @@ fn monitor_launch(
     running: RunningInstance,
     game: &str,
     result: Result<std::process::Child, impl std::fmt::Display>,
+    lock: std::fs::File,
 ) {
     let mut child = match result {
         Ok(child) => child,
@@ -442,6 +369,7 @@ fn monitor_launch(
     }
     std::thread::spawn(move || {
         let status = child.wait();
+        drop(lock);
         *pid_lock(&running.pid) = None;
         match status {
             Ok(code) if code.success() => {

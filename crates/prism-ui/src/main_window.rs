@@ -315,7 +315,7 @@ impl MainWindow {
 
         let selected2 = selected.clone();
         let _ = selected2;
-        div()
+        let sidebar = div()
             .w(px(if horizon { 184. } else { 160. }))
             .flex()
             .flex_col()
@@ -410,8 +410,13 @@ impl MainWindow {
                     enabled && !(horizon && is_running),
                 )
                     .on_click(cx.listener(Self::on_delete)),
-            )
-            .child(self.sidebar_button("shortcut", "Create Shortcut", enabled))
+            );
+        #[cfg(target_os = "linux")]
+        let sidebar = sidebar.child(
+            self.sidebar_button("shortcut", "Create Shortcut", enabled)
+                .on_click(cx.listener(Self::on_create_shortcut)),
+        );
+        sidebar
     }
 
     fn sidebar_button(&self, id: &str, label: &str, enabled: bool) -> Button {
@@ -470,6 +475,21 @@ impl MainWindow {
             self.console_open = true;
             self.app.update(cx, |app, cx| app.start_launch(&id, cx));
         }
+        cx.notify();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn on_create_shortcut(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.app.update(cx, |app, _| {
+            let Some(instance) = app.selected_instance() else {
+                return;
+            };
+            let message = match crate::shortcut::create(&app.paths, instance) {
+                Ok(path) => format!("Created shortcut: {}", path.display()),
+                Err(error) => format!("Could not create shortcut: {error}"),
+            };
+            app.toast = Some((message, std::time::Instant::now()));
+        });
         cx.notify();
     }
 
