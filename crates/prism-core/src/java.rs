@@ -177,6 +177,14 @@ pub async fn install_mojang_runtime(
     component: &str,
 ) -> Result<PathBuf, JavaDownloadError> {
     let os = mojang_runtime_os().ok_or(JavaDownloadError::UnsupportedPlatform)?;
+    // One install at a time: two launches needing the same runtime would
+    // otherwise share a staging directory. The second one reuses the first's.
+    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = INSTALL_LOCK.lock().await;
+    let runtime_dir = java_dir.join(component);
+    if let Some(java) = runtime_java_binary(&runtime_dir) {
+        return Ok(java);
+    }
     let index = downloader.get_json(MOJANG_RUNTIMES_URL).await?;
     let manifest_url = index[os][component][0]["manifest"]["url"]
         .as_str()
@@ -191,7 +199,6 @@ pub async fn install_mojang_runtime(
         let _ = tokio::fs::remove_dir_all(&staging).await;
         return Err(e);
     }
-    let runtime_dir = java_dir.join(component);
     let _ = tokio::fs::remove_dir_all(&runtime_dir).await;
     tokio::fs::rename(&staging, &runtime_dir).await?;
     runtime_java_binary(&runtime_dir)
