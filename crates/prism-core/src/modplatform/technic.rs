@@ -398,11 +398,6 @@ fn loader_from_version(json: &VersionJson, minecraft: &str) -> Loader {
                     .strip_prefix(minecraft)
                     .and_then(|v| v.strip_prefix('-'))
                     .unwrap_or(version);
-                let version = if minecraft == "1.7.10" {
-                    version.split('-').next().unwrap_or(version)
-                } else {
-                    version
-                };
                 return Loader::Forge {
                     version: version.into(),
                 };
@@ -506,7 +501,7 @@ mod tests {
             Recipe {
                 minecraft: "1.7.10".into(),
                 loader: Loader::Forge {
-                    version: "10.13.4.1614".into()
+                    version: "10.13.4.1614-1.7.10".into()
                 },
                 jar_mod: false,
             }
