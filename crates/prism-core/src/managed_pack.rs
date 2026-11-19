@@ -248,6 +248,7 @@ impl Snapshot {
     fn apply(&self, mut stage: Staged) -> Result<ManagedPack, ImportError> {
         self.check_current()?;
         let mut owned = BTreeSet::new();
+        let mut moved_files = BTreeMap::new();
         let mut changes = BTreeMap::new();
         for (path, old) in &self.pack.files {
             if path.starts_with("saves") {
@@ -263,6 +264,9 @@ impl Snapshot {
             } else {
                 None
             };
+            if let Some(relative) = &moved {
+                moved_files.insert(path, relative.clone());
+            }
             let variants = std::iter::once(path.clone()).chain(moved);
             let new = stage.pack.files.get(path);
             for relative in variants {
@@ -284,7 +288,21 @@ impl Snapshot {
         }
         let mut kept_saves = Vec::new();
         for (path, new) in &stage.pack.files {
-            let target = self.game.join(path);
+            let relative = match (new, moved_files.get(path)) {
+                (OwnedFile::Download(_), Some(moved))
+                    if moved.extension().is_some_and(|ext| ext == "disabled") =>
+                {
+                    if stage.pack.files.contains_key(moved) {
+                        return Err(problem(format!(
+                            "The new pack also uses the disabled mod path: {}",
+                            moved.display()
+                        )));
+                    }
+                    moved
+                }
+                _ => path,
+            };
+            let target = self.game.join(relative);
             if existing_world(&self.game, path)? {
                 kept_saves.push(path.clone());
                 continue;
@@ -294,7 +312,7 @@ impl Snapshot {
                     kept_saves.push(path.clone());
                     continue;
                 }
-                if !owned.contains(path) {
+                if !owned.contains(relative) {
                     return Err(problem(format!(
                         "A user file conflicts with the new pack: {}",
                         path.display()
@@ -304,11 +322,8 @@ impl Snapshot {
             if let Some(OwnedFile::Download(old_hash)) = self.pack.files.get(path) {
                 if let OwnedFile::Download(new_hash) = new {
                     if old_hash == new_hash {
-                        let variants = std::iter::once(target.clone()).chain(
-                            alternate(path)
-                                .filter(|p| owned.contains(p))
-                                .map(|p| self.game.join(p)),
-                        );
+                        let variants = std::iter::once(target.clone())
+                            .chain(moved_files.get(path).map(|p| self.game.join(p)));
                         if variants.into_iter().any(|p| {
                             existing_file(&self.game, &p).is_ok_and(|exists| exists)
                                 && Downloader::verify_sha1(&p, new_hash).is_ok()
@@ -671,6 +686,31 @@ mod tests {
         assert_eq!(
             fs::read(game.join("saves/New World/level.dat")).unwrap(),
             b"next"
+        );
+    }
+
+    #[test]
+    fn installs_replacement_for_a_disabled_pack_mod_disabled() {
+        let (_dir, instance, pack) = fixture();
+        let game = instance.game_root();
+        let path = Path::new("mods/old.jar");
+        let disabled = game.join("mods/old.jar.disabled");
+        write(&game, "mods/old.jar.disabled", b"original");
+        let mut stage = next(pack);
+        write(&stage.payload(), "mods/old.jar", b"next");
+        let ownership = OwnedFile::Download("edee9402d198b04ac77dcf5dc9cc3dac44573782".into());
+        stage.pack.files.insert(path.into(), ownership.clone());
+
+        Snapshot::load(instance.clone())
+            .unwrap()
+            .apply(stage)
+            .unwrap();
+
+        assert_eq!(fs::read(disabled).unwrap(), b"next");
+        assert!(!game.join(path).exists());
+        assert_eq!(
+            Snapshot::load(instance).unwrap().pack.files.get(path),
+            Some(&ownership)
         );
     }
 
