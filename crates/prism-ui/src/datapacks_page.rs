@@ -512,7 +512,10 @@ fn open_folder(path: &std::path::Path) -> io::Result<()> {
     let command = "open";
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     let command = "xdg-open";
-    std::process::Command::new(command).arg(path).spawn()?;
+    let mut child = std::process::Command::new(command).arg(path).spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 
