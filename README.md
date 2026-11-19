@@ -64,6 +64,11 @@ To find packs for a Java instance, open **Resource Packs** or **Shader Packs** a
 **Back to installed** shows the downloaded pack. Select it in Minecraft to use it;
 shader packs still need a shader loader such as Iris.
 
+Open **Worlds** on a Java instance to see each save's name, folder, seed, game
+mode, and last-played time. Join a world, open its folder, or refresh the list.
+Stop Minecraft before copying, renaming, or deleting a world. Rename changes
+the name shown in Minecraft and gives the save folder a matching, unique name.
+
 Open **Data Packs** on a Java instance and select a saved world. Use **Add ZIP…** for
 an archive with `pack.mcmeta` at its root, or use **Browse Modrinth** to install a
 compatible data pack. Enable, disable, or remove installed packs and open that
@@ -143,6 +148,7 @@ Working today:
 - Global + per-instance settings (memory, Java, window size)
 - Live console with log capture; kill running instances
 - Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
+- Worlds page: save details, rename, copy, confirmed delete, and folder browsing
 - News feed, grouped instance list, persistent config
 - Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
 - Direct instance launch from the CLI and Linux desktop shortcuts

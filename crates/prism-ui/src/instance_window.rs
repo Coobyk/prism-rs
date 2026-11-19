@@ -20,6 +20,9 @@ use std::sync::Arc;
 #[path = "datapacks_page.rs"]
 mod datapacks_page;
 use datapacks_page::DataPacksPage;
+#[path = "worlds_page.rs"]
+mod worlds_page;
+use worlds_page::WorldsPage;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
@@ -232,6 +235,7 @@ pub struct InstanceWindow {
     server_status: String,
     servers_was_running: bool,
     datapacks: DataPacksPage,
+    worlds: WorldsPage,
     pub(crate) settings_editor: Option<crate::instance_settings_page::SettingsEditor>,
 }
 
@@ -252,6 +256,7 @@ impl InstanceWindow {
             server_status: String::new(),
             servers_was_running: false,
             datapacks: DataPacksPage::default(),
+            worlds: WorldsPage::default(),
             settings_editor: None,
         }
     }
@@ -593,6 +598,9 @@ impl InstanceWindow {
                     .bg(if active { rgb(0x3d5a80) } else { rgba(0x00000000) })
                     .hover(|s| s.bg(rgb(0x333333)))
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        if this.page != page {
+                            this.worlds.on_navigation();
+                        }
                         this.page = page;
                         cx.notify();
                     }))
@@ -1109,58 +1117,6 @@ impl InstanceWindow {
         }
     }
 
-    fn render_worlds_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let inst = self.instance(cx);
-        let saves = inst.game_root().join("saves");
-        let mut list = div().flex().flex_col().gap_1().p_3();
-        let worlds = inst.worlds();
-        let running = self.app.read(cx).is_running(&inst.id);
-        for (index, name) in worlds.iter().enumerate() {
-            let world = name.clone();
-            let id = inst.id.clone();
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(0x2b2b2b))
-                    .rounded_md()
-                    .child(name.clone())
-                    .child(
-                        Button::new(("join-world", index))
-                            .label("Join")
-                            .disabled(running)
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.app.update(cx, |app, cx| {
-                                    app.start_launch_with(
-                                        &id,
-                                        Some(prism_core::launch::QuickPlayTarget::Singleplayer {
-                                            world: world.clone(),
-                                        }),
-                                        cx,
-                                    )
-                                });
-                                cx.notify();
-                            })),
-                    ),
-            );
-        }
-        if worlds.is_empty() {
-            list = list.child(div().text_color(rgb(0x777777)).child("No worlds."));
-        }
-
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(self.page_header(cx, saves.display().to_string()).into_any_element())
-            .child(div().id("worlds-scroll").flex_1().overflow_y_scroll().child(list))
-            .into_any_element()
-    }
-
     fn servers_running(&self, cx: &Context<Self>) -> bool {
         matches!(
             self.app.read(cx).run_state(&self.instance_id),
@@ -1466,6 +1422,7 @@ impl Render for InstanceWindow {
             self.server_status.clear();
         }
         self.servers_was_running = running;
+        self.sync_worlds_page(running, cx);
         if self.page == Page::Servers && self.servers.is_none() && self.server_status.is_empty() {
             match ServerListSnapshot::load(&self.instance(cx).game_root()) {
                 Ok((list, snapshot)) => {

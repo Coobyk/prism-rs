@@ -1,46 +1,15 @@
 use crate::modplatform::ResourceType;
-use crate::nbt::{self, Tag};
-use flate2::read::GzDecoder;
+use crate::nbt::Tag;
+pub use crate::worlds::World;
+use crate::worlds::{nbt_child, plain_name, read_level, require_directory, FileStamp};
 use std::{
     collections::HashSet,
     fs, io,
-    io::Read,
     path::{Path, PathBuf},
-    time::SystemTime,
 };
 
 const DISABLED: &str = ".disabled";
 const DISABLED_FOLDERS: &str = "datapacks.disabled";
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FileStamp {
-    created: Option<SystemTime>,
-    modified: Option<SystemTime>,
-    len: u64,
-    #[cfg(unix)]
-    id: (u64, u64),
-}
-
-impl From<&fs::Metadata> for FileStamp {
-    fn from(meta: &fs::Metadata) -> Self {
-        #[cfg(unix)]
-        use std::os::unix::fs::MetadataExt;
-        Self {
-            created: meta.created().ok(),
-            modified: meta.modified().ok(),
-            len: meta.len(),
-            #[cfg(unix)]
-            id: (meta.dev(), meta.ino()),
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct World {
-    game_root: PathBuf,
-    name: String,
-    level_stamp: FileStamp,
-}
 
 #[derive(Clone, Debug)]
 pub struct DataPack {
@@ -66,43 +35,8 @@ impl DataPack {
     }
 }
 
-fn plain_name(name: &str) -> bool {
-    Path::new(name).file_name().and_then(|part| part.to_str()) == Some(name)
-        && !name.contains(['/', '\\', ':'])
-        && !name.chars().any(char::is_control)
-}
-
 fn zip_name(name: &str) -> bool {
     plain_name(name) && name.ends_with(".zip")
-}
-
-fn require_directory(path: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(path)?.is_dir() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!(
-            "Not a regular directory: {}",
-            path.display()
-        )))
-    }
-}
-
-fn level_stamp(world: &Path) -> io::Result<FileStamp> {
-    require_directory(world)?;
-    let metadata = fs::symlink_metadata(world.join("level.dat"))?;
-    if !metadata.is_file() {
-        return Err(io::Error::other("Not a Java world (no regular level.dat)"));
-    }
-    Ok(FileStamp::from(&metadata))
-}
-
-fn nbt_child<'a>(root: &'a Tag, name: &str) -> Option<&'a Tag> {
-    let Tag::Compound(entries) = root else {
-        return None;
-    };
-    entries
-        .iter()
-        .find_map(|(key, value)| (key == name).then_some(value))
 }
 
 fn pack_names<'a>(packs: &'a Tag, key: &str) -> impl Iterator<Item = &'a str> {
@@ -117,18 +51,7 @@ fn pack_names<'a>(packs: &'a Tag, key: &str) -> impl Iterator<Item = &'a str> {
 }
 
 fn disabled_world_packs(path: &Path) -> io::Result<HashSet<String>> {
-    const MAX_LEVEL_NBT: u64 = 16 * 1024 * 1024;
-    let mut bytes = Vec::new();
-    GzDecoder::new(fs::File::open(path)?)
-        .take(MAX_LEVEL_NBT + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_LEVEL_NBT {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "level.dat exceeds the NBT size limit",
-        ));
-    }
-    let (_, root) = nbt::read(&bytes)?;
+    let (_, root) = read_level(path)?;
     let Some(packs) = nbt_child(&root, "Data").and_then(|data| nbt_child(data, "DataPacks")) else {
         return Ok(HashSet::new());
     };
@@ -154,69 +77,8 @@ fn ensure_absent(path: &Path) -> io::Result<()> {
 }
 
 impl World {
-    pub fn open(game_root: &Path, name: &str) -> io::Result<Self> {
-        if !plain_name(name) {
-            return Err(io::Error::other("Invalid world name"));
-        }
-        let saves = game_root.join("saves");
-        require_directory(&saves)?;
-        let level_stamp = level_stamp(&saves.join(name))?;
-        Ok(Self {
-            game_root: game_root.into(),
-            name: name.into(),
-            level_stamp,
-        })
-    }
-
-    pub fn list(game_root: &Path) -> io::Result<Vec<Self>> {
-        let saves = game_root.join("saves");
-        match require_directory(&saves) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            result => result?,
-        }
-        let mut worlds = Vec::new();
-        for entry in fs::read_dir(saves)? {
-            let entry = entry?;
-            let Ok(name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if !plain_name(&name) {
-                continue;
-            }
-            if let Ok(level_stamp) = level_stamp(&entry.path()) {
-                worlds.push(Self {
-                    game_root: game_root.into(),
-                    name,
-                    level_stamp,
-                });
-            }
-        }
-        worlds.sort_by_key(|world| (world.name.to_lowercase(), world.name.clone()));
-        Ok(worlds)
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn game_root(&self) -> &Path {
-        &self.game_root
-    }
-
-    fn world_path(&self) -> io::Result<PathBuf> {
-        let saves = self.game_root.join("saves");
-        require_directory(&saves)?;
-        let world = saves.join(&self.name);
-        if level_stamp(&world)? != self.level_stamp {
-            return Err(io::Error::other(
-                "The selected world changed. Refresh and try again.",
-            ));
-        }
-        Ok(world)
-    }
-
     pub fn ensure_pack_folder(&self) -> io::Result<PathBuf> {
-        Self::ensure_folder(self.world_path()?.join(ResourceType::DataPack.folder()))
+        Self::ensure_folder(self.regular_world_path()?.join(ResourceType::DataPack.folder()))
     }
 
     fn ensure_folder(folder: PathBuf) -> io::Result<PathBuf> {
@@ -230,7 +92,7 @@ impl World {
     }
 
     pub fn packs(&self) -> io::Result<Vec<DataPack>> {
-        let world = self.world_path()?;
+        let world = self.regular_world_path()?;
         let mut packs = Vec::new();
         Self::scan(
             &world.join(ResourceType::DataPack.folder()),
@@ -345,7 +207,7 @@ impl World {
         if pack.disabled_in_world() {
             return Err(io::Error::other("This pack is disabled in Minecraft"));
         }
-        let world = self.world_path()?;
+        let world = self.regular_world_path()?;
         let path = Self::pack_path(&world, pack)?;
         let target = if pack.directory {
             let folder = if pack.enabled {
@@ -364,7 +226,7 @@ impl World {
     }
 
     pub fn remove(&self, pack: &DataPack) -> io::Result<()> {
-        let path = Self::pack_path(&self.world_path()?, pack)?;
+        let path = Self::pack_path(&self.regular_world_path()?, pack)?;
         if pack.directory {
             fs::remove_dir_all(path)
         } else {
@@ -376,6 +238,7 @@ impl World {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nbt;
     use std::io::Write;
 
     fn world(root: &Path, name: &str) -> PathBuf {
@@ -596,8 +459,13 @@ mod tests {
         let a = world(root.path(), "Alpha");
         let b = world(root.path(), "Beta");
         symlink(&b, a.with_file_name("Alias")).unwrap();
-        let worlds = World::list(root.path()).unwrap();
+        let worlds = World::list_regular(root.path()).unwrap();
         assert_eq!(worlds.len(), 2);
+        assert!(World::open_regular(root.path(), "Alias").is_err());
+        assert!(World::open(root.path(), "Alias")
+            .unwrap()
+            .ensure_pack_folder()
+            .is_err());
         let target = worlds[1].ensure_pack_folder().unwrap();
         symlink(&target, a.join("datapacks")).unwrap();
         assert!(worlds[0]
