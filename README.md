@@ -67,7 +67,8 @@ shader packs still need a shader loader such as Iris.
 Open **Data Packs** on a Java instance and select a saved world. Use **Add ZIP…** for
 an archive with `pack.mcmeta` at its root, or use **Browse Modrinth** to install a
 compatible data pack. Enable, disable, or remove installed packs and open that
-world's `datapacks` folder from the same page. Stop Minecraft before editing.
+world's `datapacks` folder from the same page. Disabled unpacked packs are stored
+in the world's sibling `datapacks.disabled` folder. Stop Minecraft before editing.
 
 For mod updates, open a Java instance with a mod loader and select **Mods → Check for Updates**.
 Review and apply compatible updates one at a time; close Minecraft before applying them.
