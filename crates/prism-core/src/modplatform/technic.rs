@@ -251,6 +251,7 @@ pub async fn install(
         for (file, hash) in files {
             verify_md5(&file.dest, &hash)?;
             extract_zip(&file.dest, &game)?;
+            fs::remove_file(&file.dest)?;
         }
         install_staged(&paths, &title, &game, &minecraft)
     })
@@ -449,7 +450,15 @@ fn install_staged(
         InstanceList::create(&staging_paths, "Technic", "default", &recipe.minecraft)?;
     instance.name = title.to_owned();
     instance.save()?;
-    crate::import::copy_dir_recursive(game, &instance.game_root())?;
+    let game_root = instance.game_root();
+    fs::remove_dir(&game_root)?;
+    match fs::rename(game, &game_root) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
+            crate::import::copy_dir_recursive(game, &game_root)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
     let profile = Pack::load(&instance.root)?.set_loader(&recipe.loader)?;
     if recipe.jar_mod {
         profile.add_archive(
@@ -511,6 +520,8 @@ mod tests {
             root: dir.path().join("launcher"),
         };
         let instance = install_staged(&paths, "Technic fixture", &game, "1.20.1").unwrap();
+        assert!(!game.exists());
+        assert!(instance.game_root().join("bin/version.json").is_file());
         assert_eq!(
             crate::instance::loader_of(&instance),
             Loader::Fabric {
