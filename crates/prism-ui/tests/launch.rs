@@ -30,7 +30,9 @@ fn launch_requires_an_installed_instance_id() {
 #[test]
 fn shortcut_rejects_a_replacement_instance_with_the_same_id() {
     let root = tempfile::tempdir().unwrap();
-    let paths = Paths { root: root.path().into() };
+    let paths = Paths {
+        root: root.path().into(),
+    };
     let original = InstanceList::create(&paths, "World", "default", "1.20.1").unwrap();
     let original_token = original.ensure_shortcut_token().unwrap();
     assert_eq!(original.ensure_shortcut_token().unwrap(), original_token);
@@ -43,7 +45,55 @@ fn shortcut_rejects_a_replacement_instance_with_the_same_id() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("no longer points to the original instance"));
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("no longer points to the original instance"));
+}
+
+#[test]
+fn launch_saves_a_horizon_folders_verified_new_location() {
+    use prism_core::horizon::{HorizonLauncher, LAUNCHER_PATH_SETTING};
+    use prism_core::settings::Settings;
+
+    let root = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        root: root.path().into(),
+    };
+    let original = root.path().join("original");
+    let moved = root.path().join("moved");
+    fs::create_dir(&original).unwrap();
+    let list = root.path().join("instances.json");
+    let write_list = |home: &std::path::Path| {
+        fs::write(
+            &list,
+            format!(
+                r#"[{{"id":"world","name":"World","home":"{}","java":null}}]"#,
+                home.display()
+            ),
+        )
+        .unwrap();
+    };
+    write_list(&original);
+    let exe = root.path().join("horizon-launcher");
+    fs::write(&exe, "#!/bin/sh\ncase \"$1\" in --json) cat \"$(dirname \"$0\")/instances.json\";; play) exit 0;; *) exit 1;; esac\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut settings = Settings::load(&paths.global_config());
+    settings.set(LAUNCHER_PATH_SETTING, exe.to_str().unwrap());
+    settings.save(&paths.global_config()).unwrap();
+    let horizon = HorizonLauncher::from_settings(&settings)
+        .list()
+        .unwrap()
+        .remove(0);
+    let instance = InstanceList::link_horizon(&paths, horizon).unwrap();
+    fs::rename(original, &moved).unwrap();
+    write_list(&moved);
+
+    assert!(cli(&paths)
+        .args(["launch", &instance.id])
+        .status()
+        .unwrap()
+        .success());
+    let list = InstanceList::load(&paths).unwrap();
+    assert_eq!(list.get(&instance.id).unwrap().game_root(), moved);
 }
 
 #[test]
