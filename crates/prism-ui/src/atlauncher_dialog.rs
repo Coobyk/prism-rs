@@ -255,14 +255,19 @@ pub fn render(
     let mut body = div()
         .id("atl-body")
         .flex_1()
+        .min_w_0()
+        .min_h_0()
         .overflow_y_scroll()
         .flex()
         .flex_col()
         .gap_2();
     if let Some(p) = &d.pack {
-        body = body
-            .child(div().text_lg().child(p.name.clone()))
-            .child(rich("atl-description", p.description.clone()));
+        body = body.child(div().text_lg().child(p.name.clone())).child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xb8b8b8))
+                .child("Pack version"),
+        );
         let mut versions = div().flex().flex_wrap().gap_1();
         for r in &p.versions {
             let pack = p.clone();
@@ -282,78 +287,121 @@ pub fn render(
             );
         }
         body = body.child(versions);
+        body = body.child(
+            div()
+                .text_sm()
+                .text_color(rgb(0xb8b8b8))
+                .child("About this pack · scroll to read more"),
+        );
+        body = body.child(
+            div()
+                .id("atl-description-scroll")
+                .max_h(px(160.))
+                .p_3()
+                .bg(rgb(0x282828))
+                .rounded_md()
+                .flex_shrink_0()
+                .overflow_y_scroll()
+                .child(rich("atl-description", p.description.clone())),
+        );
         if let Some(m) = &d.manifest {
+            let optional_count = m
+                .mods
+                .iter()
+                .filter(|e| e.client && e.optional && !e.hidden && !e.library)
+                .count();
+            body = body.child(div().text_sm().text_color(rgb(0xb8b8b8)).child(format!(
+                    "Minecraft {} · {} optional mods selected",
+                    m.minecraft,
+                    m.mods
+                        .iter()
+                        .filter(|e| e.client
+                            && e.optional
+                            && !e.hidden
+                            && !e.library
+                            && d.selection.enabled.contains(&e.name))
+                        .count()
+                )));
             if let Some(message) = m.messages.get("install") {
                 body = body.child(rich("atl-message", message.clone()));
             }
-            body = body.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("atl-recommended")
-                            .label("Recommended")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
-                                if let Some(d) = this
-                                    .create_dialog
-                                    .as_mut()
-                                    .and_then(|d| d.atlauncher.as_mut())
-                                {
-                                    if let Some(m) = &d.manifest {
-                                        match Selection::recommended(m) {
-                                            Ok(s) => {
-                                                let warnings = m
-                                                    .mods
-                                                    .iter()
-                                                    .filter(|e| {
-                                                        s.enabled.contains(&e.name)
-                                                            && !d
-                                                                .selection
-                                                                .enabled
-                                                                .contains(&e.name)
-                                                    })
-                                                    .filter_map(|e| m.warnings.get(&e.warning))
-                                                    .cloned()
-                                                    .collect::<Vec<_>>();
-                                                if warnings.is_empty() {
-                                                    d.selection = s;
-                                                } else {
-                                                    d.pending_selection = Some(s);
-                                                    d.warning = Some((
-                                                        String::new(),
-                                                        warnings.join("\n\n"),
-                                                    ));
+            if optional_count == 0 {
+                body = body.child(
+                    div()
+                        .text_color(rgb(0xb8b8b8))
+                        .child("No optional mods. All required client mods will be installed."),
+                );
+            } else {
+                body = body.child(div().text_lg().child("Optional mods"));
+                body = body.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new("atl-recommended")
+                                .label("Recommended")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                                    if let Some(d) = this
+                                        .create_dialog
+                                        .as_mut()
+                                        .and_then(|d| d.atlauncher.as_mut())
+                                    {
+                                        if let Some(m) = &d.manifest {
+                                            match Selection::recommended(m) {
+                                                Ok(s) => {
+                                                    let warnings = m
+                                                        .mods
+                                                        .iter()
+                                                        .filter(|e| {
+                                                            s.enabled.contains(&e.name)
+                                                                && !d
+                                                                    .selection
+                                                                    .enabled
+                                                                    .contains(&e.name)
+                                                        })
+                                                        .filter_map(|e| m.warnings.get(&e.warning))
+                                                        .cloned()
+                                                        .collect::<Vec<_>>();
+                                                    if warnings.is_empty() {
+                                                        d.selection = s;
+                                                    } else {
+                                                        d.pending_selection = Some(s);
+                                                        d.warning = Some((
+                                                            String::new(),
+                                                            warnings.join("\n\n"),
+                                                        ));
+                                                    }
                                                 }
+                                                Err(e) => d.error = Some(e.to_string()),
                                             }
-                                            Err(e) => d.error = Some(e.to_string()),
                                         }
                                     }
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("atl-clear")
-                            .label("Clear optional")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
-                                if let Some(d) = this
-                                    .create_dialog
-                                    .as_mut()
-                                    .and_then(|d| d.atlauncher.as_mut())
-                                {
-                                    if let Some(m) = &d.manifest {
-                                        match Selection::clear(m) {
-                                            Ok(s) => d.selection = s,
-                                            Err(e) => d.error = Some(e.to_string()),
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("atl-clear")
+                                .label("Clear optional")
+                                .disabled(busy)
+                                .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                                    if let Some(d) = this
+                                        .create_dialog
+                                        .as_mut()
+                                        .and_then(|d| d.atlauncher.as_mut())
+                                    {
+                                        if let Some(m) = &d.manifest {
+                                            match Selection::clear(m) {
+                                                Ok(s) => d.selection = s,
+                                                Err(e) => d.error = Some(e.to_string()),
+                                            }
                                         }
                                     }
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            );
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
             for (i, e) in m
                 .mods
                 .iter()
@@ -370,10 +418,13 @@ pub fn render(
                 body = body.child(
                     div()
                         .flex()
+                        .items_center()
                         .gap_2()
                         .child(
                             Button::new(SharedString::from(format!("atl-mod-{i}")))
                                 .label(if checked { "[x]" } else { "[ ]" })
+                                .border_1()
+                                .border_color(rgb(0x777777))
                                 .disabled(busy)
                                 .on_click(cx.listener(move |this: &mut MainWindow, _, _, cx| {
                                     modify(this, &name, false, cx)
@@ -381,38 +432,83 @@ pub fn render(
                         )
                         .child(div().text_color(rgb(colour)).child(e.name.clone())),
                 );
+                let mut details = Vec::new();
+                if !e.group.is_empty() {
+                    details.push(format!("Group: {} (choose one)", e.group));
+                }
+                if !e.depends.is_empty() {
+                    details.push(format!("Requires: {}", e.depends.join(", ")));
+                }
+                if !details.is_empty() {
+                    body = body.child(
+                        div()
+                            .pl_12()
+                            .text_sm()
+                            .text_color(rgb(0xb8b8b8))
+                            .child(details.join(" · ")),
+                    );
+                }
                 if !e.description.is_empty() {
-                    body = body.child(rich(
+                    body = body.child(div().pl_12().child(rich(
                         format!("atl-mod-description-{i}"),
                         e.description.clone(),
-                    ));
+                    )));
                 }
             }
         }
     } else {
-        body = body.child(Input::new(&d.query));
-        for (i, p) in d
-            .packs
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| p.name.to_lowercase().contains(&query))
-        {
-            let pack = p.clone();
-            let version = p.versions[0].version.clone();
-            body = body.child(
-                Button::new(SharedString::from(format!("atl-pack-{i}")))
-                    .label(p.name.clone())
-                    .on_click(cx.listener(move |this: &mut MainWindow, _, _, cx| {
-                        load(this, pack.clone(), version.clone(), cx)
-                    })),
-            );
-        }
+        body = body.child(div().text_lg().child("Choose a pack"))
+            .child(div().text_color(rgb(0xb8b8b8)).child("Browse public ATLauncher packs or search by name. Select a pack to see its versions and optional mods."));
+    }
+    let mut packs = div()
+        .id("atl-packs-list")
+        .min_h_0()
+        .flex_1()
+        .overflow_y_scroll()
+        .flex()
+        .flex_col()
+        .gap_1();
+    let mut count = 0;
+    for (i, p) in d
+        .packs
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.name.to_lowercase().contains(&query))
+    {
+        count += 1;
+        let pack = p.clone();
+        let version = p.versions[0].version.clone();
+        let button = Button::new(SharedString::from(format!("atl-pack-{i}")))
+            .label(p.name.clone())
+            .disabled(busy);
+        packs = packs.child(
+            (if d
+                .pack
+                .as_ref()
+                .is_some_and(|selected| selected.name == p.name)
+            {
+                button.primary()
+            } else {
+                button
+            })
+            .on_click(cx.listener(move |this: &mut MainWindow, _, _, cx| {
+                load(this, pack.clone(), version.clone(), cx)
+            })),
+        );
+    }
+    if count == 0 && !d.loading {
+        packs = packs.child(
+            div()
+                .p_2()
+                .text_color(rgb(0xb8b8b8))
+                .child("No packs match your search."),
+        );
     }
     if d.loading {
         body = body.child("Loading ATLauncher…");
     }
-    if let Some(e) = &d.error {
-        body = body.child(div().text_color(rgb(0xff6666)).child(e.clone()));
+    if d.installing {
+        body = body.child(div().p_3().border_1().border_color(rgb(0x777777)).rounded_md().child("Installing… Downloading and verifying pack files. This may take a few minutes."));
     }
     if let Some((name, warning)) = d.warning.clone() {
         body = body.child(rich("atl-warning", warning)).child(
@@ -452,8 +548,10 @@ pub fn render(
     }
     let can_install = d.manifest.is_some() && !d.loading && d.warning.is_none();
     let panel = div()
-        .w(px(760.))
-        .h(px(650.))
+        .w(px(1120.))
+        .h(px(760.))
+        .max_w(relative(0.94))
+        .max_h(relative(0.90))
         .bg(rgb(0x202020))
         .p_4()
         .rounded_lg()
@@ -461,9 +559,50 @@ pub fn render(
         .flex_col()
         .gap_2()
         .child(div().text_lg().child("Create Instance — ATLauncher"))
-        .child(Input::new(&dialog.name_input))
-        .child(Input::new(&dialog.group_input))
-        .child(body)
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_sm().child("Instance name"))
+                        .child(Input::new(&dialog.name_input)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_sm().child("Group (optional)"))
+                        .child(Input::new(&dialog.group_input)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .gap_4()
+                .child(
+                    div()
+                        .w(px(288.))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(Input::new(&d.query))
+                        .child(div().text_sm().text_color(rgb(0xb8b8b8)).child(format!(
+                            "{count} public {}",
+                            if count == 1 { "pack" } else { "packs" }
+                        )))
+                        .child(packs),
+                )
+                .child(body),
+        )
+        .children(
+            d.error
+                .as_ref()
+                .map(|e| div().text_color(rgb(0xff6666)).child(e.clone())),
+        )
         .child(
             div()
                 .flex()
