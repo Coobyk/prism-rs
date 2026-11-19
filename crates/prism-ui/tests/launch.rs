@@ -125,7 +125,7 @@ if [ "$1" = "-version" ]; then
 fi
 printf '%s\n' "$PWD" "$@"
 echo 'game stderr' >&2
-exit 42
+exit "${PRISM_TEST_GAME_STATUS:-42}"
 "#,
     ).unwrap();
     fs::set_permissions(&java, fs::Permissions::from_mode(0o700)).unwrap();
@@ -175,5 +175,20 @@ exit 42
     cfg.save(&config).unwrap();
     let output = cli(&paths).args(["launch", &instance.id]).output().unwrap();
     assert_eq!(output.status.code(), Some(42));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Post-exit command failed"));
+
+    let output = cli(&paths)
+        .env("PRISM_TEST_GAME_STATUS", "0")
+        .args(["launch", &instance.id])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let token = instance.ensure_shortcut_token().unwrap();
+    let output = cli(&paths)
+        .env("PRISM_TEST_GAME_STATUS", "0")
+        .args(["launch", &instance.id, "--shortcut-token", &token])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("Post-exit command failed"));
 }

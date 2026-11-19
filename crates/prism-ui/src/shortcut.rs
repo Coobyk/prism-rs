@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const RUN_SHORTCUT: &str = r#"PRISM_RS_DATA="$1"; export PRISM_RS_DATA; shift; "$@"; status=$?; if [ "$status" -ne 0 ] && [ -t 0 ]; then echo 'Launch failed. Press Enter to close.'; read -r ignored; fi; exit "$status""#;
+const RUN_SHORTCUT: &str = r#"PRISM_RS_DATA="$1"; export PRISM_RS_DATA; shift; "$@"; status=$?; if [ "$status" -ne 0 ] && [ -t 0 ]; then echo 'Prism reported an error. Press Enter to close.'; read -r ignored; fi; exit "$status""#;
 
 pub fn create(paths: &Paths, instance: &Instance) -> io::Result<PathBuf> {
     let desktop = dirs::desktop_dir()
