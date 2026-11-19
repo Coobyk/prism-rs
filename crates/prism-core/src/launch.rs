@@ -472,6 +472,22 @@ impl Launcher {
         Launcher { paths, downloader }
     }
 
+    pub async fn component_document(&self, uid: &str, version: &str) -> Result<serde_json::Value, LaunchError> {
+        if uid != version_components::MINECRAFT {
+            return Err(std::io::Error::other("Customize is only available for Minecraft; an equivalent loader component is not available.").into());
+        }
+        self.fetch_version_data(version).await?;
+        let path = self.paths.metadata_dir().join(uid).join(format!("{version}.json"));
+        let mut value: serde_json::Value = serde_json::from_slice(&tokio::fs::read(path).await?)?;
+        value["uid"] = serde_json::json!(uid);
+        value["version"] = serde_json::json!(version);
+        value["formatVersion"] = serde_json::json!(1);
+        value["name"] = serde_json::json!("Minecraft");
+        value.as_object_mut().unwrap().remove("logging");
+        crate::component::Component::parse(&serde_json::to_string(&value)?, Some(uid))?.validate_launch()?;
+        Ok(value)
+    }
+
     /// Fetch and cache the Mojang version JSON for one version id.
     pub async fn fetch_version_data(&self, version_id: &str) -> Result<VersionData, LaunchError> {
         let version_id = version_components::version_id(version_id)?;
@@ -638,15 +654,20 @@ impl Launcher {
 
     pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
         let libraries_dir = self.paths.libraries_dir();
-        self.ensure_client_jar(&profile.minecraft_version).await?;
+        if profile.component_main_jar.is_none() {
+            self.ensure_client_jar(&profile.minecraft_version).await?;
+        }
 
         // Libraries.
         // Old versions list some artifacts twice (once plain, once with
         // natives); downloading one path twice at once races on the rename.
         let mut queued = std::collections::HashSet::new();
         let mut requests = Vec::new();
-        for lib in profile.libraries.iter().chain(profile.natives.iter()) {
+        for lib in profile.libraries.iter().chain(profile.natives.iter()).chain(profile.component_artifacts.iter()) {
             let dest = libraries_dir.join(&lib.path);
+            if lib.path.is_absolute() {
+                crate::component::check_local(&dest).map_err(|e| std::io::Error::new(e.kind(), format!("Missing or unsafe local artifact {}: {e}", dest.display())))?;
+            }
             if dest.exists() || queued.contains(&dest) {
                 continue;
             }
@@ -657,6 +678,8 @@ impl Launcher {
                     req = req.with_sha1(sha1.clone());
                 }
                 requests.push(req);
+            } else if !dest.exists() {
+                return Err(std::io::Error::other(format!("Missing library {}: {}", lib.spec, dest.display())).into());
             }
         }
         self.downloader
@@ -737,50 +760,76 @@ impl Launcher {
         loader: Loader,
         mut progress: impl FnMut(String),
     ) -> Result<LaunchProfile, LaunchError> {
-        let version_data = self.fetch_version_data(&settings.mc_version).await?;
-        let mut profile = LaunchProfile::from_mojang(&version_data);
+        let mut profile = LaunchProfile { minecraft_version: settings.mc_version.clone(), ..Default::default() };
         let pack = match Pack::load(&settings.instance_dir) {
             Ok(pack) => Some(pack),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
-        if let Some((uid, version)) = pack.as_ref().and_then(Pack::lwjgl) {
-            if profile.lwjgl_family() != Some(uid) {
+        let components: Vec<(String, String)> = match &pack {
+            Some(pack) => pack.enabled_components().map(|(uid, version)| (uid.to_owned(), version.to_owned())).collect(),
+            None => std::iter::once((version_components::MINECRAFT.to_owned(), settings.mc_version.clone()))
+                .chain((loader != Loader::None).then(|| (loader.uid().to_owned(), loader.version().unwrap_or_default().to_owned()))).collect(),
+        };
+        for (uid, version) in components {
+            if let Some(patch) = pack.as_ref().map(|pack| pack.patch(&uid)).transpose()?.flatten() {
+                if matches!(uid.as_str(), version_components::LWJGL | version_components::LWJGL3) {
+                    profile.libraries.retain(|lib| !lib.spec.starts_with("org.lwjgl"));
+                    profile.natives.retain(|lib| !lib.spec.starts_with("org.lwjgl"));
+                }
+                patch.apply(&mut profile, &settings.instance_dir)?;
+                continue;
+            }
+            if uid == version_components::MINECRAFT {
+                let document = self.component_document(&uid, &version).await?;
+                crate::component::Component(document).apply(&mut profile, &settings.instance_dir)?;
+                continue;
+            }
+            if matches!(uid.as_str(), version_components::LWJGL | version_components::LWJGL3) {
+            if profile.lwjgl_family() != Some(uid.as_str()) {
                 return Err(std::io::Error::other("The LWJGL override does not match this Minecraft version. Reset it on the Version page.").into());
             }
-            let replacement = self.fetch_lwjgl(uid, version).await?;
+            let replacement = self.fetch_lwjgl(&uid, &version).await?;
             profile.apply_lwjgl(&replacement)?;
             profile.natives_override = Some(settings.game_dir.join("bin").join(format!("lwjgl-{uid}-{version}")));
             progress(format!("Using {uid} {version}"));
+            continue;
         }
-        progress(self.resolve_java(settings, &profile).await?);
-
-        if loader != Loader::None {
+        let loader = match uid.as_str() {
+            "net.fabricmc.fabric-loader" => Loader::Fabric { version },
+            "org.quiltmc.quilt-loader" => Loader::Quilt { version },
+            "net.minecraftforge" => Loader::Forge { version },
+            "net.neoforged" => Loader::NeoForge { version },
+            _ => return Err(std::io::Error::other(format!("Component {uid} has no local patch and no supported metadata resolver.")).into()),
+        };
             progress(format!("Preparing loader: {loader:?}"));
-            let version = &settings.mc_version;
+            let version = settings.mc_version.clone();
             let overlay = match &loader {
                 Loader::Forge { .. } | Loader::NeoForge { .. } => {
-                    let versions_dir = settings.game_dir.join("versions").join(version);
+                    progress(self.resolve_java(settings, &profile).await?);
+                    let versions_dir = settings.game_dir.join("versions").join(&version);
                     let destination = versions_dir.join(format!("{version}.jar"));
                     if !destination.exists() {
-                        let client = self.ensure_client_jar(version).await?;
+                        let client = self.ensure_client_jar(&version).await?;
                         tokio::fs::create_dir_all(&versions_dir).await?;
                         tokio::fs::copy(client, destination).await?;
                     }
                     loaders::ensure_forge_installed(
                         &settings.java_path,
                         &loader,
-                        version,
+                        &version,
                         &settings.game_dir,
                         &self.downloader,
                     )
                     .await
                 }
-                _ => loaders::fetch_loader_profile(&self.downloader.client(), &loader, version).await,
+                _ => loaders::fetch_loader_profile(&self.downloader.client(), &loader, &version).await,
             }
             .map_err(|message| LaunchError::Loader { loader, message })?;
             profile.apply_loader(&overlay);
         }
+
+        progress(self.resolve_java(settings, &profile).await?);
 
         crate::modplatform::atlauncher::apply_launch(&settings.instance_dir, &mut profile)?;
         progress(format!(
@@ -798,12 +847,18 @@ impl Launcher {
             ));
         }
         self.prepare_files(&profile, settings).await?;
-        if let Some(pack) = pack {
-            let mods = pack.archive_paths(ArchiveKind::JarMod)?;
+        let mut mods: Vec<_> = profile.component_jar_mods.iter().map(|lib| self.paths.libraries_dir().join(&lib.path)).collect();
+        if let Some(main) = &profile.component_main_jar {
+            profile.client_override = Some(self.paths.libraries_dir().join(&main.path));
+        }
+        if let Some(pack) = &pack {
+            mods.extend(pack.archive_paths(ArchiveKind::JarMod)?);
             profile.extra_classpath = pack.archive_paths(ArchiveKind::Classpath)?;
+        }
             if !mods.is_empty() {
-                let client = self.client_jar_path(&settings.mc_version);
+                let client = profile.client_override.clone().unwrap_or_else(|| self.client_jar_path(&settings.mc_version));
                 let root = settings.instance_dir.clone();
+                std::fs::create_dir_all(root.join("version-files"))?;
                 let count = mods.len();
                 let patched = tokio::task::spawn_blocking(move || version_components::patched_client(&root, &client, &mods))
                     .await.map_err(std::io::Error::other)??;
@@ -815,7 +870,6 @@ impl Launcher {
             }
             std::env::join_paths(profile.extra_classpath.iter().chain(profile.client_override.iter()))
                 .map_err(std::io::Error::other)?;
-        }
         progress("Downloads complete".to_string());
         Ok(profile)
     }
@@ -962,6 +1016,13 @@ impl Launcher {
         }
         if !jvm_done_library_path {
             command.push(format!("-Djava.library.path={}", natives_dir.to_string_lossy()));
+        }
+
+        command.extend(profile.component_jvm_args.iter().map(|arg| substitute(arg)));
+        for (agent, argument) in &profile.agents {
+            let path = libraries_dir.join(&agent.path);
+            command.push(format!("-javaagent:{}{}", path.to_string_lossy(),
+                if argument.is_empty() { String::new() } else { format!("={argument}") }));
         }
 
         // Classpath + main class.

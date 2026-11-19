@@ -22,6 +22,11 @@ pub struct ResolvedLibrary {
 
 #[derive(Debug, Clone, Default)]
 pub struct LaunchProfile {
+    pub component_artifacts: Vec<ResolvedLibrary>,
+    pub component_jar_mods: Vec<ResolvedLibrary>,
+    pub component_main_jar: Option<ResolvedLibrary>,
+    pub component_jvm_args: Vec<String>,
+    pub agents: Vec<(ResolvedLibrary, String)>,
     pub(crate) client_override: Option<PathBuf>,
     pub(crate) extra_classpath: Vec<PathBuf>,
     pub(crate) natives_override: Option<PathBuf>,
@@ -97,6 +102,11 @@ impl LaunchProfile {
         }
 
         LaunchProfile {
+            component_artifacts: Vec::new(),
+            component_jar_mods: Vec::new(),
+            component_main_jar: None,
+            component_jvm_args: Vec::new(),
+            agents: Vec::new(),
             client_override: None,
             extra_classpath: Vec::new(),
             natives_override: None,

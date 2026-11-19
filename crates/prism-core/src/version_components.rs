@@ -1,4 +1,5 @@
 use crate::{
+    component::Component,
     loaders::Loader,
     worlds::{plain_name, FileStamp},
 };
@@ -91,6 +92,7 @@ pub struct Pack {
     stamp: FileStamp,
     data: Value,
     archives: Vec<Archive>,
+    patches: std::collections::BTreeMap<String, Option<FileStamp>>,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -140,12 +142,20 @@ impl Pack {
             Some(value) => serde_json::from_value(value.clone())?,
             None => Vec::new(),
         };
+        let mut patches = std::collections::BTreeMap::new();
+        for row in data["components"].as_array().unwrap() {
+            let uid = crate::component::uid(row["uid"].as_str().ok_or_else(|| invalid("Missing component UID"))?)?;
+            if patches.insert(uid.to_owned(), optional_stamp(&root.join("patches").join(format!("{uid}.json")))?).is_some() {
+                return Err(invalid("Duplicate component UID"));
+            }
+        }
         Ok(Self {
             root: root.into(),
             config,
             stamp,
             data,
             archives,
+            patches,
         })
     }
 
@@ -177,6 +187,135 @@ impl Pack {
 
     pub fn archives(&self) -> &[Archive] {
         &self.archives
+    }
+
+    pub fn enabled_components(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.components().filter(|(uid, _)| !self.data["components"].as_array().unwrap().iter()
+            .any(|row| row["uid"] == *uid && row["disabled"] == true && row["important"] != true))
+    }
+
+    pub fn is_custom(&self, uid: &str) -> bool {
+        self.patches.get(uid).is_some_and(Option::is_some)
+    }
+
+    pub fn has_meta(&self, uid: &str) -> bool {
+        matches!(uid, MINECRAFT | LWJGL | LWJGL3) || LOADER_UIDS.contains(&uid)
+    }
+
+    pub fn patch(&self, uid: &str) -> io::Result<Option<Component>> {
+        crate::component::uid(uid)?;
+        self.check()?;
+        if !self.is_custom(uid) { return Ok(None); }
+        let text = fs::read_to_string(self.root.join("patches").join(format!("{uid}.json")))?;
+        Component::parse(&text, Some(uid)).map(Some)
+    }
+
+    pub fn patch_text(&self, uid: &str) -> io::Result<String> {
+        self.patch(uid)?.ok_or_else(|| invalid("The component is not customized."))?;
+        fs::read_to_string(self.root.join("patches").join(format!("{uid}.json")))
+    }
+
+    pub fn save_patch(mut self, uid: &str, text: &str) -> io::Result<Self> {
+        let component = Component::parse(text, Some(uid))?;
+        component.validate_launch()?;
+        if !self.patches.contains_key(uid) { return Err(invalid("Component no longer exists")); }
+        self.write_component(uid, text.as_bytes(), Vec::new())
+    }
+
+    pub fn customize(mut self, uid: &str, document: &Value) -> io::Result<Self> {
+        if !self.has_meta(uid) || self.is_custom(uid) || !self.patches.contains_key(uid) {
+            return Err(invalid("This component cannot be customized."));
+        }
+        let text = serde_json::to_vec_pretty(document)?;
+        Component::parse(std::str::from_utf8(&text).unwrap(), Some(uid))?.validate_launch()?;
+        self.write_component(uid, &text, Vec::new())
+    }
+
+    pub fn add_empty(self, uid: &str, name: &str) -> io::Result<Self> {
+        let document = json!({"formatVersion":1,"uid":uid,"name":name,"version":"1"});
+        self.import_document(&serde_json::to_string_pretty(&document)?)
+    }
+
+    pub fn import_component(self, source: &Path) -> io::Result<Self> {
+        self.import_document(&fs::read_to_string(source)?)
+    }
+
+    fn import_document(mut self, text: &str) -> io::Result<Self> {
+        let component = Component::parse(text, None)?;
+        component.validate_launch()?;
+        let uid = component.id();
+        if self.patches.contains_key(uid) { return Err(invalid("A component with this UID already exists.")); }
+        if optional_stamp(&self.root.join("patches").join(format!("{uid}.json")))?.is_some() {
+            return Err(invalid("A patch with this UID already exists."));
+        }
+        self.patches.insert(uid.to_owned(), None);
+        self.rows().push(json!({"uid":uid,"cachedName":component.0["name"],"cachedVersion":component.0["version"]}));
+        self.write_component(uid, text.as_bytes(), Vec::new())
+    }
+
+    pub fn revert(self, uid: &str) -> io::Result<Self> {
+        if !self.has_meta(uid) || !self.is_custom(uid) { return Err(invalid("This component cannot be reverted.")); }
+        let path = self.root.join("patches").join(format!("{uid}.json"));
+        self.commit_files(vec![(path, None)])
+    }
+
+    pub fn remove_component(mut self, uid: &str) -> io::Result<Self> {
+        if self.has_meta(uid) { return Err(invalid("Meta components must be reverted, not removed.")); }
+        let component = self.patch(uid)?.ok_or_else(|| invalid("Local component not found"))?;
+        let mut artifacts = component.local_artifacts(&self.root)?;
+        for (other, _) in self.components().filter(|(other, _)| *other != uid) {
+            if let Some(other) = self.patch(other)? {
+                let shared = other.local_artifacts(&self.root)?;
+                artifacts.retain(|path| !shared.contains(path));
+            }
+        }
+        let mut files: Vec<_> = artifacts.into_iter().map(|path| (path, None)).collect();
+        files.push((self.root.join("patches").join(format!("{uid}.json")), None));
+        self.rows().retain(|row| row["uid"] != uid);
+        self.commit_files(files)
+    }
+
+    fn write_component(&mut self, uid: &str, text: &[u8], mut files: Vec<(PathBuf, Option<Vec<u8>>)>) -> io::Result<Self> {
+        files.push((self.root.join("patches").join(format!("{uid}.json")), Some(text.to_vec())));
+        self.clone().commit_files(files)
+    }
+
+    fn commit_files(mut self, mut files: Vec<(PathBuf, Option<Vec<u8>>)>) -> io::Result<Self> {
+        self.check()?;
+        self.data[EXTRA] = serde_json::to_value(&self.archives)?;
+        files.push((self.root.join(PACK), Some(serde_json::to_vec_pretty(&self.data)?)));
+        let mut staged = Vec::new();
+        for (path, contents) in &files {
+            let parent = path.parent().unwrap();
+            match fs::create_dir(parent) { Ok(()) => {}, Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}, Err(e) => return Err(e) }
+            if !fs::symlink_metadata(parent)?.is_dir() { return Err(invalid("Component storage must be a local directory.")); }
+            let previous = match optional_stamp(path)? { Some(_) => Some(fs::read(path)?), None => None };
+            let temp = contents.as_ref().map(|bytes| -> io::Result<_> {
+                let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                file.write_all(bytes)?;
+                Ok(file)
+            }).transpose()?;
+            staged.push((path.clone(), temp, previous));
+        }
+        self.check()?;
+        for index in 0..staged.len() {
+            let (path, temp, _) = &mut staged[index];
+            let result = match temp.take() {
+                Some(file) => file.persist(&*path).map(|_| ()).map_err(|e| e.error),
+                None => match fs::remove_file(&*path) { Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()), result => result },
+            };
+            if let Err(error) = result {
+                for (path, _, previous) in staged[..index].iter().rev() {
+                    let rollback = match previous {
+                        Some(bytes) => (|| -> io::Result<()> { let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?; file.write_all(bytes)?; file.persist(path)?; Ok(()) })(),
+                        None => fs::remove_file(path),
+                    };
+                    if let Err(rollback) = rollback { return Err(io::Error::other(format!("{error}; rollback failed: {rollback}"))); }
+                }
+                return Err(error);
+            }
+        }
+        Self::load(&self.root)
     }
 
     pub fn set_minecraft(mut self, version: &str) -> io::Result<Self> {
@@ -330,6 +469,15 @@ impl Pack {
                 "The instance changed. Reload Version and try again.",
             ));
         }
+        for (uid, expected) in &self.patches {
+            let dir = self.root.join("patches");
+            if let Ok(meta) = fs::symlink_metadata(&dir) {
+                if !meta.is_dir() { return Err(invalid("Patches must be a local directory.")); }
+            }
+            if optional_stamp(&dir.join(format!("{uid}.json")))? != *expected {
+                return Err(io::Error::other("The component changed. Reload Version and try again."));
+            }
+        }
         Ok(())
     }
 
@@ -343,6 +491,10 @@ impl Pack {
         file.persist(self.root.join(PACK))?;
         Self::load(&self.root)
     }
+}
+
+fn optional_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
+    match stamp(path) { Ok(stamp) => Ok(Some(stamp)), Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None), Err(e) => Err(e) }
 }
 
 #[cfg(test)]
@@ -393,6 +545,39 @@ mod tests {
             jar.write_all(content.as_bytes()).unwrap();
         }
         jar.finish().unwrap();
+    }
+
+    #[test]
+    fn local_components_round_trip_reject_duplicates_and_stale_edits() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let pack = Pack::load(root.path()).unwrap().add_empty("local.test", "Test").unwrap();
+        let text = pack.patch_text("local.test").unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), json!({"formatVersion":1,"uid":"local.test","name":"Test","version":"1"}));
+        assert!(pack.clone().add_empty("local.test", "Duplicate").is_err());
+        assert!(pack.clone().add_empty("../bad", "Bad").is_err());
+        assert!(pack.clone().save_patch("local.test", "").is_err());
+        assert!(pack.clone().save_patch("local.test", &text.replace("local.test", "other")).is_err());
+        let saved = pack.clone().save_patch("local.test", &text.replace("Test", "Changed")).unwrap();
+        assert!(pack.save_patch("local.test", &text).is_err());
+        let saved = saved.remove_component("local.test").unwrap();
+        assert!(!saved.is_custom("local.test"));
+        assert!(!root.path().join("patches/local.test.json").exists());
+    }
+
+    #[test]
+    fn customize_revert_and_deleted_instance_guard() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let doc = json!({"uid":MINECRAFT,"version":"1.20.4","formatVersion":1,"mainClass":"custom.Main"});
+        let pack = Pack::load(root.path()).unwrap().customize(MINECRAFT, &doc).unwrap();
+        assert!(pack.is_custom(MINECRAFT));
+        assert_eq!(pack.patch(MINECRAFT).unwrap().unwrap().0, doc);
+        let pack = pack.revert(MINECRAFT).unwrap();
+        assert_eq!(pack.version(MINECRAFT), Some("1.20.4"));
+        assert!(!pack.is_custom(MINECRAFT));
+        fs::remove_file(root.path().join("instance.cfg")).unwrap();
+        assert!(pack.add_empty("test", "Deleted").is_err());
     }
 
     #[test]
