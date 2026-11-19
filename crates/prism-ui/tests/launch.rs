@@ -115,7 +115,18 @@ fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
     let java = root.path().join("java stub");
     fs::write(
         &java,
-        "#!/bin/sh\nif [ \"$1\" = \"-version\" ]; then echo 'openjdk version \"17.0.10\"' >&2; exit; fi\nprintf '%s\\n' \"$PWD\" \"$@\"\necho 'game stderr' >&2\nexit 42\n",
+        r#"#!/bin/sh
+if [ "$1" = "-version" ]; then
+    if [ -f "$PRISM_RS_DATA/accounts-switched.json" ]; then
+        mv "$PRISM_RS_DATA/accounts-switched.json" "$PRISM_RS_DATA/accounts.json"
+    fi
+    echo 'openjdk version "17.0.10"' >&2
+    exit
+fi
+printf '%s\n' "$PWD" "$@"
+echo 'game stderr' >&2
+exit 42
+"#,
     ).unwrap();
     fs::set_permissions(&java, fs::Permissions::from_mode(0o700)).unwrap();
     let config = instance.root.join("instance.cfg");
@@ -139,6 +150,9 @@ fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
     assert!(String::from_utf8_lossy(&blocked.stderr).contains("already launching or running"));
     drop(lock);
 
+    accounts.active = Some(accounts.add_offline("OtherPlayer").id.clone());
+    accounts.save(&paths.root.join("accounts-switched.json")).unwrap();
+
     let output = cli(&paths).args(["launch", &instance.id]).output().unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -146,6 +160,10 @@ fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
     assert!(stdout.lines().any(|line| line == "-Xmx2048m"));
     assert!(stdout.lines().any(|line| line == "test.Game"));
     assert!(stdout.lines().any(|line| line == "DemoPlayer"));
+    assert_eq!(
+        AccountList::load(&paths.accounts_file()).active_account().unwrap().player_name,
+        "OtherPlayer"
+    );
     assert!(stdout.contains("Pre-launch (stdout): pre-launch-ran"));
     assert!(stdout.contains("Post-exit (stdout): post-exit-ran"));
     assert!(stdout

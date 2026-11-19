@@ -41,6 +41,8 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
     }
 
     let mut settings = LaunchSettings::for_instance(instance, &paths);
+    let accounts_path = paths.accounts_file();
+    let account_id = AccountList::load(&accounts_path).active_account().map(|account| account.id.clone());
     println!(
         "Launching instance {:?} (Minecraft {})",
         instance.name, settings.mc_version
@@ -56,10 +58,10 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
                 },
             )
             .await?;
-        let accounts_path = paths.accounts_file();
-        let session = AccountList::load(&accounts_path)
-            .session_for_launch(&accounts_path)
-            .await?;
+        let session = match account_id {
+            Some(id) => AccountList::session_for_account(&accounts_path, &id).await?,
+            None => None,
+        };
         let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
         let child = prepared.spawn_with(
             |line| println!("{line}"),
