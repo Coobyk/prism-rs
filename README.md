@@ -174,6 +174,8 @@ Working today:
 - Worlds page: save details, rename, copy, confirmed delete, and folder browsing
 - News feed, grouped instance list, persistent config
 - Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar), CurseForge zip (instance toolbar)
+- **Edit → Mods → Export Mod List**: preview, copy, or save HTML, Markdown, plain text, JSON,
+  CSV, or a custom template. Choose whether to include version, authors, URL, and file name.
 - Direct instance launch from the CLI and Linux desktop shortcuts
 - Version page: change Minecraft, loader, and LWJGL versions; manage ordered jar mods and extra classpath JARs shared by GUI and CLI launch
 
