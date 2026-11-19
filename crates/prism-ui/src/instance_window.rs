@@ -20,6 +20,9 @@ use std::sync::Arc;
 #[path = "datapacks_page.rs"]
 mod datapacks_page;
 use datapacks_page::DataPacksPage;
+#[path = "logs_page.rs"]
+mod logs_page;
+use logs_page::LogsPages;
 #[path = "worlds_page.rs"]
 mod worlds_page;
 use worlds_page::WorldsPage;
@@ -27,6 +30,7 @@ use worlds_page::WorldsPage;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
     Log,
+    OtherLogs,
     Version,
     Mods,
     ModUpdates,
@@ -49,6 +53,7 @@ impl Page {
     pub fn label(&self) -> &'static str {
         match self {
             Page::Log => "Minecraft Log",
+            Page::OtherLogs => "Other Logs",
             Page::Version => "Version",
             Page::Mods => "Mods",
             Page::ModUpdates => "Mod Updates",
@@ -71,6 +76,7 @@ impl Page {
     pub fn all() -> Vec<Page> {
         vec![
             Page::Log,
+            Page::OtherLogs,
             Page::Version,
             Page::Mods,
             Page::BrowseMods,
@@ -235,6 +241,7 @@ pub struct InstanceWindow {
     server_status: String,
     servers_was_running: bool,
     datapacks: DataPacksPage,
+    logs: LogsPages,
     worlds: WorldsPage,
     pub(crate) settings_editor: Option<crate::instance_settings_page::SettingsEditor>,
 }
@@ -256,6 +263,7 @@ impl InstanceWindow {
             server_status: String::new(),
             servers_was_running: false,
             datapacks: DataPacksPage::default(),
+            logs: LogsPages::default(),
             worlds: WorldsPage::default(),
             settings_editor: None,
         }
@@ -600,6 +608,9 @@ impl InstanceWindow {
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
                         if this.page != page {
                             this.worlds.on_navigation();
+                            if page == Page::OtherLogs {
+                                this.refresh_other_logs(cx);
+                            }
                         }
                         this.page = page;
                         cx.notify();
@@ -627,7 +638,7 @@ impl InstanceWindow {
 
     fn render_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         match self.page {
-            Page::Log => self.render_log_page(cx),
+            Page::Log | Page::OtherLogs => self.render_logs_page(cx),
             Page::Version => self.render_version_page(cx),
             Page::Mods => self.render_resources_page(cx, ResourceType::Mod),
             Page::ModUpdates => self.render_mod_updates(cx),
@@ -663,39 +674,6 @@ impl InstanceWindow {
                     .child(div().text_ellipsis().text_size(px(15.)).font_weight(FontWeight::BOLD).child(inst.name))
                     .child(div().text_ellipsis().text_size(px(11.)).text_color(rgb(0x888888)).child(subtitle)),
             )
-    }
-
-    fn render_log_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let mut lines: Vec<String> = Vec::new();
-        if let Some(running) = self.app.read(cx).running.get(&self.instance_id) {
-            if let Ok(log) = running.log.lock() {
-                lines = log.clone();
-            }
-        } else {
-            lines.push("No log: instance is not running.".to_string());
-        }
-        let tail: Vec<String> = lines.iter().rev().take(1000).rev().cloned().collect();
-
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(self.page_header(cx, "Console output".to_string()).into_any_element())
-            .child(
-                div()
-                    .id("log-scroll")
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .p_2()
-                    .bg(rgb(0x1a1a1a))
-                    .font_family("monospace")
-                    .text_size(px(11.))
-                    .text_color(rgb(0xcccccc))
-                    .children(tail.into_iter().map(|l| div().w_full().whitespace_normal().child(l).into_any_element())),
-            )
-            .into_any_element()
     }
 
     fn render_version_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1423,6 +1401,9 @@ impl Render for InstanceWindow {
         }
         self.servers_was_running = running;
         self.sync_worlds_page(running, cx);
+        if matches!(self.page, Page::Log | Page::OtherLogs) {
+            self.prepare_logs_page(window, cx);
+        }
         if self.page == Page::Servers && self.servers.is_none() && self.server_status.is_empty() {
             match ServerListSnapshot::load(&self.instance(cx).game_root()) {
                 Ok((list, snapshot)) => {
