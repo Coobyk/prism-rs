@@ -35,9 +35,7 @@ pub fn collect(mods: &Path) -> Vec<ModListEntry> {
             };
             ModListEntry {
                 name: resource.title.unwrap_or_else(fallback_name),
-                version: resource
-                    .version
-                    .or_else(|| indexed.and_then(|entry| entry.version.clone())),
+                version: resource.version,
                 authors: resource.authors,
                 url: indexed
                     .and_then(|entry| entry.homepage.clone())
@@ -371,6 +369,42 @@ version = "opaque-id"
         assert_eq!(entry.authors, ["Alice", "Bob"]);
         assert_eq!(entry.url.as_deref(), Some("https://modrinth.com/mod/AB12"));
         assert_eq!(entry.filename, "real.jar.disabled");
+    }
+
+    #[test]
+    fn indexed_provider_ids_are_not_release_versions() {
+        let mods = tempfile::tempdir().unwrap();
+        let index = mods.path().join(".index");
+        std::fs::create_dir(&index).unwrap();
+        for (name, update) in [
+            (
+                "modrinth",
+                "[update.modrinth]\nmod-id = \"AB12\"\nversion = \"opaque-id\"",
+            ),
+            (
+                "curseforge",
+                "[update.curseforge]\nproject-id = 12\nfile-id = 12345",
+            ),
+        ] {
+            std::fs::File::create(mods.path().join(format!("{name}.jar"))).unwrap();
+            std::fs::write(
+                index.join(format!("{name}.pw.toml")),
+                format!(
+                    "name = \"{name}\"\nfilename = \"{name}.jar\"\n[download]\nhash-format = \"sha1\"\nhash = \"example\"\n{update}"
+                ),
+            )
+            .unwrap();
+        }
+        let entries = collect(mods.path());
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            assert!(
+                entry.url.is_some(),
+                "index should be matched for {}",
+                entry.name
+            );
+            assert_eq!(entry.version, None, "provider ID for {}", entry.name);
+        }
     }
 
     #[test]
