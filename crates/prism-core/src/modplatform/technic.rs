@@ -3,7 +3,7 @@ use crate::import::{extract_zip, ImportError};
 use crate::loaders::Loader;
 use crate::meta::{self, VersionData};
 use crate::net::{DownloadRequest, Downloader};
-use crate::profile::LaunchProfile;
+use crate::profile::{LaunchProfile, ResolvedLibrary};
 use crate::version_components::{version_id, ArchiveKind, Pack};
 use crate::{Instance, InstanceList, Paths};
 use md5::{Digest, Md5};
@@ -565,8 +565,12 @@ pub fn apply_forge_patch(
     let jar = game.join("bin/modpack.jar");
     let bundled_root = instance.canonicalize()?.join(BUNDLED_LIBRARIES);
     let library_root = game.join("libraries");
-    let (libraries, natives) = profile.apply_loader_with_libraries(&patch);
-    for library in libraries.iter_mut().chain(natives) {
+    let (libraries, natives) = (profile.libraries.len(), profile.natives.len());
+    profile.apply_loader(&patch);
+    for library in profile.libraries[libraries..]
+        .iter_mut()
+        .chain(&mut profile.natives[natives..])
+    {
         if bundled_forge(&library.spec) {
             let embedded = bundled_root.join(checked_maven_path(&library.spec)?);
             library.path = if embedded.is_file() {
@@ -578,7 +582,59 @@ pub fn apply_forge_patch(
             library.path = library_root.join(checked_maven_path(&library.spec)?);
         }
     }
+    merge_embedded_libraries(&mut profile.libraries, libraries);
+    merge_embedded_libraries(&mut profile.natives, natives);
     Ok(true)
+}
+
+fn numeric_maven_version(version: &str) -> Option<Vec<u32>> {
+    let core = version.split('-').next()?;
+    let mut parts: Vec<u32> = core
+        .split('.')
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    while parts.last() == Some(&0) {
+        parts.pop();
+    }
+    Some(parts)
+}
+
+fn maven_artifact(spec: &str) -> Option<((&str, &str, Option<&str>, &str), &str)> {
+    let (coordinate, extension) = spec.split_once('@').unwrap_or((spec, "jar"));
+    let mut parts = coordinate.split(':');
+    let (group, artifact, version) = (parts.next()?, parts.next()?, parts.next()?);
+    Some(((group, artifact, parts.next(), extension), version))
+}
+
+fn merge_embedded_libraries(base: &mut Vec<ResolvedLibrary>, loader_start: usize) {
+    for library in base.split_off(loader_start) {
+        let Some((key, version)) = maven_artifact(&library.spec) else {
+            base.push(library);
+            continue;
+        };
+        let group = key.0;
+        if group.starts_with("org.lwjgl") || matches!(group, "net.java.jinput" | "net.java.jutils")
+        {
+            continue;
+        }
+        let version = numeric_maven_version(version);
+        if base.iter().any(|entry| {
+            maven_artifact(&entry.spec).is_some_and(|(identity, existing)| {
+                identity == key
+                    && !version
+                        .as_ref()
+                        .zip(numeric_maven_version(existing))
+                        .is_some_and(|(incoming, current)| incoming > &current)
+            })
+        }) {
+            continue;
+        }
+        base.retain(|entry| {
+            !maven_artifact(&entry.spec).is_some_and(|(identity, _)| identity == key)
+        });
+        base.push(library);
+    }
 }
 
 fn extract_bundled_forge(
@@ -810,6 +866,83 @@ mod tests {
         )
         .unwrap());
         assert!(checked_maven_path("org.example:../outside:1").is_err());
+    }
+
+    #[test]
+    fn embedded_forge_upgrades_matching_libraries_but_preserves_lwjgl_and_newer_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let os = meta::os_name();
+        let patch = serde_json::json!({
+            "inheritsFrom": "1.7.10",
+            "mainClass": "net.minecraft.launchwrapper.Launch",
+            "libraries": [
+                {"name": "net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10"},
+                {"name": "com.google.guava:guava:17.0"},
+                {"name": "org.ow2.asm:asm:4.0"},
+                {"name": "org.lwjgl.lwjgl:lwjgl:2.9.0"},
+                {"name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.0", "natives": {(os): "test-native"}},
+                {"name": "net.java.jinput:jinput:2.1.0"},
+                {"name": "net.java.jutils:jutils:1.0"}
+            ]
+        })
+        .to_string();
+        fixture(&game, &[("version.json", &patch)]);
+        let paths = Paths {
+            root: dir.path().join("launcher"),
+        };
+        let installed = install_staged(&paths, "Technic Forge", &game, "1.7.10").unwrap();
+        let vanilla = VersionData::from_json(&serde_json::json!({
+            "id": "1.7.10",
+            "libraries": [
+                {"name": "com.google.guava:guava:15.0"},
+                {"name": "com.google.guava:guava:15.0:classified"},
+                {"name": "org.ow2.asm:asm:10.0"},
+                {"name": "org.lwjgl.lwjgl:lwjgl:2.9.0"}
+            ]
+        }))
+        .unwrap();
+        let selected_lwjgl = VersionData::from_json(&serde_json::json!({
+            "libraries": [
+                {"name": "org.lwjgl.lwjgl:lwjgl:2.9.3"},
+                {"name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.3", "natives": {(os): "test-native"}},
+                {"name": "net.java.jinput:jinput:2.0.5"},
+                {"name": "net.java.jutils:jutils:1.0.0"}
+            ]
+        }))
+        .unwrap();
+        let mut profile = LaunchProfile::from_mojang(&vanilla);
+        profile.apply_lwjgl(&selected_lwjgl).unwrap();
+        let loader = crate::instance::loader_of(&installed);
+        assert!(apply_forge_patch(
+            &mut profile,
+            &installed.root,
+            &installed.game_root(),
+            &loader
+        )
+        .unwrap());
+        let specs: Vec<_> = profile
+            .libraries
+            .iter()
+            .map(|lib| lib.spec.as_str())
+            .collect();
+        assert_eq!(
+            specs,
+            [
+                "com.google.guava:guava:15.0:classified",
+                "org.ow2.asm:asm:10.0",
+                "org.lwjgl.lwjgl:lwjgl:2.9.3",
+                "net.java.jinput:jinput:2.0.5",
+                "net.java.jutils:jutils:1.0.0",
+                "net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10",
+                "com.google.guava:guava:17.0"
+            ]
+        );
+        assert_eq!(profile.natives.len(), 1);
+        assert_eq!(
+            profile.natives[0].spec,
+            "org.lwjgl.lwjgl:lwjgl-platform:2.9.3:test-native"
+        );
     }
 
     #[test]

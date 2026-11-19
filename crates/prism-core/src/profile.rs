@@ -3,7 +3,7 @@
 //! PrismLauncher's `LaunchProfile` + `LibraryUtils`.
 
 use crate::meta::{self, MoLibrary, VersionData};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -171,25 +171,14 @@ impl LaunchProfile {
     /// Overlay a loader profile: its main
     /// class, libraries and arguments are applied on top of the Mojang base.
     pub fn apply_loader(&mut self, loader_vd: &VersionData) {
-        self.apply_loader_with_libraries(loader_vd);
-    }
-
-    pub(crate) fn apply_loader_with_libraries(
-        &mut self,
-        loader_vd: &VersionData,
-    ) -> (&mut [ResolvedLibrary], &mut [ResolvedLibrary]) {
         let features = BTreeMap::new();
         self.main_class = loader_vd.main_class.clone();
 
-        let mut libraries = Vec::new();
-        let mut natives = Vec::new();
         for lib in &loader_vd.libraries {
             if meta::rules_allow(&lib.rules, &features) {
-                push_library(lib, &mut libraries, &mut natives);
+                push_library(lib, &mut self.libraries, &mut self.natives);
             }
         }
-        let libraries_start = merge_loader_libraries(&mut self.libraries, libraries);
-        let natives_start = merge_loader_libraries(&mut self.natives, natives);
 
         // Merge the loader's structured arguments after the base ones.
         if let Some(loader_args) = &loader_vd.arguments {
@@ -206,34 +195,7 @@ impl LaunchProfile {
                     .collect();
             }
         }
-        (
-            &mut self.libraries[libraries_start..],
-            &mut self.natives[natives_start..],
-        )
     }
-}
-
-fn library_identity(spec: &str) -> Option<(&str, &str, Option<&str>)> {
-    let mut parts = spec.split(':');
-    let (group, artifact) = (parts.next()?, parts.next()?);
-    let version = parts.next()?;
-    let classifier = parts
-        .next()
-        .or_else(|| version.split_once('@').map(|(_, ext)| ext));
-    Some((group, artifact, classifier))
-}
-
-fn merge_loader_libraries(base: &mut Vec<ResolvedLibrary>, loader: Vec<ResolvedLibrary>) -> usize {
-    let replacements: HashSet<_> = loader
-        .iter()
-        .filter_map(|library| library_identity(&library.spec))
-        .collect();
-    base.retain(|library| {
-        !library_identity(&library.spec).is_some_and(|key| replacements.contains(&key))
-    });
-    let start = base.len();
-    base.extend(loader);
-    start
 }
 
 fn push_library(lib: &MoLibrary, libraries: &mut Vec<ResolvedLibrary>, natives: &mut Vec<ResolvedLibrary>) {
@@ -304,10 +266,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn loader_library_replaces_the_vanilla_version_but_not_other_artifacts() {
+    fn installer_forge_overlay_preserves_the_vanilla_guava() {
         let vanilla = VersionData::from_json(&serde_json::json!({
             "libraries": [
-                {"name": "com.google.guava:guava:15.0"},
+                {"name": "com.google.guava:guava:33.3.1-jre"},
                 {"name": "com.google.guava:guava:15.0:classified"},
                 {"name": "org.example:unchanged:1"}
             ]
@@ -315,7 +277,7 @@ mod tests {
         .unwrap();
         let loader = VersionData::from_json(&serde_json::json!({
             "libraries": [
-                {"name": "com.google.guava:guava:17.0"},
+                {"name": "com.google.guava:guava:32.1.2-jre"},
                 {"name": "org.example:unchanged:2",
                     "rules": [{"action":"disallow"}]}
             ]
@@ -327,9 +289,10 @@ mod tests {
         assert_eq!(
             specs,
             [
+                "com.google.guava:guava:33.3.1-jre",
                 "com.google.guava:guava:15.0:classified",
                 "org.example:unchanged:1",
-                "com.google.guava:guava:17.0"
+                "com.google.guava:guava:32.1.2-jre"
             ]
         );
     }
