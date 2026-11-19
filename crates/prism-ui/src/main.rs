@@ -235,6 +235,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             min_memory_mb: 512,
             max_memory_mb: 2048,
             extra_jvm_args: vec![],
+            raw_jvm_args: String::new(),
             window_width: 854,
             window_height: 480,
             env: vec![],

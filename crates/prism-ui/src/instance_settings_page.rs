@@ -180,6 +180,85 @@ mod tests {
     }
 
     #[test]
+    fn validates_argument_quoting_without_rewriting_it() {
+        for index in [3, 7] {
+            let mut form = form();
+            for value in [
+                r#"-Dmessage="hello world""#,
+                r"C:\tools\wrapper.exe",
+                r#""C:\Program Files\wrapper.exe""#,
+                r"C:\tools\",
+            ] {
+                form.values[index] = value.into();
+                let converted = form.convert(&InstanceSettings::default()).unwrap();
+                let saved = if index == 3 {
+                    converted.jvm_args
+                } else {
+                    converted.wrapper_command
+                };
+                assert_eq!(saved.as_deref(), Some(value));
+            }
+            form.values[index] = "\"unterminated".into();
+            assert!(form
+                .convert(&InstanceSettings::default())
+                .unwrap_err()
+                .contains("Unterminated"));
+            form.overrides[if index == 3 { 2 } else { 4 }] = false;
+            assert!(form.convert(&InstanceSettings::default()).is_ok());
+        }
+    }
+
+    #[test]
+    fn disabled_overrides_restore_saved_locals_after_reopening() {
+        let fixture = Fixture::new();
+        let root = fixture.0.instances_dir().join("test");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("instance.cfg"), "name=Test\n").unwrap();
+        let baseline = InstanceSettings::load(&root).unwrap();
+        let mut edited = form();
+        edited.values[0] = "768".into();
+        edited.values[3] = r#"-Dmessage="hello world""#.into();
+        let saved = edited.convert(&baseline).unwrap();
+        save_checked(&root, &baseline, &saved).unwrap();
+        let inherited = SettingsForm::inherited(&fixture.0);
+        let mut draft = SettingsForm::local(&saved, &inherited);
+        for group in 0..6 {
+            edited.toggle(group, false, &inherited, &mut draft);
+        }
+        assert_eq!(edited.values, inherited.values);
+        assert_eq!(edited.env, inherited.env);
+        let disabled = edited.convert(&saved).unwrap();
+        save_checked(&root, &saved, &disabled).unwrap();
+        let instance = Instance::load(&root).unwrap();
+        let raw = InstanceSettings::load(&root).unwrap();
+        let mut reopened =
+            SettingsForm::resolved(&LaunchSettings::for_instance(&instance, &fixture.0), &raw);
+        let mut draft = SettingsForm::local(&raw, &inherited);
+        assert_eq!(reopened.values, inherited.values);
+        for group in 0..6 {
+            reopened.toggle(group, true, &inherited, &mut draft);
+        }
+        assert_eq!(reopened.convert(&raw).unwrap(), saved);
+        reopened.values[0] = "900".into();
+        reopened.env.push(("DRAFT".into(), "unsaved".into()));
+        for group in [0, 5] {
+            reopened.toggle(group, false, &inherited, &mut draft);
+            reopened.toggle(group, true, &inherited, &mut draft);
+        }
+        assert_eq!(reopened.values[0], "900");
+        assert_eq!(
+            reopened.env.last().unwrap(),
+            &("DRAFT".into(), "unsaved".into())
+        );
+        let mut empty = inherited.clone();
+        let mut fallback = SettingsForm::local(&InstanceSettings::default(), &inherited);
+        empty.toggle(0, true, &inherited, &mut fallback);
+        empty.toggle(5, true, &inherited, &mut fallback);
+        assert_eq!(empty.values, inherited.values);
+        assert_eq!(empty.env, inherited.env);
+    }
+
+    #[test]
     fn reads_inherited_values_and_legacy_override_state() {
         let fixture = Fixture::new();
         let mut global = prism_core::settings::Settings::default();
@@ -226,6 +305,51 @@ struct SettingsForm {
 }
 
 impl SettingsForm {
+    fn local(raw: &InstanceSettings, inherited: &Self) -> Self {
+        let mut local = inherited.clone();
+        let values = [
+            raw.min_memory_mb.map(|n| n.to_string()),
+            raw.max_memory_mb.map(|n| n.to_string()),
+            raw.legacy_java_path
+                .clone()
+                .or_else(|| raw.java_path.clone()),
+            raw.jvm_args.clone(),
+            raw.window_width.map(|n| n.to_string()),
+            raw.window_height.map(|n| n.to_string()),
+            raw.pre_launch_command.clone(),
+            raw.wrapper_command.clone(),
+            raw.post_exit_command.clone(),
+        ];
+        for (index, value) in values.into_iter().enumerate() {
+            if let Some(value) = value {
+                local.values[index] = value;
+            }
+        }
+        if let Some(env) = &raw.env {
+            local.env = env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        }
+        local
+    }
+
+    fn toggle(&mut self, group: usize, enabled: bool, inherited: &Self, draft: &mut Self) {
+        if self.overrides[group] {
+            for &index in GROUP_FIELDS[group] {
+                draft.values[index] = self.values[index].clone();
+            }
+            if group == 5 {
+                draft.env = self.env.clone();
+            }
+        }
+        let source = if enabled { &*draft } else { inherited };
+        for &index in GROUP_FIELDS[group] {
+            self.values[index] = source.values[index].clone();
+        }
+        if group == 5 {
+            self.env = source.env.clone();
+        }
+        self.overrides[group] = enabled;
+    }
+
     fn resolved(settings: &LaunchSettings, raw: &InstanceSettings) -> Self {
         Self {
             overrides: [
@@ -247,7 +371,7 @@ impl SettingsForm {
                 settings.min_memory_mb.to_string(),
                 settings.max_memory_mb.to_string(),
                 settings.java_path.to_string_lossy().into_owned(),
-                settings.extra_jvm_args.join(" "),
+                settings.raw_jvm_args.clone(),
                 settings.window_width.to_string(),
                 settings.window_height.to_string(),
                 settings.pre_launch_command.clone(),
@@ -327,6 +451,8 @@ impl SettingsForm {
             raw.legacy_java_path = None;
         }
         if self.overrides[2] {
+            prism_core::launch::split_args(&self.values[3])
+                .map_err(|error| format!("Invalid JVM arguments: {error}"))?;
             raw.jvm_args = Some(self.values[3].trim().into());
         }
         if self.overrides[3] {
@@ -334,6 +460,8 @@ impl SettingsForm {
             raw.window_height = Some(positive(5)?);
         }
         if self.overrides[4] {
+            prism_core::launch::split_args(&self.values[7])
+                .map_err(|error| format!("Invalid wrapper command: {error}"))?;
             raw.pre_launch_command = Some(self.values[6].clone());
             raw.wrapper_command = Some(self.values[7].clone());
             raw.post_exit_command = Some(self.values[8].clone());
@@ -384,6 +512,7 @@ pub(crate) struct SettingsEditor {
     paths: Paths,
     baseline: InstanceSettings,
     overrides: [bool; 6],
+    draft: SettingsForm,
     inputs: Vec<Entity<InputState>>,
     env: Vec<(Entity<InputState>, Entity<InputState>)>,
     status: String,
@@ -401,6 +530,7 @@ impl SettingsEditor {
             InstanceSettings::load(&instance.root).map_err(|e| format!("Load failed: {e}"))?;
         let form =
             SettingsForm::resolved(&LaunchSettings::for_instance(instance, paths), &baseline);
+        let draft = SettingsForm::local(&baseline, &SettingsForm::inherited(paths));
         let inputs = form
             .values
             .into_iter()
@@ -417,6 +547,7 @@ impl SettingsEditor {
             paths: paths.clone(),
             baseline,
             overrides: form.overrides,
+            draft,
             inputs,
             env,
             status: String::new(),
@@ -464,13 +595,15 @@ impl SettingsEditor {
         cx: &mut Context<InstanceWindow>,
     ) {
         let inherited = SettingsForm::inherited(&self.paths);
+        let mut form = self.form(cx);
+        form.toggle(group, enabled, &inherited, &mut self.draft);
         for &i in GROUP_FIELDS[group] {
             self.inputs[i].update(cx, |input, cx| {
-                input.set_value(inherited.values[i].clone(), window, cx)
+                input.set_value(form.values[i].clone(), window, cx)
             });
         }
         if group == 5 {
-            self.env = inherited
+            self.env = form
                 .env
                 .into_iter()
                 .map(|(key, value)| Self::env_row(key, value, window, cx))
@@ -481,8 +614,8 @@ impl SettingsEditor {
         cx.notify();
     }
 
-    fn save(&mut self, cx: &mut Context<InstanceWindow>) {
-        let form = SettingsForm {
+    fn form(&self, cx: &Context<InstanceWindow>) -> SettingsForm {
+        SettingsForm {
             overrides: self.overrides,
             values: self
                 .inputs
@@ -499,7 +632,11 @@ impl SettingsEditor {
                     )
                 })
                 .collect(),
-        };
+        }
+    }
+
+    fn save(&mut self, cx: &mut Context<InstanceWindow>) {
+        let form = self.form(cx);
         match form.convert(&self.baseline).and_then(|updated| {
             save_checked(&self.root, &self.baseline, &updated)?;
             self.baseline = updated;

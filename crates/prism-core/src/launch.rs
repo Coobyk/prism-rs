@@ -116,6 +116,7 @@ pub struct LaunchSettings {
     pub min_memory_mb: u32,
     pub max_memory_mb: u32,
     pub extra_jvm_args: Vec<String>,
+    pub raw_jvm_args: String,
     pub window_width: u32,
     pub window_height: u32,
     pub env: Vec<(String, String)>,
@@ -138,6 +139,7 @@ impl LaunchSettings {
             min_memory_mb: global.get_int("MinMemAlloc", 512).max(128) as u32,
             max_memory_mb: global.get_int("MaxMemAlloc", 4096).max(256) as u32,
             extra_jvm_args: Vec::new(),
+            raw_jvm_args: String::new(),
             window_width: global.get_int("MinecraftWinWidth", 854).max(320) as u32,
             window_height: global.get_int("MinecraftWinHeight", 480).max(240) as u32,
             env: Vec::new(),
@@ -186,11 +188,8 @@ impl LaunchSettings {
         if let Some(java) = java.filter(|v| !v.is_empty()) {
             self.java_path = java.into();
         }
-        self.extra_jvm_args = choose("OverrideJavaArgs", "JvmArgs", Some("jvmArgs"))
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_owned)
-            .collect();
+        self.raw_jvm_args = choose("OverrideJavaArgs", "JvmArgs", Some("jvmArgs")).unwrap_or_default();
+        self.extra_jvm_args = split_args(&self.raw_jvm_args).unwrap_or_default();
         self.pre_launch_command =
             choose("OverrideCommands", "PreLaunchCommand", None).unwrap_or_default();
         self.wrapper_command =
@@ -233,6 +232,41 @@ fn default_version_for(inst: &crate::instance::Instance) -> String {
         }
     }
     "1.20.1".to_string()
+}
+
+/// PrismLauncher splitArgs rules: backslashes are literal outside quotes and
+/// escape only the matching quote or another backslash inside quotes.
+pub fn split_args(input: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if let Some(delimiter) = quote {
+            if ch == '\\' && chars.peek().is_some_and(|next| *next == delimiter || *next == '\\') {
+                current.push(chars.next().unwrap());
+            } else if ch == delimiter {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if let Some(delimiter) = quote {
+        return Err(format!("Unterminated {delimiter} quote"));
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
 }
 
 fn default_java_path() -> PathBuf {
@@ -738,13 +772,15 @@ impl Launcher {
             ("NO_COLOR".into(), "1".into()),
         ];
         env.extend(settings.env.iter().cloned());
-        let mut command_error = None;
-        match shlex::split(&settings.wrapper_command) {
-            Some(mut wrapper) => {
+        let mut command_error = split_args(&settings.raw_jvm_args)
+            .err()
+            .map(|error| format!("Invalid JVM arguments: {error}"));
+        match split_args(&settings.wrapper_command) {
+            Ok(mut wrapper) => {
                 wrapper.extend(command);
                 command = wrapper;
             }
-            None => command_error = Some("Invalid quoting in wrapper command".into()),
+            Err(error) => command_error = Some(format!("Invalid wrapper command: {error}")),
         }
 
         PreparedLaunch {

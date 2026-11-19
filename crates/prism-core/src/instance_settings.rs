@@ -255,6 +255,78 @@ mod tests {
     }
 
     #[test]
+    fn argument_splitting_preserves_quotes_and_windows_paths() {
+        use crate::launch::split_args;
+        let cases = [
+            (r#"-Dmessage="hello world""#, "-Dmessage=hello world"),
+            (r"C:\tools\wrapper.exe", r"C:\tools\wrapper.exe"),
+            (
+                r#""C:\Program Files\wrapper.exe""#,
+                r"C:\Program Files\wrapper.exe",
+            ),
+            (r"C:\tools\", r"C:\tools\"),
+            (r#"'a\\b\'c'"#, r"a\b'c"),
+        ];
+        let fixture = Fixture::new();
+        for (input, expected) in cases {
+            assert_eq!(split_args(input).unwrap(), [expected], "{input}");
+            let mut cfg = IniFile::default();
+            cfg.set("JvmArgs", input);
+            let mut settings = fixture.resolve(&cfg);
+            assert_eq!(settings.extra_jvm_args, [expected]);
+            assert!(fixture.command(&settings).command.iter().any(|arg| arg == expected));
+            settings.wrapper_command = input.into();
+            let prepared = fixture.command(&settings);
+            assert_eq!(prepared.command[0], expected);
+            assert!(prepared.command_error.is_none());
+        }
+        assert!(split_args("  \t '' \"\" ").unwrap().is_empty());
+        assert_eq!(
+            split_args("one\ttwo 'three four'").unwrap(),
+            ["one", "two", "three four"]
+        );
+        for input in ["'unterminated", "\"unterminated", r#""C:\tools\""#] {
+            assert!(split_args(input).unwrap_err().contains("Unterminated"));
+            let mut cfg = IniFile::default();
+            cfg.set("JvmArgs", input);
+            let settings = fixture.resolve(&cfg);
+            let prepared = fixture.command(&settings);
+            assert!(prepared
+                .spawn()
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid JVM arguments"));
+            assert!(prepared.shell_script().is_err());
+        }
+    }
+
+    #[test]
+    fn quoted_global_jvm_arguments_and_invalid_inheritance() {
+        let fixture = Fixture::new();
+        let mut global = IniFile::default();
+        let mut local = IniFile::default();
+        for flag in [None, Some("false")] {
+            if let Some(flag) = flag {
+                local.set("OverrideJavaArgs", flag);
+                local.set("JvmArgs", "-Dignored=yes");
+            } else {
+                local.remove("OverrideJavaArgs");
+                local.remove("JvmArgs");
+            }
+            global.set("JvmArgs", r#"-Dmessage="hello world""#);
+            global.save(&fixture.paths.global_config()).unwrap();
+            let settings = fixture.resolve(&local);
+            assert_eq!(settings.extra_jvm_args, ["-Dmessage=hello world"]);
+            assert!(fixture.command(&settings).command.iter()
+                .any(|arg| arg == "-Dmessage=hello world"));
+            global.set("JvmArgs", "-Dmessage=\"unfinished");
+            global.save(&fixture.paths.global_config()).unwrap();
+            assert!(fixture.command(&fixture.resolve(&local))
+                .spawn().unwrap_err().to_string().contains("Invalid JVM arguments"));
+        }
+    }
+
+    #[test]
     fn command_settings_and_invalid_wrapper() {
         let fixture = Fixture::new();
         let mut settings = fixture.resolve(&IniFile::default());
