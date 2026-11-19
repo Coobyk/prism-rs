@@ -1,6 +1,6 @@
 //! Compatible updates for installed Java mods, with Prism's packwiz index format.
 
-use super::flame::{FlameApi, FlameFile, API_KEY_ENV};
+use super::flame::{curseforge_loader, FlameApi, FlameFile, API_KEY_ENV};
 use super::modrinth::{modrinth_loader, ModFile, ModVersion, ModrinthApi};
 use super::{PlatformError, ResourceType};
 use crate::loaders::Loader;
@@ -111,7 +111,7 @@ fn problem(message: impl Into<String>) -> PlatformError {
     PlatformError::Request(message.into())
 }
 
-fn is_jar(name: &str) -> bool {
+pub(super) fn is_jar(name: &str) -> bool {
     Path::new(name).file_name().and_then(|name| name.to_str()) == Some(name)
         && !name.contains(['/', '\\', ':'])
         && !name.chars().any(char::is_control)
@@ -248,13 +248,13 @@ fn curseforge_index(project: i64, file: &FlameFile) -> Option<Index> {
     })
 }
 
-fn record(game_root: &Path, index: Option<Index>) {
+fn record(game_root: &Path, index: Option<Index>) -> Result<(), PlatformError> {
     let Some(mut index) = index.filter(|index| is_jar(&index.filename)) else {
-        return;
+        return Ok(());
     };
     let mods = game_root.join("mods");
     let indexes = read_index(&mods);
-    let result = match indexes.get(&index.filename).map(Vec::as_slice) {
+    match indexes.get(&index.filename).map(Vec::as_slice) {
         Some([previous]) => {
             index.side = previous.index.side.clone();
             index.locked = previous.index.locked;
@@ -280,18 +280,29 @@ fn record(game_root: &Path, index: Option<Index>) {
             index.filename
         ))),
         None => save_index(&index_path(&mods, &index), &index, None),
-    };
+    }
+}
+
+fn warn_on_record_failure(result: Result<(), PlatformError>) {
     if let Err(error) = result {
         tracing::warn!("could not save mod index: {error}");
     }
 }
 
 pub(super) fn record_modrinth(game_root: &Path, title: &str, version: &ModVersion, file: &ModFile) {
-    record(game_root, modrinth_index(title, version, file));
+    warn_on_record_failure(record(game_root, modrinth_index(title, version, file)));
 }
 
 pub(crate) fn record_curseforge(game_root: &Path, project: i64, file: &FlameFile) {
-    record(game_root, curseforge_index(project, file));
+    warn_on_record_failure(write_curseforge_index(game_root, project, file));
+}
+
+pub(super) fn write_curseforge_index(
+    game_root: &Path,
+    project: i64,
+    file: &FlameFile,
+) -> Result<(), PlatformError> {
+    record(game_root, curseforge_index(project, file))
 }
 
 fn timestamp(date: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
@@ -352,16 +363,6 @@ fn matches_modrinth_install(version: &ModVersion, project: &str, hash: &str) -> 
                 .get("sha1")
                 .is_some_and(|sha1| hash.eq_ignore_ascii_case(sha1))
         })
-}
-
-fn curseforge_loader(loader: &Loader) -> Option<u8> {
-    match loader {
-        Loader::Forge { .. } => Some(1),
-        Loader::Fabric { .. } => Some(4),
-        Loader::Quilt { .. } => Some(5),
-        Loader::NeoForge { .. } => Some(6),
-        Loader::None => None,
-    }
 }
 
 async fn check_curseforge(
@@ -777,12 +778,12 @@ file-id = 3509043
         let temp = tempfile::tempdir().unwrap();
         let mods = temp.path().join("mods");
         let mut index: Index = toml::from_str(CURSEFORGE).unwrap();
-        record(temp.path(), Some(index.clone()));
+        record(temp.path(), Some(index.clone())).unwrap();
         index.update.curseforge.as_mut().unwrap().file = 5;
         index.download.hash = "replacement".into();
         index.locked = false;
         index.side = Some("both".into());
-        record(temp.path(), Some(index));
+        record(temp.path(), Some(index)).unwrap();
         let records = read_index(&mods);
         let [recorded] = records["example.jar"].as_slice() else {
             panic!("duplicate sidecars")
@@ -802,10 +803,10 @@ file-id = 3509043
             project: "modrinth-project".into(),
             version: "old".into(),
         });
-        record(temp.path(), Some(index.clone()));
+        record(temp.path(), Some(index.clone())).unwrap();
         index.update.modrinth = None;
         index.update.curseforge.as_mut().unwrap().file = 5;
-        record(temp.path(), Some(index));
+        record(temp.path(), Some(index)).unwrap();
         let records = read_index(&mods);
         let recorded = &records["example.jar"][0].index.update;
         assert_eq!(
