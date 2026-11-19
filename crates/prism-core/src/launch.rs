@@ -6,7 +6,7 @@
 use crate::meta::{self, VersionData};
 use crate::loaders::{self, Loader};
 use crate::net::{DownloadRequest, Downloader, NetError};
-use crate::profile::{LaunchProfile, ResolvedLibrary, DEFAULT_JVM_ARGUMENTS, LEGACY_GAME_ARGUMENTS};
+use crate::profile::{LaunchProfile, ResolvedLibrary, LEGACY_GAME_ARGUMENTS};
 use crate::version_components::{self, ArchiveKind, Pack};
 use crate::Paths;
 use md5::{Digest as Md5Digest, Md5};
@@ -680,7 +680,7 @@ impl Launcher {
             .chain(profile.component_main_jar.iter())
         {
             let dest = libraries_dir.join(&lib.path);
-            if lib.path.is_absolute() {
+            if lib.path.is_absolute() && lib.url.is_none() {
                 crate::component::check_local(&dest).map_err(|e| {
                     std::io::Error::new(
                         e.kind(),
@@ -772,12 +772,6 @@ impl Launcher {
         self.paths.cache_dir().join("versions").join(version).join(format!("{version}.jar"))
     }
 
-    fn version_data_cache(&self, version: &str) -> Option<VersionData> {
-        let p = self.paths.metadata_dir().join("net.minecraft").join(format!("{version}.json"));
-        let text = std::fs::read_to_string(p).ok()?;
-        VersionData::from_json(&serde_json::from_str(&text).ok()?).ok()
-    }
-
     /// Resolve the game and loader, select Java, and prepare the files for an installed instance.
     pub async fn prepare_instance(
         &self,
@@ -834,9 +828,15 @@ impl Launcher {
                 continue;
             }
             if uid == version_components::MINECRAFT {
-                let document = self.component_document(&uid, &version).await?;
-                crate::component::Component(document)
-                    .apply(&mut profile, &settings.instance_dir)?;
+                let data = self.fetch_version_data(&version).await?;
+                profile.apply_minecraft(&data);
+                profile.component_main_jar = Some(ResolvedLibrary {
+                    spec: format!("net.minecraft:client:{version}"),
+                    path: self.client_jar_path(&version),
+                    url: Some(self.cached_client_url(&version).await.unwrap_or_else(|| format!("https://s3.amazonaws.com/Minecraft.Download/versions/{version}/{version}.jar"))),
+                    sha1: None,
+                    native: false,
+                });
                 continue;
             }
             if matches!(
@@ -1526,6 +1526,60 @@ mod tests {
         assert!(command[..main].iter().any(|arg| arg == agents[1]));
         let classpath = command.windows(2).find(|args| args[0] == "-cp").unwrap();
         assert!(!classpath[1].contains("agent"));
+    }
+
+    #[tokio::test]
+    async fn minecraft_customize_preserves_launch_arguments_assets_java_and_downloads() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths { root: temp.path().into() };
+        let inst = crate::instance::InstanceList::create(&paths, "QA", "default", "1.20.1").unwrap();
+        let settings = LaunchSettings::for_instance(&inst, &paths);
+        let launcher = Launcher::new(paths.clone(), Arc::new(Downloader::new()));
+        let raw = serde_json::json!({"id":"1.20.1","type":"release","mainClass":"GameMain",
+            "arguments":{"jvm":["-cp","${classpath}"],"game":["--version","${version_name}"]},
+            "javaVersion":{"component":"java-runtime-gamma","majorVersion":17},
+            "downloads":{"client":{"url":"https://example.invalid/client.jar","sha1":"123"}},
+            "assetIndex":{"id":"5","url":"https://example.invalid/assets.json","sha1":"456"},
+            "logging":{"client":{"argument":"unused by existing launch"}},
+            "libraries":[{"name":"group:lib:1","downloads":{"artifact":{"url":"https://example.invalid/lib.jar"}}}]
+        });
+        let cache = paths.metadata_dir().join("net.minecraft");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("1.20.1.json"), raw.to_string()).unwrap();
+        let doc = launcher.component_document(version_components::MINECRAFT, "1.20.1").await.unwrap();
+        assert_eq!(doc["downloads"], raw["downloads"]);
+        assert_eq!(doc["assetIndex"], raw["assetIndex"]);
+        let data = VersionData::from_json(&raw).unwrap();
+        let mut baseline = LaunchProfile::from_mojang(&data);
+        let mut customized = LaunchProfile::default();
+        crate::component::Component(doc).apply(&mut customized, &inst.root).unwrap();
+        assert_eq!(customized.assets_id, baseline.assets_id);
+        assert_eq!(customized.asset_index, baseline.asset_index);
+        assert_eq!(customized.java_major, baseline.java_major);
+        assert_eq!(customized.java_component, baseline.java_component);
+        baseline.client_override = Some(paths.libraries_dir().join(&customized.component_main_jar.as_ref().unwrap().path));
+        customized.client_override = baseline.client_override.clone();
+        assert_eq!(launcher.build_command(&settings, None, &baseline).command,
+            launcher.build_command(&settings, None, &customized).command);
+        let mut ordered = LaunchProfile::default();
+        ordered.component_jvm_args.push("-Dearlier=yes".into());
+        ordered.apply_minecraft(&data);
+        assert_eq!(ordered.main_class, baseline.main_class);
+        assert_eq!(ordered.component_jvm_args, ["-Dearlier=yes"]);
+        assert!(launcher.component_document("net.fabricmc.fabric-loader", "0.16").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_local_agent_fails_preparation_without_metadata_fetch() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths { root: temp.path().into() };
+        let inst = crate::instance::InstanceList::create(&paths, "QA", "default", "1.20.1").unwrap();
+        let settings = LaunchSettings::for_instance(&inst, &paths);
+        let mut profile = LaunchProfile::default();
+        crate::component::Component::parse(r#"{"uid":"test","formatVersion":1,"mainJar":{"name":"custom:main:1","MMC-hint":"local"},"+agents":[{"name":"custom:agent:1","MMC-hint":"local"}]}"#, None)
+            .unwrap().apply(&mut profile, &inst.root).unwrap();
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        assert!(launcher.prepare_files(&profile, &settings).await.unwrap_err().to_string().contains("local artifact"));
     }
 
     #[tokio::test]

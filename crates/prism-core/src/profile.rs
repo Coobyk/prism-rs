@@ -178,6 +178,20 @@ impl LaunchProfile {
         self.legacy_arguments.is_some() || self.main_class.contains("minecraft.server.MinecraftServer")
     }
 
+    pub fn apply_minecraft(&mut self, data: &VersionData) {
+        let base = Self::from_mojang(data);
+        self.minecraft_version = base.minecraft_version;
+        self.version_type = base.version_type;
+        self.assets_id = base.assets_id;
+        self.asset_index = base.asset_index;
+        self.java_component = base.java_component;
+        self.java_major = base.java_major;
+        if base.legacy_arguments.is_some() {
+            self.legacy_arguments = base.legacy_arguments;
+        }
+        self.apply_loader(data);
+    }
+
     /// Overlay a loader profile (Fabric/Quilt `profile/json`): its main
     /// class, libraries and arguments are applied on top of the Mojang base.
     pub fn apply_loader(&mut self, loader_vd: &VersionData) {

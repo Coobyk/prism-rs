@@ -230,8 +230,11 @@ impl Pack {
     }
 
     pub fn patch_text(&self, uid: &str) -> io::Result<String> {
-        self.patch(uid)?
-            .ok_or_else(|| invalid("The component is not customized."))?;
+        crate::component::uid(uid)?;
+        self.check()?;
+        if !self.is_custom(uid) {
+            return Err(invalid("The component is not customized."));
+        }
         fs::read_to_string(self.root.join("patches").join(format!("{uid}.json")))
     }
 
@@ -387,38 +390,10 @@ impl Pack {
                     Ok(file)
                 })
                 .transpose()?;
-            staged.push((path.clone(), temp, previous));
+            staged.push(StagedFile { path: path.clone(), file: temp, previous });
         }
         self.check()?;
-        for index in 0..staged.len() {
-            let (path, temp, _) = &mut staged[index];
-            let result = match temp.take() {
-                Some(file) => file.persist(&*path).map(|_| ()).map_err(|e| e.error),
-                None => match fs::remove_file(&*path) {
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-                    result => result,
-                },
-            };
-            if let Err(error) = result {
-                for (path, _, previous) in staged[..index].iter().rev() {
-                    let rollback = match previous {
-                        Some(bytes) => (|| -> io::Result<()> {
-                            let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
-                            file.write_all(bytes)?;
-                            file.persist(path)?;
-                            Ok(())
-                        })(),
-                        None => fs::remove_file(path),
-                    };
-                    if let Err(rollback) = rollback {
-                        return Err(io::Error::other(format!(
-                            "{error}; rollback failed: {rollback}"
-                        )));
-                    }
-                }
-                return Err(error);
-            }
-        }
+        publish_files(staged)?;
         Self::load(&self.root)
     }
 
@@ -599,6 +574,43 @@ impl Pack {
         file.persist(self.root.join(PACK))?;
         Self::load(&self.root)
     }
+}
+
+struct StagedFile {
+    path: PathBuf,
+    file: Option<tempfile::NamedTempFile>,
+    previous: Option<Vec<u8>>,
+}
+
+fn publish_files(mut staged: Vec<StagedFile>) -> io::Result<()> {
+    for index in 0..staged.len() {
+        let entry = &mut staged[index];
+        let result = match entry.file.take() {
+            Some(file) => file.persist(&entry.path).map(|_| ()).map_err(|e| e.error),
+            None => match fs::remove_file(&entry.path) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            },
+        };
+        if let Err(error) = result {
+            for entry in staged[..index].iter().rev() {
+                let rollback = match &entry.previous {
+                    Some(bytes) => (|| -> io::Result<()> {
+                        let mut file = tempfile::NamedTempFile::new_in(entry.path.parent().unwrap())?;
+                        file.write_all(bytes)?;
+                        file.persist(&entry.path)?;
+                        Ok(())
+                    })(),
+                    None => fs::remove_file(&entry.path),
+                };
+                if let Err(rollback) = rollback {
+                    return Err(io::Error::other(format!("{error}; rollback failed: {rollback}")));
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 fn optional_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
@@ -797,6 +809,40 @@ mod tests {
             .unwrap()
             .install_agent(&source)
             .is_err());
+    }
+
+    #[test]
+    fn publication_failure_rolls_back_replacements_and_new_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing.json");
+        let added = root.path().join("added.jar");
+        let blocked = root.path().join("blocked.json");
+        fs::write(&existing, "original").unwrap();
+        fs::create_dir(&blocked).unwrap();
+        let staged = [(&existing, Some(b"original".to_vec())), (&added, None), (&blocked, None)]
+            .into_iter().map(|(path, previous)| {
+                let mut file = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+                file.write_all(b"replacement").unwrap();
+                StagedFile { path: path.clone(), file: Some(file), previous }
+            }).collect();
+        assert!(publish_files(staged).is_err());
+        assert_eq!(fs::read_to_string(existing).unwrap(), "original");
+        assert!(!added.exists());
+        assert!(blocked.is_dir());
+    }
+
+    #[test]
+    fn malformed_patch_can_be_opened_and_repaired() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let pack = Pack::load(root.path()).unwrap().add_empty("local.broken", "Broken").unwrap();
+        let text = pack.patch_text("local.broken").unwrap();
+        fs::write(root.path().join("patches/local.broken.json"), "{broken").unwrap();
+        let pack = Pack::load(root.path()).unwrap();
+        assert_eq!(pack.patch_text("local.broken").unwrap(), "{broken");
+        assert!(pack.patch("local.broken").is_err());
+        let pack = pack.save_patch("local.broken", &text).unwrap();
+        assert_eq!(pack.patch("local.broken").unwrap().unwrap().id(), "local.broken");
     }
 
     #[test]

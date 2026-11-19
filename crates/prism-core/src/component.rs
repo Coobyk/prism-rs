@@ -289,8 +289,7 @@ impl Component {
             if self.0.get("mainJar").is_none() {
                 if let Some(client) = self.0["downloads"].get("client") {
                     let raw = serde_json::json!({"name":format!("net.minecraft:client:{}", profile.minecraft_version), "downloads":{"artifact":client}});
-                    let lib = library(&raw, root, false)?;
-                    profile.component_main_jar = Some(lib.clone());
+                    profile.component_main_jar = Some(library(&raw, root, false)?);
                 }
             }
         }
@@ -413,9 +412,14 @@ fn validate_rules(value: &Value) -> io::Result<()> {
             }
         }
         if let Some(os) = rule.get("os") {
+            if os.get("version").is_some() {
+                return Err(invalid(
+                    "OS-version rules are not supported in component patches.",
+                ));
+            }
             if !os.is_object()
                 || os.as_object().unwrap().iter().any(|(key, value)| {
-                    !["name", "arch", "version"].contains(&key.as_str()) || !value.is_string()
+                    !["name", "arch"].contains(&key.as_str()) || !value.is_string()
                 })
             {
                 return Err(invalid("Invalid OS rule"));
@@ -639,5 +643,48 @@ mod tests {
         parse(json!({"uid":"test","formatVersion":1,"+jarMods":[{"name":"custom:mod:1","MMC-hint":"local"}]})).unwrap()
             .apply(&mut profile, Path::new("/instance")).unwrap();
         assert_eq!(profile.component_jar_mods.len(), 1);
+    }
+
+    #[test]
+    fn unsupported_rules_and_malformed_launch_fields_fail() {
+        for fields in [
+            json!({"+traits":["legacyLaunch"]}),
+            json!({"+jvmArgs":"not an array"}),
+            json!({"requires":[{"uid":"other"}]}),
+            json!({"arguments":{"jvm":[{"rules":[{"action":"allow","os":{"version":".*"}}],"value":"-Dtest"}]}}),
+            json!({"libraries":[{"name":"group:lib:1","MMC-hint":"native"}]}),
+            json!({"libraries":[{"name":"group:lib:1","downloads":{"artifact":{"url":"https://example.invalid/lib.jar","path":"../lib.jar"}}}]}),
+            json!({"+agents":[{"name":"custom:agent:1","argument":42}]}),
+        ] {
+            let mut doc = json!({"uid":"test","formatVersion":1});
+            doc.as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            assert!(parse(doc).unwrap().validate_launch().is_err());
+        }
+    }
+
+    #[test]
+    fn downloadable_artifacts_rules_and_library_replacement() {
+        let mut profile = LaunchProfile::default();
+        for version in ["1", "2"] {
+            parse(json!({"uid":"test","formatVersion":1,
+                "libraries":[{"name":format!("group:lib:{version}"),"url":"https://example.invalid"}],
+                "mavenFiles":[{"name":"group:download:1","MMC-filename":"renamed.jar","MMC-absoluteUrl":"https://example.invalid/file.jar"}],
+                "+agents":[{"name":"custom:agent:1","rules":[{"action":"disallow"}]}]
+            })).unwrap().apply(&mut profile, Path::new("/instance")).unwrap();
+        }
+        assert_eq!(profile.libraries.len(), 1);
+        assert_eq!(profile.libraries[0].spec, "group:lib:2");
+        assert_eq!(
+            profile.libraries[0].url.as_deref(),
+            Some("https://example.invalid/group/lib/2/lib-2.jar")
+        );
+        assert!(profile.component_artifacts[0].path.ends_with("renamed.jar"));
+        assert_eq!(
+            profile.component_artifacts[0].url.as_deref(),
+            Some("https://example.invalid/file.jar")
+        );
+        assert!(profile.agents.is_empty());
     }
 }

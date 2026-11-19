@@ -96,6 +96,7 @@ pub(super) struct VersionPage {
     message: String,
     dialog: Option<Dialog>,
     dialog_id: u64,
+    customize_reason: Option<String>,
 }
 
 impl VersionPage {
@@ -194,6 +195,9 @@ impl InstanceWindow {
                     Ok(pack) => {
                         this.version_editor.pack = Some(pack);
                         this.version_editor.message = "Component changes saved.".into();
+                        if matches!(action, ComponentAction::Revert) {
+                            this.refresh_version(cx);
+                        }
                     }
                     Err(error) => this.version_editor.message = error,
                 }
@@ -290,10 +294,21 @@ impl InstanceWindow {
             return;
         };
         let root = instance.root.clone();
-        let task = app
+        let load = app
             .runtime
             .handle()
             .spawn_blocking(move || Pack::load(&root));
+        let launcher = Launcher::new(app.paths.clone(), app.runtime.downloader.clone());
+        let task = app.runtime.spawn(async move {
+            let pack = load.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            let reason = if !pack.is_custom(MINECRAFT) {
+                match pack.version(MINECRAFT) {
+                    Some(version) => launcher.component_document(MINECRAFT, version).await.err().map(|e| e.to_string()),
+                    None => Some("Minecraft version is missing.".into()),
+                }
+            } else { None };
+            Ok::<_, String>((pack, reason))
+        });
         self.version_editor.busy = true;
         self.version_editor.pack = None;
         cx.spawn(async move |this, cx| {
@@ -304,7 +319,10 @@ impl InstanceWindow {
             let _ = this.update(cx, |this, cx| {
                 this.version_editor.busy = false;
                 match result {
-                    Ok(pack) => this.version_editor.pack = Some(pack),
+                    Ok((pack, reason)) => {
+                        this.version_editor.pack = Some(pack);
+                        this.version_editor.customize_reason = reason;
+                    }
                     Err(error) => {
                         this.version_editor.message = format!("Could not read components: {error}")
                     }
@@ -767,7 +785,8 @@ impl InstanceWindow {
                                 })),
                         );
                     } else {
-                        let supported = uid == MINECRAFT;
+                        let reason = if uid == MINECRAFT { state.customize_reason.clone() } else { Some("Equivalent component JSON unavailable".into()) };
+                        let supported = reason.is_none();
                         controls = controls.child(
                             Button::new(("component-customize", index))
                                 .label("Customize")
@@ -785,7 +804,7 @@ impl InstanceWindow {
                             controls = controls.child(
                                 div()
                                     .text_size(px(11.))
-                                    .child("Equivalent component JSON unavailable"),
+                                    .child(reason.unwrap_or_default()),
                             );
                         }
                     }
