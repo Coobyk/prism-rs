@@ -8,6 +8,8 @@ use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use prism_core::modplatform::{LocalResource, ResourceType};
 use prism_core::Instance;
+use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,6 +23,7 @@ pub enum Page {
     Notes,
     Settings,
     Worlds,
+    Servers,
     Screenshots,
 }
 
@@ -36,6 +39,7 @@ impl Page {
             Page::Notes => "Notes",
             Page::Settings => "Settings",
             Page::Worlds => "Worlds",
+            Page::Servers => "Servers",
             Page::Screenshots => "Screenshots",
         }
     }
@@ -49,6 +53,7 @@ impl Page {
             Page::ResourcePacks,
             Page::ShaderPacks,
             Page::Worlds,
+            Page::Servers,
             Page::Screenshots,
             Page::Notes,
             Page::Settings,
@@ -69,6 +74,12 @@ pub struct InstanceWindow {
     // Loader install state.
     loader_options: Arc<std::sync::Mutex<Vec<String>>>,
     loader_handle: Option<tokio::task::JoinHandle<Result<Vec<String>, String>>>,
+    servers: Option<ServerList>,
+    servers_snapshot: Option<ServerListSnapshot>,
+    server_selected: Option<usize>,
+    server_inputs: Option<(gpui::Entity<InputState>, gpui::Entity<InputState>)>,
+    server_status: String,
+    servers_was_running: bool,
 }
 
 impl InstanceWindow {
@@ -84,6 +95,12 @@ impl InstanceWindow {
             installing: Arc::new(std::sync::Mutex::new(Default::default())),
             loader_options: Arc::new(std::sync::Mutex::new(Vec::new())),
             loader_handle: None,
+            servers: None,
+            servers_snapshot: None,
+            server_selected: None,
+            server_inputs: None,
+            server_status: String::new(),
+            servers_was_running: false,
         }
     }
 
@@ -351,6 +368,7 @@ impl InstanceWindow {
             Page::Notes => self.render_notes_page(cx),
             Page::Settings => self.render_settings_page(cx),
             Page::Worlds => self.render_worlds_page(cx),
+            Page::Servers => self.render_servers_page(cx),
             Page::Screenshots => self.render_screenshots_page(cx),
             Page::BrowseMods => self.render_browse_mods_page(cx),
         }
@@ -795,6 +813,253 @@ impl InstanceWindow {
             .into_any_element()
     }
 
+    fn servers_running(&self, cx: &Context<Self>) -> bool {
+        matches!(
+            self.app.read(cx).run_state(&self.instance_id),
+            InstanceRunState::Running | InstanceRunState::Preparing
+        )
+    }
+
+    fn save_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.servers_running(cx) {
+            return;
+        }
+        let Some(instance) = self.app.read(cx).instances.get(&self.instance_id) else {
+            self.server_status = "Save failed: instance no longer exists".into();
+            cx.notify();
+            return;
+        };
+        let game_root = instance.game_root();
+        if let (Some(list), Some(snapshot)) = (&mut self.servers, &mut self.servers_snapshot) {
+            match snapshot.save_or_reload(&game_root, list) {
+                Ok(true) => {
+                    let selected = (!list.entries.is_empty()).then_some(0);
+                    self.select_server(selected, window, cx);
+                    self.server_status = "servers.dat changed on disk; reloaded".into();
+                }
+                Ok(false) => self.server_status.clear(),
+                Err(e) => self.server_status = format!("Save failed: {e}"),
+            }
+        }
+        cx.notify();
+    }
+
+    fn select_server(&mut self, index: Option<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        self.server_selected = index;
+        self.server_inputs = None;
+        if let Some(entry) = index
+            .and_then(|i| self.servers.as_ref()?.entries.get(i))
+            .cloned()
+        {
+            let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
+            let address = cx.new(|cx| InputState::new(window, cx).placeholder("Address"));
+            name.update(cx, |s, cx| s.set_value(entry.name, window, cx));
+            address.update(cx, |s, cx| s.set_value(entry.address, window, cx));
+            for (input, is_name) in [(&name, true), (&address, false)] {
+                cx.subscribe_in(
+                    input,
+                    window,
+                    move |this, input, event: &InputEvent, window, cx| {
+                        if !matches!(event, InputEvent::Change) || this.servers_running(cx) {
+                            return;
+                        }
+                        let Some((name, address)) = &this.server_inputs else {
+                            return;
+                        };
+                        if input != (if is_name { name } else { address }) {
+                            return;
+                        }
+                        let value = input.read(cx).value().to_string();
+                        if let Some(entry) = this
+                            .server_selected
+                            .and_then(|i| this.servers.as_mut()?.entries.get_mut(i))
+                        {
+                            if is_name {
+                                entry.name = value;
+                            } else {
+                                entry.address = value;
+                            }
+                            this.save_servers(window, cx);
+                        }
+                    },
+                )
+                .detach();
+            }
+            self.server_inputs = Some((name, address));
+        }
+        cx.notify();
+    }
+
+    fn render_servers_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let running = self.servers_running(cx);
+        let mut panel = div().flex_1().flex().flex_col().min_h_0().child(
+            self.page_header(
+                cx,
+                if running {
+                    let mut status =
+                        "Minecraft is running; servers.dat is read-only until it exits".to_string();
+                    if !self.server_status.is_empty() {
+                        status.push_str(&format!(" • {}", self.server_status));
+                    }
+                    status
+                } else if self.server_status.is_empty() {
+                    "Servers • changes save immediately".into()
+                } else {
+                    self.server_status.clone()
+                },
+            )
+            .into_any_element(),
+        );
+        let Some(servers) = &self.servers else {
+            return panel.into_any_element();
+        };
+        let selected = self.server_selected;
+        let len = servers.entries.len();
+        let mut rows = div().flex().flex_col().gap_1().p_2();
+        if len == 0 {
+            rows = rows.child("No servers. Add a server to get started.");
+        }
+        for (i, entry) in servers.entries.iter().enumerate() {
+            rows = rows.child(
+                div()
+                    .id(("server", i))
+                    .px_3()
+                    .py_2()
+                    .bg(if selected == Some(i) {
+                        rgb(0x3d5a80)
+                    } else {
+                        rgb(0x2b2b2b)
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_server(Some(i), window, cx)
+                    }))
+                    .child(format!("{} — {}", entry.name, entry.address)),
+            );
+        }
+        panel = panel.child(
+            div()
+                .id("servers-scroll")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(rows),
+        );
+        let mut buttons = div().flex().gap_2().p_2();
+        buttons = buttons.child(
+            Button::new("server-add")
+                .label("Add")
+                .disabled(running)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if this.servers_running(cx) {
+                        return;
+                    }
+                    if let Some(list) = &mut this.servers {
+                        list.entries.push(ServerEntry {
+                            name: "Minecraft Server".into(),
+                            ..Default::default()
+                        });
+                        let index = list.entries.len() - 1;
+                        this.select_server(Some(index), window, cx);
+                        this.save_servers(window, cx);
+                    }
+                })),
+        );
+        buttons = buttons.child(
+            Button::new("server-remove")
+                .label("Remove")
+                .disabled(running || selected.is_none())
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if this.servers_running(cx) {
+                        return;
+                    }
+                    if let (Some(i), Some(list)) = (this.server_selected, &mut this.servers) {
+                        list.entries.remove(i);
+                        let next = if list.entries.is_empty() {
+                            None
+                        } else {
+                            Some(i.min(list.entries.len() - 1))
+                        };
+                        this.select_server(next, window, cx);
+                        this.save_servers(window, cx);
+                    }
+                })),
+        );
+        for (up, label) in [(true, "Move Up"), (false, "Move Down")] {
+            let disabled =
+                running || selected.is_none_or(|i| if up { i == 0 } else { i + 1 >= len });
+            buttons = buttons.child(
+                Button::new(if up { "server-up" } else { "server-down" })
+                    .label(label)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this.servers_running(cx) {
+                            return;
+                        }
+                        if let (Some(i), Some(list)) = (this.server_selected, &mut this.servers) {
+                            let next = if up {
+                                i.checked_sub(1)
+                            } else {
+                                (i + 1 < list.entries.len()).then_some(i + 1)
+                            };
+                            if let Some(next) = next {
+                                list.entries.swap(i, next);
+                                this.select_server(Some(next), window, cx);
+                                this.save_servers(window, cx);
+                            }
+                        }
+                    })),
+            );
+        }
+        panel = panel.child(buttons);
+        if let Some((name, address)) = &self.server_inputs {
+            let policy = selected
+                .and_then(|i| servers.entries.get(i))
+                .map(|e| e.accept_textures)
+                .unwrap_or_default();
+            let mut form = div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_3()
+                .child("Name")
+                .child(Input::new(name).disabled(running))
+                .child("Address")
+                .child(Input::new(address).disabled(running))
+                .child("Server resource packs");
+            let mut policies = div().flex().gap_2();
+            for (value, label) in [
+                (ResourcePackPolicy::Prompt, "Prompt"),
+                (ResourcePackPolicy::Enabled, "Enabled"),
+                (ResourcePackPolicy::Disabled, "Disabled"),
+            ] {
+                policies = policies.child(
+                    Button::new(label)
+                        .disabled(running)
+                        .label(if policy == value {
+                            format!("• {label}")
+                        } else {
+                            label.into()
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.servers_running(cx) {
+                                return;
+                            }
+                            if let Some(entry) = this
+                                .server_selected
+                                .and_then(|i| this.servers.as_mut()?.entries.get_mut(i))
+                            {
+                                entry.accept_textures = value;
+                                this.save_servers(window, cx);
+                            }
+                        })),
+                );
+            }
+            form = form.child(policies);
+            panel = panel.child(form);
+        }
+        panel.into_any_element()
+    }
+
     fn render_screenshots_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let inst = self.instance(cx);
         let dir = inst.game_root().join("screenshots");
@@ -830,6 +1095,26 @@ impl InstanceWindow {
 
 impl Render for InstanceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let running = self.servers_running(cx);
+        if self.servers_was_running && !running {
+            self.servers = None;
+            self.servers_snapshot = None;
+            self.server_selected = None;
+            self.server_inputs = None;
+            self.server_status.clear();
+        }
+        self.servers_was_running = running;
+        if self.page == Page::Servers && self.servers.is_none() && self.server_status.is_empty() {
+            match ServerListSnapshot::load(&self.instance(cx).game_root()) {
+                Ok((list, snapshot)) => {
+                    let selected = (!list.entries.is_empty()).then_some(0);
+                    self.servers = Some(list);
+                    self.servers_snapshot = Some(snapshot);
+                    self.select_server(selected, window, cx);
+                }
+                Err(e) => self.server_status = format!("Load failed: {e}"),
+            }
+        }
         if self.search_input.is_none() {
             self.search_input =
                 Some(cx.new(|cx| {
@@ -837,10 +1122,6 @@ impl Render for InstanceWindow {
                         .placeholder("Search Modrinth…")
                 }));
         }
-        let running = matches!(
-            self.app.read(cx).run_state(&self.instance_id),
-            InstanceRunState::Running | InstanceRunState::Preparing
-        );
         if running {
             cx.spawn(async move |this, cx| {
                 let _ = cx.background_executor().timer(std::time::Duration::from_millis(500)).await;

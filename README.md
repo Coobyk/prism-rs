@@ -81,7 +81,7 @@ Working today:
 - Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
 
 Not yet at parity (tracked in the issue tracker of your heart): CurseForge/ATL/FTB/Technic pack
-import, CurseForge export, servers.dat NBT editing, screenshots
+import, CurseForge export, screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options, quick-play singleplayer/multiplayer dialogs.
 
