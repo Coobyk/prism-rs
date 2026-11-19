@@ -1,7 +1,7 @@
 use prism_core::horizon::HorizonLauncher;
 use prism_core::launch::{LaunchSettings, Launcher};
 use prism_core::{AccountList, Instance, InstanceKind, InstanceList, Paths};
-use std::{error::Error, io, process::Child};
+use std::{error::Error, io, process::{Child, Command, Stdio}};
 
 pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Error>> {
     let mut paths = Paths::new();
@@ -25,7 +25,7 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
         let settings = prism_core::settings::Settings::load(&paths.global_config());
         let (child, current_home) =
             HorizonLauncher::from_settings(&settings).play_with(id, *token, |command| {
-                crate::instance_lock::spawn(command, &lock)
+                spawn_attached(command, &lock)
             })?;
         if *home != current_home {
             if let Some(mut stored) = Instance::load(&instance.root) {
@@ -63,10 +63,7 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
             None => None,
         };
         let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
-        let child = prepared.spawn_with(
-            |line| println!("{line}"),
-            |command| crate::instance_lock::spawn(command, &lock),
-        )?;
+        let child = prepared.spawn_with(None, |command| spawn_attached(command, &lock))?;
         Ok::<_, Box<dyn Error>>((child, prepared))
     })?;
     let status = wait_for_game(child)?;
@@ -79,22 +76,15 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
     Ok(status)
 }
 
+fn spawn_attached(command: &mut Command, lock: &std::fs::File) -> io::Result<Child> {
+    command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    crate::instance_lock::spawn(command, lock)
+}
+
 fn wait_for_game(mut child: Child) -> io::Result<i32> {
-    std::thread::scope(|scope| {
-        if let Some(mut pipe) = child.stdout.take() {
-            scope.spawn(move || {
-                let _ = io::copy(&mut pipe, &mut io::stdout());
-            });
-        }
-        if let Some(mut pipe) = child.stderr.take() {
-            scope.spawn(move || {
-                let _ = io::copy(&mut pipe, &mut io::stderr());
-            });
-        }
-        let status = child.wait()?;
-        if !status.success() {
-            eprintln!("Game exited with {status}");
-        }
-        Ok(status.code().unwrap_or(1))
-    })
+    let status = child.wait()?;
+    if !status.success() {
+        eprintln!("Game exited with {status}");
+    }
+    Ok(status.code().unwrap_or(1))
 }

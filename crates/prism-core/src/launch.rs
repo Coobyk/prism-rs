@@ -332,86 +332,35 @@ pub struct PreparedLaunch {
     pub command_error: Option<String>,
 }
 
-#[cfg(unix)]
-fn run_hook_command(
-    mut command: std::process::Command,
-    mut output: impl FnMut(&str, &[u8]),
-) -> std::io::Result<std::process::ExitStatus> {
-    use std::io::{ErrorKind, Read};
-    use std::os::{fd::OwnedFd, unix::net::UnixStream};
+pub type HookOutput = Box<dyn Fn(String) + Send + Sync>;
 
-    let (stdout, stdout_writer) = UnixStream::pair()?;
-    let (stderr, stderr_writer) = UnixStream::pair()?;
-    stdout.set_nonblocking(true)?;
-    stderr.set_nonblocking(true)?;
-    let mut child = command
-        .stdout(OwnedFd::from(stdout_writer))
-        .stderr(OwnedFd::from(stderr_writer))
-        .spawn()?;
-    drop(command);
-
-    let mut streams = [("stdout", stdout, Vec::new()), ("stderr", stderr, Vec::new())];
-    let mut buffer = [0; 8192];
-    loop {
-        let status = child.try_wait()?;
-        let mut had_output = false;
-        for (name, reader, pending) in &mut streams {
-            // Bound each drain so an active background writer cannot hold up return.
-            for _ in 0..if status.is_some() { 128 } else { 1 } {
-                match reader.read(&mut buffer) {
-                    Ok(0) => break,
-                    Ok(count) => {
-                        had_output = true;
-                        for part in buffer[..count].split_inclusive(|byte| *byte == b'\n') {
-                            pending.extend_from_slice(part);
-                            if part.ends_with(b"\n") || pending.len() >= buffer.len() {
-                                output(name, pending.strip_suffix(b"\n").unwrap_or(pending));
-                                pending.clear();
-                            }
-                        }
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
-                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
-                    Err(error) => {
-                        drop(streams);
-                        let _ = child.wait();
-                        return Err(error);
-                    }
-                }
-            }
+fn read_hook_output(
+    pipe: impl std::io::Read + Send + 'static,
+    label: &'static str,
+    stream: &'static str,
+    output: std::sync::Weak<dyn Fn(String) + Send + Sync>,
+    done: std::sync::mpsc::Sender<()>,
+) {
+    use std::io::{self, BufRead, Read};
+    std::thread::spawn(move || {
+        let mut reader = io::BufReader::new(pipe);
+        let mut bytes = Vec::new();
+        while let Ok(1..) = reader.by_ref().take(8192).read_until(b'\n', &mut bytes) {
+            let Some(output) = output.upgrade() else {
+                let _ = io::copy(&mut reader, &mut io::sink());
+                break;
+            };
+            let line = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
+            let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line));
+            output(format!("{label} ({stream}): {line}"));
+            bytes.clear();
         }
-        if let Some(status) = status {
-            for (name, _, pending) in &streams {
-                if !pending.is_empty() {
-                    output(name, pending);
-                }
-            }
-            return Ok(status);
-        }
-        if !had_output {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn run_hook_command(
-    mut command: std::process::Command,
-    mut output: impl FnMut(&str, &[u8]),
-) -> std::io::Result<std::process::ExitStatus> {
-    let captured = command.output()?;
-    for (name, bytes) in [("stdout", captured.stdout), ("stderr", captured.stderr)] {
-        if !bytes.is_empty() {
-            for line in bytes.strip_suffix(b"\n").unwrap_or(&bytes).split(|byte| *byte == b'\n') {
-                output(name, line);
-            }
-        }
-    }
-    Ok(captured.status)
+        let _ = done.send(());
+    });
 }
 
 impl PreparedLaunch {
-    fn hook(&self, script: &str, label: &str, output: &mut impl FnMut(String)) -> std::io::Result<()> {
+    fn hook(&self, script: &str, label: &'static str, output: Option<HookOutput>) -> std::io::Result<()> {
         use std::process::Stdio;
 
         if script.trim().is_empty() {
@@ -430,10 +379,25 @@ impl PreparedLaunch {
             .current_dir(&self.instance_dir)
             .envs(self.env.iter().cloned())
             .stdin(Stdio::null());
-        let status = run_hook_command(command, |stream, line| {
-            let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line));
-            output(format!("{label} ({stream}): {line}"));
-        })?;
+        let status = if let Some(output) = output {
+            let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let output = Arc::from(output);
+            read_hook_output(child.stdout.take().unwrap(), label, "stdout", Arc::downgrade(&output), done_tx.clone());
+            read_hook_output(child.stderr.take().unwrap(), label, "stderr", Arc::downgrade(&output), done_tx);
+            let status = child.wait()?;
+            // Flush foreground output without waiting for background jobs to close the pipes.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            for _ in 0..2 {
+                if done_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_err() {
+                    break;
+                }
+            }
+            drop(output);
+            status
+        } else {
+            command.status()?
+        };
         if !status.success() {
             return Err(std::io::Error::other(format!(
                 "Hook command failed ({status}): {script}"
@@ -444,11 +408,11 @@ impl PreparedLaunch {
 
     /// Call after waiting for the game, including unsuccessful game exits.
     pub fn run_post_exit(&self) -> std::io::Result<()> {
-        self.run_post_exit_with_output(|line| println!("{line}"))
+        self.hook(&self.post_exit_command, "Post-exit", None)
     }
 
-    pub fn run_post_exit_with_output(&self, mut output: impl FnMut(String)) -> std::io::Result<()> {
-        self.hook(&self.post_exit_command, "Post-exit", &mut output)
+    pub fn run_post_exit_with_output(&self, output: HookOutput) -> std::io::Result<()> {
+        self.hook(&self.post_exit_command, "Post-exit", Some(output))
     }
 
     /// POSIX script with the same environment, wrapper and hooks as spawn().
@@ -493,26 +457,26 @@ impl PreparedLaunch {
     }
 
     pub fn spawn(&self) -> std::io::Result<std::process::Child> {
-        self.spawn_with_output(|line| println!("{line}"))
+        self.spawn_with(None, std::process::Command::spawn)
     }
 
     pub fn spawn_with_output(
         &self,
-        output: impl FnMut(String),
+        output: HookOutput,
     ) -> std::io::Result<std::process::Child> {
-        self.spawn_with(output, std::process::Command::spawn)
+        self.spawn_with(Some(output), std::process::Command::spawn)
     }
 
     pub fn spawn_with(
         &self,
-        mut output: impl FnMut(String),
+        output: Option<HookOutput>,
         spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Child>,
     ) -> std::io::Result<std::process::Child> {
         use std::process::{Command, Stdio};
         if let Some(error) = &self.command_error {
             return Err(std::io::Error::other(error.clone()));
         }
-        self.hook(&self.pre_launch_command, "Pre-launch", &mut output)?;
+        self.hook(&self.pre_launch_command, "Pre-launch", output)?;
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..])
             .current_dir(&self.working_dir)
@@ -1119,9 +1083,11 @@ mod tests {
         };
         let (tx, rx) = mpsc::channel();
         let runner = std::thread::spawn(move || {
-            let mut lines = Vec::new();
-            let result = launch.run_post_exit_with_output(|line| lines.push(line));
-            let _ = tx.send(result.map(|()| lines));
+            let (output_tx, output_rx) = mpsc::channel();
+            let result = launch.run_post_exit_with_output(Box::new(move |line| {
+                let _ = output_tx.send(line);
+            }));
+            let _ = tx.send(result.map(|()| output_rx.try_iter().collect::<Vec<_>>()));
         });
         let result = rx.recv_timeout(Duration::from_secs(3));
         std::fs::write(dir.path().join("release"), []).unwrap();
@@ -1132,7 +1098,7 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "background hook did not finish");
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(!dir.path().join("output-still-open").exists());
+        assert!(dir.path().join("output-still-open").exists());
     }
 
     #[test]

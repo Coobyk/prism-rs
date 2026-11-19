@@ -164,8 +164,8 @@ exit "${PRISM_TEST_GAME_STATUS:-42}"
         AccountList::load(&paths.accounts_file()).active_account().unwrap().player_name,
         "OtherPlayer"
     );
-    assert!(stdout.contains("Pre-launch (stdout): pre-launch-ran"));
-    assert!(stdout.contains("Post-exit (stdout): post-exit-ran"));
+    assert!(stdout.lines().any(|line| line == "pre-launch-ran"));
+    assert!(stdout.lines().any(|line| line == "post-exit-ran"));
     assert!(stdout
         .lines()
         .any(|line| line == instance.game_root().to_str().unwrap()));
