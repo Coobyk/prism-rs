@@ -51,11 +51,10 @@ impl DataPacksPage {
         self.packs = Some((world, packs));
     }
 
-    fn cached_packs(&self, world: &World) -> Option<&Result<Vec<DataPack>, String>> {
-        self.packs
-            .as_ref()
-            .filter(|(cached_world, _)| cached_world == world)
-            .map(|(_, packs)| packs)
+    fn cached_packs(&self, world: &World) -> Option<&(World, Result<Vec<DataPack>, String>)> {
+        self.packs.as_ref().filter(|(cached_world, _)| {
+            cached_world.game_root() == world.game_root() && cached_world.name() == world.name()
+        })
     }
 }
 
@@ -345,12 +344,13 @@ impl InstanceWindow {
                     .child(name.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.datapacks.select(name.clone()) {
-                            this.refresh_datapacks(cx);
                             if let Some(browser) = this.browsers.get_mut(&BROWSER) {
                                 browser.install_status.clear();
                             }
-                            cx.notify();
                         }
+                        this.datapacks.status.clear();
+                        this.refresh_datapacks(cx);
+                        cx.notify();
                     })),
             );
         }
@@ -433,14 +433,15 @@ impl InstanceWindow {
                 );
             }
             match self.datapacks.cached_packs(world) {
-                Some(Ok(packs)) if packs.is_empty() => {
+                Some((_, Ok(packs))) if packs.is_empty() => {
                     packs_panel = packs_panel.child(
                         div()
                             .text_color(rgb(0xaaaaaa))
                             .child("No data packs installed in this world."),
                     );
                 }
-                Some(Ok(packs)) => {
+                Some((snapshot, Ok(packs))) => {
+                    let scope = self.datapacks.target(snapshot.clone());
                     let mut list = div()
                         .id("datapack-list")
                         .flex_1()
@@ -518,7 +519,7 @@ impl InstanceWindow {
                     }
                     packs_panel = packs_panel.child(list);
                 }
-                Some(Err(error)) => {
+                Some((_, Err(error))) => {
                     packs_panel = packs_panel.child(
                         div()
                             .text_color(rgb(0xff9999))
@@ -605,19 +606,25 @@ mod tests {
         assert!(page
             .cached_packs(&alpha)
             .unwrap()
+            .1
             .as_ref()
             .unwrap()
             .is_empty());
         page.load_packs(alpha.clone());
         assert_eq!(
-            page.cached_packs(&alpha).unwrap().as_ref().unwrap()[0].name(),
+            page.cached_packs(&alpha).unwrap().1.as_ref().unwrap()[0].name(),
             "new.zip"
         );
         assert!(page.cached_packs(&beta).is_none());
 
         fs::write(a.join("level.dat"), "updated alpha").unwrap();
         let updated = World::open(root.path(), "Alpha").unwrap();
-        assert!(page.cached_packs(&updated).is_none());
+        let (snapshot, packs) = page.cached_packs(&updated).unwrap();
+        assert_eq!(snapshot, &alpha);
+        assert_eq!(packs.as_ref().unwrap()[0].name(), "new.zip");
+        assert!(snapshot.toggle(&packs.as_ref().unwrap()[0]).is_err());
+        page.load_packs(updated.clone());
+        assert_eq!(page.cached_packs(&updated).unwrap().0, updated);
 
         page.select("Beta".into());
         page.select("Alpha".into());
