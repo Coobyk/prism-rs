@@ -822,8 +822,14 @@ impl InstanceWindow {
         if self.servers_running(cx) {
             return;
         }
+        let Some(instance) = self.app.read(cx).instances.get(&self.instance_id) else {
+            self.server_status = "Save failed: instance no longer exists".into();
+            cx.notify();
+            return;
+        };
+        let game_root = instance.game_root();
         if let Some(list) = &self.servers {
-            self.server_status = match list.save(&self.instance(cx).game_root()) {
+            self.server_status = match list.save(&game_root) {
                 Ok(()) => String::new(),
                 Err(e) => format!("Save failed: {e}"),
             };
