@@ -8,6 +8,8 @@
 //! configured default section.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::io::{self, Write};
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -70,11 +72,30 @@ impl IniFile {
         Ok(IniFile::parse(&text))
     }
 
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        let parent = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)?;
+        let permissions = match fs::metadata(path) {
+            Ok(metadata) => Some(metadata.permissions()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        let temp = parent.join(format!(".prism-ini-{}.tmp", uuid::Uuid::new_v4()));
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temp)?;
+        let result = (|| {
+            if let Some(permissions) = permissions {
+                file.set_permissions(permissions)?;
+            }
+            file.write_all(self.serialize().as_bytes())?;
+            file.sync_all()
+        })();
+        drop(file);
+        let result = result.and_then(|()| fs::rename(&temp, path));
+        if result.is_err() {
+            let _ = fs::remove_file(&temp);
         }
-        std::fs::write(path, self.serialize())
+        result
     }
 
     pub fn serialize(&self) -> String {
@@ -227,6 +248,34 @@ mod tests {
         assert_eq!(parsed, ini);
         assert_eq!(parsed.get("name"), Some("My Instance"));
         assert_eq!(parsed.get("notes"), Some("line1\nline2"));
+    }
+
+    #[test]
+    fn saves_replace_the_file_and_clean_up_after_a_failed_rename() {
+        let dir = std::env::temp_dir().join(format!("prism-ini-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("instance.cfg");
+        fs::write(&path, "name=old\n").unwrap();
+        #[cfg(unix)]
+        let original = fs::File::open(&path).unwrap();
+        let ini = IniFile::parse("name=new\n");
+
+        ini.save(&path).unwrap();
+        assert_eq!(IniFile::load(&path).unwrap().get("name"), Some("new"));
+        #[cfg(unix)]
+        {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut &original, &mut text).unwrap();
+            assert_eq!(text, "name=old\n");
+        }
+
+        let blocked = dir.join("blocked.cfg");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep"), "untouched").unwrap();
+        assert!(ini.save(&blocked).is_err());
+        assert_eq!(fs::read_to_string(blocked.join("keep")).unwrap(), "untouched");
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
