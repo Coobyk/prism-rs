@@ -5,26 +5,73 @@ use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use prism_core::managed_pack::{self, ManagedPack, Snapshot, Version};
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
+
+fn changelog_markdown(text: &str) -> Cow<'_, str> {
+    let is_item = |line: &str| {
+        let line = line.trim_end();
+        line.starts_with("<li>") && line.ends_with("</li>")
+    };
+    if !text.lines().any(is_item) {
+        return Cow::Borrowed(text);
+    }
+
+    let mut markdown = String::with_capacity(text.len());
+    let mut lines = text.split_inclusive('\n').peekable();
+    let mut block_start = true;
+    while let Some(line) = lines.next() {
+        if block_start && is_item(line) {
+            markdown.push_str("<ul>\n");
+            markdown.push_str(line.trim_end());
+            markdown.push('\n');
+            while lines.peek().is_some_and(|line| is_item(line)) {
+                markdown.push_str(lines.next().unwrap().trim_end());
+                markdown.push('\n');
+            }
+            markdown.push_str("</ul>\n\n");
+        } else {
+            markdown.push_str(line);
+        }
+        block_start = line.trim().is_empty();
+    }
+    Cow::Owned(markdown)
+}
 
 fn render_changelog(text: &str) -> AnyElement {
-    if text.lines().any(|line| line.trim_start().starts_with('<')) {
-        return div()
-            .whitespace_normal()
-            .child(text.to_owned())
-            .into_any_element();
+    TextView::markdown(
+        "managed-pack-changelog",
+        changelog_markdown(text).into_owned(),
+    )
+    .image_source(|_| gpui::ImageSource::Custom(Arc::new(|_, _| None)))
+    .on_link_click(|target, _, _, cx| {
+        let target = target.as_str();
+        if (target.starts_with("https://") || target.starts_with("http://"))
+            && !target.chars().any(char::is_control)
+        {
+            cx.open_url(target);
+        }
+    })
+    .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::changelog_markdown;
+
+    #[test]
+    fn groups_bare_html_items_for_the_markdown_renderer() {
+        let source = "Updated to 1.20.4\n\nAdded:\n\n<li><a href=\"https://modrinth.com/mod/example\">Example &amp; Friends</a></li>\n<li>Another mod</li>\n\n**Notes**";
+        let rendered = changelog_markdown(source);
+        assert!(rendered.contains("<ul>\n<li><a href="));
+        assert!(rendered.contains("<li>Another mod</li>\n</ul>\n\n"));
+        assert!(rendered.ends_with("**Notes**"));
     }
-    TextView::markdown("managed-pack-changelog", text.to_owned())
-        .image_source(|_| gpui::ImageSource::Custom(Arc::new(|_, _| None)))
-        .on_link_click(|target, _, _, cx| {
-            let target = target.as_str();
-            if (target.starts_with("https://") || target.starts_with("http://"))
-                && !target.chars().any(char::is_control)
-            {
-                cx.open_url(target);
-            }
-        })
-        .into_any_element()
+
+    #[test]
+    fn leaves_markdown_and_wrapped_html_lists_intact() {
+        let source = "## Changes\n\n- First\n\n<ul>\n<li>Second</li>\n</ul>";
+        assert_eq!(changelog_markdown(source), source);
+    }
 }
 
 #[derive(Default)]
