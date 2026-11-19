@@ -95,6 +95,9 @@ impl std::fmt::Display for MissingCurseForgeFile {
 
 /// Detect the pack format of an (extracted) directory.
 pub fn detect_format(dir: &Path) -> &'static str {
+    if dir.join("instance.json").is_file() {
+        return "ftb-app";
+    }
     if dir.join("modrinth.index.json").exists() {
         return "modrinth";
     }
@@ -150,6 +153,23 @@ pub fn import_sync(
             api.has_api_key().then_some(&api),
         )
     })
+}
+
+/// Shared GUI/headless dispatch for FTB IDs and local import sources.
+pub async fn import_source(
+    paths: &Paths,
+    source: &str,
+    downloader: &Arc<Downloader>,
+) -> Result<ImportOutcome, ImportError> {
+    if let Some(source) = crate::modplatform::ftb::Source::parse(source)? {
+        return crate::modplatform::ftb::FtbApi::new(downloader.clone())
+            .install(paths, source.pack, source.version).await;
+    }
+    let paths = paths.clone();
+    let source = PathBuf::from(source);
+    let downloader = downloader.clone();
+    tokio::task::spawn_blocking(move || import_sync(&paths, &source, Some(&downloader)))
+        .await.map_err(|error| ImportError::Other(error.to_string()))?
 }
 
 fn install_curseforge_manifest_files(
@@ -213,6 +233,7 @@ fn import_with_curseforge_installer(
     };
 
     let instance = match detect_format(dir) {
+        "ftb-app" => return crate::import_ftb::import(paths, dir),
         "modrinth" => import_modrinth(paths, dir, downloader),
         "multimc" => import_multimc(paths, dir),
         "curseforge" => return import_curseforge(paths, dir, install_files),

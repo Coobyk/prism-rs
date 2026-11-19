@@ -563,6 +563,7 @@ impl CreateInstanceState {
             .gap_3()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child("Create Instance"))
+            .child(crate::ftb_page::buttons(cx))
             .child(
                 div().flex().flex_col().gap_1().child("Name").child(Input::new(&self.name_input)),
             )
@@ -905,6 +906,10 @@ impl PromptState {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
             .child(Input::new(&input));
+
+        if self.kind == PromptKind::ImportPath {
+            panel = panel.child(crate::ftb_page::buttons(cx));
+        }
 
         if let Some(group) = &self.copy_group {
             panel = panel.child(Input::new(group));

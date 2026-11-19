@@ -106,6 +106,10 @@ pub struct FlameApi {
 }
 
 impl FlameApi {
+    #[cfg(test)]
+    pub(crate) fn clear_test_key(&mut self) {
+        self.api_key = None;
+    }
     pub fn new() -> Self {
         FlameApi {
             base_url: API_BASE.to_string(),

@@ -3,6 +3,7 @@
 mod accounts_window;
 mod cli_launch;
 mod dialogs;
+mod ftb_page;
 mod instance_lock;
 mod instance_window;
 mod instance_settings_page;
@@ -188,7 +189,8 @@ fn headless_import(path: &str) -> i32 {
     let paths = prism_core::Paths::new();
     paths.ensure().expect("failed to create data dirs");
     let downloader = std::sync::Arc::new(prism_core::net::Downloader::new());
-    match prism_core::import::import_sync(&paths, std::path::Path::new(path), Some(&downloader)) {
+    let runtime = tokio::runtime::Runtime::new().expect("failed to create import runtime");
+    match runtime.block_on(prism_core::import::import_source(&paths, path, &downloader)) {
         Ok(outcome) => {
             let inst = outcome.instance;
             println!("Imported: {} ({})", inst.name, inst.id);
