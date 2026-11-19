@@ -116,8 +116,11 @@ fn headless_import(path: &str) -> i32 {
                 "loader: {:?}",
                 prism_core::instance::loader_of(&inst)
             );
-            if outcome.curseforge_api_key_missing {
-                eprintln!("CurseForge API key missing or invalid: set PRISM_RS_CURSEFORGE_API_KEY for automatic downloads.");
+            if let Some(issue) = outcome.curseforge_key_issue {
+                eprintln!(
+                    "{}: set a valid PRISM_RS_CURSEFORGE_API_KEY for automatic downloads.",
+                    issue.message()
+                );
             }
             for file in outcome.missing_files {
                 eprintln!("Manual download needed: {file}");

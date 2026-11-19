@@ -33,13 +33,44 @@ pub enum ImportError {
 pub struct ImportOutcome {
     pub instance: Instance,
     pub missing_files: Vec<MissingCurseForgeFile>,
-    pub curseforge_api_key_missing: bool,
+    pub curseforge_key_issue: Option<CurseForgeKeyIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurseForgeKeyIssue {
+    Missing,
+    Rejected,
+}
+
+impl CurseForgeKeyIssue {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Missing => "CurseForge API key missing or invalid",
+            Self::Rejected => "CurseForge API key was rejected",
+        }
+    }
 }
 
 #[derive(Default)]
 struct CurseForgeFiles {
     missing_files: Vec<MissingCurseForgeFile>,
-    api_key_missing: bool,
+    key_issue: Option<CurseForgeKeyIssue>,
+}
+
+impl CurseForgeFiles {
+    fn manual(files: &[FlameManifestFile], issue: CurseForgeKeyIssue) -> Self {
+        Self {
+            missing_files: files
+                .iter()
+                .map(|entry| MissingCurseForgeFile {
+                    project_id: entry.projectID,
+                    file_id: entry.fileID,
+                    filename: None,
+                })
+                .collect(),
+            key_issue: Some(issue),
+        }
+    }
 }
 
 pub const CURSEFORGE_MISSING_FILES_REPORT: &str = "curseforge-missing-files.txt";
@@ -131,17 +162,7 @@ fn install_curseforge_manifest_files(
         return Ok(CurseForgeFiles::default());
     }
     let Some(api) = api else {
-        return Ok(CurseForgeFiles {
-            missing_files: files
-                .iter()
-                .map(|entry| MissingCurseForgeFile {
-                    project_id: entry.projectID,
-                    file_id: entry.fileID,
-                    filename: None,
-                })
-                .collect(),
-            api_key_missing: true,
-        });
+        return Ok(CurseForgeFiles::manual(files, CurseForgeKeyIssue::Missing));
     };
     let downloader = downloader.ok_or_else(|| {
         ImportError::Other("network downloader required for modpack files".to_string())
@@ -149,7 +170,7 @@ fn install_curseforge_manifest_files(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let missing_files = runtime.block_on(install_curseforge_files(
+    let result = runtime.block_on(install_curseforge_files(
         files, game_root, downloader, api, |project, file| async move {
             let file = api.file(project, file).await?;
             let resource_type = if has_curseforge_download(&file) {
@@ -159,11 +180,14 @@ fn install_curseforge_manifest_files(
             };
             Ok((file, resource_type))
         },
-    ))?;
-    Ok(CurseForgeFiles {
-        missing_files,
-        api_key_missing: false,
-    })
+    ));
+    match result {
+        Ok(missing_files) => Ok(CurseForgeFiles { missing_files, key_issue: None }),
+        Err(ImportError::Platform(PlatformError::CurseForgeApiKeyRejected(_))) => {
+            Ok(CurseForgeFiles::manual(files, CurseForgeKeyIssue::Rejected))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn import_with_curseforge_installer(
@@ -197,7 +221,7 @@ fn import_with_curseforge_installer(
     Ok(ImportOutcome {
         instance,
         missing_files: Vec::new(),
-        curseforge_api_key_missing: false,
+        curseforge_key_issue: None,
     })
 }
 
@@ -263,7 +287,7 @@ fn import_curseforge(
         Ok(files) => Ok(ImportOutcome {
             instance,
             missing_files: files.missing_files,
-            curseforge_api_key_missing: files.api_key_missing,
+            curseforge_key_issue: files.key_issue,
         }),
         Err(error) => {
             let _ = std::fs::remove_dir_all(&instance.root);
@@ -309,9 +333,13 @@ async fn install_curseforge_files<F>(
 where
     F: std::future::Future<Output = Result<(FlameFile, ResourceType), PlatformError>>,
 {
-    let mut missing = Vec::new();
+    let mut resolved = Vec::with_capacity(files.len());
     for entry in files {
-        let (file, resource_type) = resolve(entry.projectID, entry.fileID).await?;
+        resolved.push(resolve(entry.projectID, entry.fileID).await?);
+    }
+
+    let mut missing = Vec::new();
+    for (entry, (file, resource_type)) in files.iter().zip(resolved) {
         if has_curseforge_download(&file) {
             match api
                 .install_file(downloader, game_root, &file, resource_type)
@@ -514,7 +542,7 @@ mod tests {
                     r#"{"id":73,"fileName":"blocked.jar","downloadUrl":null}"#,
                 ).unwrap(), ResourceType::Mod)))
             }))?;
-            Ok(CurseForgeFiles { missing_files, api_key_missing: false })
+            Ok(CurseForgeFiles { missing_files, key_issue: None })
         }).unwrap();
         let instance = outcome.instance;
         assert_eq!(Instance::load(&instance.root).unwrap().name, "Test CurseForge");
@@ -535,8 +563,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn imports_overrides_and_reports_all_files_without_a_curseforge_api_key() {
+    fn offline_curseforge_fixture() -> (Paths, PathBuf) {
         let paths = Paths {
             root: std::env::temp_dir().join(format!("prism-import-{}", uuid::Uuid::new_v4())),
         };
@@ -550,16 +577,106 @@ mod tests {
             "name":"Offline CurseForge",
             "files":[{"projectID":42,"fileID":73,"required":true},{"projectID":43,"fileID":74,"required":false}]
         }"#).unwrap();
+        (paths, source)
+    }
+
+    #[test]
+    fn imports_overrides_and_reports_all_files_without_a_curseforge_api_key() {
+        let (paths, source) = offline_curseforge_fixture();
         let outcome = import_with_curseforge_installer(&paths, &source, None, |files, game_root| {
             install_curseforge_manifest_files(files, game_root, None, None)
         }).unwrap();
-        assert!(outcome.curseforge_api_key_missing);
+        assert_eq!(outcome.curseforge_key_issue, Some(CurseForgeKeyIssue::Missing));
         assert_eq!(outcome.missing_files.len(), 2);
         assert!(outcome.instance.game_root().join("config/test.toml").is_file());
         assert_eq!(
             std::fs::read_to_string(outcome.instance.root.join(CURSEFORGE_MISSING_FILES_REPORT)).unwrap(),
             "CurseForge project 42, file 73\nCurseForge project 43, file 74\n"
         );
+        std::fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    fn mock_curseforge(status: &'static str) -> (FlameApi, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = FlameApi::with_test_endpoint(format!("http://{}", socket.local_addr().unwrap()));
+        let server = std::thread::spawn(move || {
+            for (expected_path, status, body) in [
+                (
+                    "/mods/42/files/73",
+                    "200 OK",
+                    r#"{"data":{"id":73,"fileName":"blocked.jar","downloadUrl":null}}"#,
+                ),
+                ("/mods/43/files/74", status, "{}"),
+            ] {
+                let (mut connection, _) = socket.accept().unwrap();
+                let mut reader = BufReader::new(&mut connection);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(&format!("GET {expected_path} ")));
+                let mut has_key = false;
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    has_key |= line.eq_ignore_ascii_case("x-api-key: mock-key\r\n");
+                }
+                assert!(has_key);
+                write!(
+                    connection,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                ).unwrap();
+            }
+        });
+        (api, server)
+    }
+
+    #[test]
+    fn imports_overrides_and_reports_all_files_when_curseforge_rejects_the_key() {
+        for status in ["401 Unauthorized", "403 Forbidden"] {
+            let (paths, source) = offline_curseforge_fixture();
+            let (api, server) = mock_curseforge(status);
+            let downloader = Arc::new(Downloader::new());
+            let outcome = import_with_curseforge_installer(
+                &paths,
+                &source,
+                Some(&downloader),
+                |files, game_root| {
+                    install_curseforge_manifest_files(files, game_root, Some(&downloader), Some(&api))
+                },
+            );
+            server.join().unwrap();
+            let outcome = outcome.unwrap();
+            assert_eq!(outcome.curseforge_key_issue, Some(CurseForgeKeyIssue::Rejected));
+            assert_eq!(outcome.missing_files.len(), 2);
+            assert!(outcome.instance.game_root().join("config/test.toml").is_file());
+            assert_eq!(
+                std::fs::read_to_string(outcome.instance.root.join(CURSEFORGE_MISSING_FILES_REPORT)).unwrap(),
+                "CurseForge project 42, file 73\nCurseForge project 43, file 74\n"
+            );
+            std::fs::remove_dir_all(&paths.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn curseforge_server_errors_fail_without_leaving_an_instance() {
+        let (paths, source) = offline_curseforge_fixture();
+        let (api, server) = mock_curseforge("503 Service Unavailable");
+        let downloader = Arc::new(Downloader::new());
+        let result = import_with_curseforge_installer(
+            &paths,
+            &source,
+            Some(&downloader),
+            |files, game_root| {
+                install_curseforge_manifest_files(files, game_root, Some(&downloader), Some(&api))
+            },
+        );
+        server.join().unwrap();
+        assert!(matches!(result, Err(ImportError::Platform(PlatformError::Request(message)))
+            if message.contains("503 Service Unavailable")));
+        assert_eq!(paths.instances_dir().read_dir().unwrap().count(), 0);
         std::fs::remove_dir_all(&paths.root).unwrap();
     }
 }

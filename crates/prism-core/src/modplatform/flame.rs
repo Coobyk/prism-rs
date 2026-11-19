@@ -59,11 +59,13 @@ pub struct FlameFile {
 pub struct FlameApi {
     http: reqwest::Client,
     api_key: Option<HeaderValue>,
+    base_url: String,
 }
 
 impl FlameApi {
     pub fn new() -> Self {
         FlameApi {
+            base_url: API_BASE.to_string(),
             http: reqwest::Client::builder()
                 .user_agent(format!("prism-rs/{}", env!("CARGO_PKG_VERSION")))
                 .timeout(std::time::Duration::from_secs(30))
@@ -82,6 +84,15 @@ impl FlameApi {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_endpoint(base_url: String) -> Self {
+        Self {
+            base_url,
+            api_key: Some(HeaderValue::from_static("mock-key")),
+            ..Self::new()
+        }
+    }
+
     pub(crate) fn has_api_key(&self) -> bool {
         self.api_key.is_some()
     }
@@ -91,7 +102,7 @@ impl FlameApi {
             PlatformError::Request(format!("set {API_KEY_ENV} to a valid CurseForge API key"))
         })?;
         Ok(self.http
-            .get(format!("{API_BASE}{path}"))
+            .get(format!("{}{path}", self.base_url))
             .header("x-api-key", key)
             .header("Accept", "application/json"))
     }
@@ -140,10 +151,10 @@ impl FlameApi {
             .send()
             .await?;
         if !resp.status().is_success() {
-            return Err(PlatformError::Request(format!(
-                "CurseForge project {project_id}, file {file_id}: {}",
-                resp.status()
-            )));
+            return Err(Self::lookup_error(
+                resp.status(),
+                format!("CurseForge project {project_id}, file {file_id}"),
+            ));
         }
         Ok(resp.json::<Response>().await?.data)
     }
@@ -156,12 +167,18 @@ impl FlameApi {
 
         let resp = self.get(&format!("/mods/{project_id}"))?.send().await?;
         if !resp.status().is_success() {
-            return Err(PlatformError::Request(format!(
-                "CurseForge project {project_id}: {}",
-                resp.status()
-            )));
+            return Err(Self::lookup_error(resp.status(), format!("CurseForge project {project_id}")));
         }
         Ok(resp.json::<Response>().await?.data.resource_type())
+    }
+
+    fn lookup_error(status: reqwest::StatusCode, context: String) -> PlatformError {
+        match status {
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                PlatformError::CurseForgeApiKeyRejected(status)
+            }
+            _ => PlatformError::Request(format!("{context}: {status}")),
+        }
     }
 
     /// Download a file into the instance's resource folder.
