@@ -247,6 +247,12 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             env: vec![],
         };
 
+        let mut settings = settings;
+        match launcher.resolve_java(&mut settings, &profile).await {
+            Ok(message) => println!("{message}"),
+            Err(e) => panic!("java selection failed: {e}"),
+        }
+
         println!("Downloading game files…");
         launcher.prepare_files(&profile, &settings).await.expect("prepare failed");
 

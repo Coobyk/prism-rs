@@ -244,6 +244,8 @@ pub enum LaunchError {
     Json(#[from] serde_json::Error),
     #[error("Minecraft {mc} needs Java {}, but {} is Java {found}", join_majors(required), path.display())]
     IncompatibleJava { mc: String, path: PathBuf, found: u32, required: Vec<u32> },
+    #[error("java download: {0}")]
+    JavaDownload(#[from] crate::java::JavaDownloadError),
 }
 
 fn join_majors(majors: &[u32]) -> String {
@@ -319,10 +321,68 @@ impl Launcher {
     }
 
     /// Download everything the profile needs, then extract natives.
-    /// Point `settings.java_path` at a Java that can run `profile`.
+    /// Point `settings.java_path` at a Java that can run `profile` and return
+    /// a log line saying which. A Java the user configured is only verified;
+    /// otherwise a launcher-managed runtime, then any detected install with
+    /// a compatible major, then a fresh download of Mojang's runtime is used.
+    /// Mirrors `AutoInstallJava` + `VerifyJavaInstall`.
     pub async fn resolve_java(&self, settings: &mut LaunchSettings, profile: &LaunchProfile) -> Result<String, LaunchError> {
-        let _ = profile;
-        Ok(format!("Using Java at {}", settings.java_path.display()))
+        let majors = profile.compatible_java_majors();
+        if majors.is_empty() {
+            return Ok(format!("Using Java at {} (the version names no required Java)", settings.java_path.display()));
+        }
+        let mut downloaded = None;
+        if !settings.java_path_explicit {
+            let java_dir = self.paths.java_dir();
+            let managed = profile
+                .java_component
+                .as_deref()
+                .and_then(|component| crate::java::runtime_java_binary(&java_dir.join(component)));
+            let java = match managed {
+                Some(java) => Some(java),
+                None => {
+                    let majors = majors.clone();
+                    let java_dir = java_dir.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let installs = crate::java::detect_installs(&[java_dir]);
+                        crate::java::compatible_install(&installs, &majors).map(|java| java.path.clone())
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                }
+            };
+            if let Some(java) = java {
+                settings.java_path = java;
+            } else if let (true, Some(component)) = (settings.auto_java_download, profile.java_component.as_deref()) {
+                settings.java_path =
+                    crate::java::install_mojang_runtime(&self.downloader, &java_dir, component).await?;
+                downloaded = Some(component);
+            }
+        }
+
+        let java_path = settings.java_path.clone();
+        let found = tokio::task::spawn_blocking(move || crate::java::check_java(&java_path)).await.ok().flatten();
+        let path = settings.java_path.display();
+        match found {
+            Some(version) if majors.contains(&version.major) => Ok(match downloaded {
+                Some(component) => format!("Downloaded Mojang's {component} runtime (Java {}) to {path}", version.raw),
+                None => format!("Using Java {} at {path}", version.raw),
+            }),
+            Some(version) if settings.ignore_java_compatibility => Ok(format!(
+                "Warning: Minecraft {} needs Java {}, but {path} is Java {}; launching anyway because the compatibility check is off",
+                profile.minecraft_version,
+                join_majors(&majors),
+                version.major
+            )),
+            Some(version) => Err(LaunchError::IncompatibleJava {
+                mc: profile.minecraft_version.clone(),
+                path: settings.java_path.clone(),
+                found: version.major,
+                required: majors,
+            }),
+            None => Ok(format!("Warning: could not read the Java version of {path}; launching anyway")),
+        }
     }
 
     pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
@@ -346,10 +406,13 @@ impl Launcher {
         }
 
         // Libraries.
+        // Old versions list some artifacts twice (once plain, once with
+        // natives); downloading one path twice at once races on the rename.
+        let mut queued = std::collections::HashSet::new();
         let mut requests = Vec::new();
         for lib in profile.libraries.iter().chain(profile.natives.iter()) {
             let dest = libraries_dir.join(&lib.path);
-            if dest.exists() {
+            if dest.exists() || !queued.insert(dest.clone()) {
                 continue;
             }
             if let Some(url) = &lib.url {
@@ -395,7 +458,7 @@ impl Launcher {
                         .join("objects")
                         .join(&hash[..2])
                         .join(&hash);
-                    if dest.exists() {
+                    if dest.exists() || !queued.insert(dest.clone()) {
                         continue;
                     }
                     asset_requests.push(DownloadRequest::new(

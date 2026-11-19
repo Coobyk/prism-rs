@@ -132,7 +132,9 @@ impl Downloader {
             }
         }
         // Atomic-ish write: write to tmp then rename.
-        let tmp = req.dest.with_extension("download");
+        let mut tmp = req.dest.clone().into_os_string();
+        tmp.push(".download");
+        let tmp = PathBuf::from(tmp);
         tokio::fs::write(&tmp, &bytes).await?;
         tokio::fs::rename(&tmp, &req.dest).await?;
         Ok(req.dest.clone())
