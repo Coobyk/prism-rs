@@ -91,6 +91,15 @@ impl HorizonLauncher {
     }
 
     pub fn play(&self, id: &str, token: Option<uuid::Uuid>) -> Result<(Child, PathBuf), HorizonError> {
+        self.play_with(id, token, Command::spawn)
+    }
+
+    pub fn play_with(
+        &self,
+        id: &str,
+        token: Option<uuid::Uuid>,
+        spawn: impl FnOnce(&mut Command) -> io::Result<Child>,
+    ) -> Result<(Child, PathBuf), HorizonError> {
         let instance = self.list()?.into_iter().find(|instance| instance.id == id)
             .ok_or_else(|| HorizonError::MissingInstance(id.to_string()))?;
         let found = std::fs::read_to_string(instance.home.join(LINK_MARKER))
@@ -99,13 +108,13 @@ impl HorizonLauncher {
         if token.is_none() || found != token {
             return Err(HorizonError::UnverifiedLink(id.to_string()));
         }
-        Command::new(&self.program)
-            .arg("play")
+        let mut command = Command::new(&self.program);
+        command.arg("play")
             .arg(format!("--instance={id}"))
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        spawn(&mut command)
             .map(|child| (child, instance.home))
             .map_err(|source| self.start_error(source))
     }

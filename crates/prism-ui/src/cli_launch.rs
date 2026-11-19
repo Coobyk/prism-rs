@@ -10,7 +10,7 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
     let instance = list
         .get(id)
         .ok_or_else(|| format!("Instance not found: {id:?}"))?;
-    let _lock = crate::instance_lock::acquire(&paths, instance)?;
+    let lock = crate::instance_lock::acquire(&paths, instance)?;
     if let Some(token) = shortcut_token {
         if !instance.shortcut_token().is_ok_and(|current| current == token) {
             return Err("This shortcut no longer points to the original instance. Create it again from the launcher.".into());
@@ -20,7 +20,8 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
     if let InstanceKind::Horizon { id, token, .. } = &instance.kind {
         println!("Launching Horizon instance {:?}", instance.name);
         let settings = prism_core::settings::Settings::load(&paths.global_config());
-        let (child, _) = HorizonLauncher::from_settings(&settings).play(id, *token)?;
+        let (child, _) = HorizonLauncher::from_settings(&settings)
+            .play_with(id, *token, |command| crate::instance_lock::spawn(command, &lock))?;
         return Ok(wait_for_game(child)?);
     }
 
@@ -45,7 +46,7 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
             .session_for_launch(&accounts_path)
             .await?;
         let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
-        Ok::<_, Box<dyn Error>>(prepared.spawn()?)
+        Ok::<_, Box<dyn Error>>(crate::instance_lock::spawn(&mut prepared.command(), &lock)?)
     })?;
     Ok(wait_for_game(child)?)
 }

@@ -195,7 +195,7 @@ impl App {
             self.runtime.handle().spawn_blocking(move || {
                 let settings = prism_core::settings::Settings::load(&config);
                 let launcher = HorizonLauncher::from_settings(&settings);
-                let result = launcher.play(&id, token).map(|(child, current_home)| {
+                let result = launcher.play_with(&id, token, |command| crate::instance_lock::spawn(command, &lock)).map(|(child, current_home)| {
                     if home != current_home {
                         let _ = tx.send(current_home);
                     }
@@ -275,7 +275,8 @@ impl App {
             };
             let _ = accounts_tx.send(());
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
-            monitor_launch(running, "Minecraft", prepared.spawn(), lock);
+            let child = crate::instance_lock::spawn(&mut prepared.command(), &lock);
+            monitor_launch(running, "Minecraft", child, lock);
         });
     }
 

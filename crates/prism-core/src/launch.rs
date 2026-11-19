@@ -265,6 +265,10 @@ pub struct PreparedLaunch {
 
 impl PreparedLaunch {
     pub fn spawn(&self) -> std::io::Result<std::process::Child> {
+        self.command().spawn()
+    }
+
+    pub fn command(&self) -> std::process::Command {
         use std::process::{Command, Stdio};
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..])
@@ -275,7 +279,7 @@ impl PreparedLaunch {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
-        cmd.spawn()
+        cmd
     }
 }
 
