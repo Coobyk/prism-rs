@@ -18,6 +18,7 @@ pub struct MainWindow {
     pub create_dialog: Option<CreateInstanceState>,
     pub prompt: Option<PromptState>,
     pub quick_play: Option<crate::dialogs::QuickPlayState>,
+    pub icon_picker: Option<crate::dialogs::IconPickerDialog>,
     pub(crate) console_open: bool,
     console_filter: String,
 }
@@ -34,6 +35,7 @@ impl MainWindow {
             create_dialog: None,
             prompt: None,
             quick_play: None,
+            icon_picker: None,
             console_open: false,
             console_filter: String::new(),
         }
@@ -231,6 +233,7 @@ impl MainWindow {
         };
         let running = app.read(cx).is_running(&id);
         let horizon = app.read(cx).instances.get(&id).is_some_and(|inst| inst.is_horizon());
+        let icon = app.read(cx).instances.get(&id).and_then(|inst| app.read(cx).instance_icon_path(inst));
         let tile_bg = if selected { rgb(0x3d5a80) } else { rgb(0x2b2b2b) };
         let id2 = id.clone();
 
@@ -275,7 +278,10 @@ impl MainWindow {
                     .text_size(px(28.))
                     .font_weight(FontWeight::BOLD)
                     .text_color(rgb(0x9fdcb8))
-                    .child(if running {
+                    .children(icon.clone().map(|path| img(path).size(px(64.))))
+                    .child(if icon.is_some() {
+                        String::new()
+                    } else if running {
                         "▶".to_string()
                     } else {
                         name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".to_string())
@@ -339,7 +345,12 @@ impl MainWindow {
             )
             .child(toolbar_separator())
             .child(self.sidebar_button("rename", "Rename", enabled).on_click(cx.listener(Self::on_rename)))
-            .child(self.sidebar_button("change-icon", "Change Icon", enabled))
+            .child(self.sidebar_button("change-icon", "Change Icon", enabled).on_click(cx.listener(|this, _, _, cx| {
+                if let Some(inst) = this.app.read(cx).selected_instance() {
+                    this.icon_picker = Some(crate::dialogs::IconPickerDialog::new(inst, &this.app.read(cx).paths.icons_dir()));
+                    cx.notify();
+                }
+            })))
             .child(toolbar_separator())
             .child(
                 self.sidebar_button("launch", "Launch", enabled && !is_running)
@@ -717,6 +728,7 @@ impl Render for MainWindow {
             .child(self.render_bottom_bar(cx))
             .children(create_dialog)
             .children(self.quick_play.as_ref().map(|dialog| dialog.render(cx)))
+            .children(self.icon_picker.as_ref().map(|dialog| dialog.render(cx)))
             .children(prompt_dialog)
             .children(toast)
     }
