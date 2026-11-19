@@ -54,6 +54,24 @@ pub struct FlameFile {
     pub fileLength: i64,
     #[serde(default)]
     pub gameVersions: Vec<String>,
+    #[serde(default, rename = "fileDate")]
+    pub file_date: String,
+    #[serde(default, rename = "releaseType")]
+    pub release_type: u8,
+    #[serde(default)]
+    pub hashes: Vec<FlameHash>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlameHash {
+    pub algo: u8,
+    pub value: String,
+}
+
+impl FlameFile {
+    pub(super) fn sha1(&self) -> Option<&str> {
+        self.hashes.iter().find(|hash| hash.algo == 1).map(|hash| hash.value.as_str())
+    }
 }
 
 pub struct FlameApi {
@@ -159,6 +177,51 @@ impl FlameApi {
         Ok(resp.json::<Response>().await?.data)
     }
 
+    pub(super) async fn compatible_files(
+        &self,
+        project_id: i64,
+        game_version: &str,
+        loader: u8,
+    ) -> Result<Vec<FlameFile>, PlatformError> {
+        #[derive(Deserialize)]
+        struct Response {
+            data: Vec<FlameFile>,
+            pagination: Pagination,
+        }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Pagination {
+            index: usize,
+            total_count: usize,
+        }
+
+        let mut files = Vec::new();
+        let path = format!("/mods/{project_id}/files");
+        loop {
+            let index = files.len();
+            let resp = self
+                .get(&path)?
+                .query(&[("gameVersion", game_version)])
+                .query(&[("modLoaderType", loader)])
+                .query(&[("pageSize", 50), ("index", index)])
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                return Err(Self::lookup_error(resp.status(), format!("CurseForge project {project_id}")));
+            }
+            let page: Response = resp.json().await?;
+            if page.pagination.index != index || (page.data.is_empty() && index < page.pagination.total_count) {
+                return Err(PlatformError::Request(format!(
+                    "incomplete CurseForge file listing for project {project_id} at index {index}"
+                )));
+            }
+            files.extend(page.data);
+            if files.len() >= page.pagination.total_count {
+                return Ok(files);
+            }
+        }
+    }
+
     pub async fn project_resource_type(&self, project_id: i64) -> Result<ResourceType, PlatformError> {
         #[derive(Deserialize)]
         struct Response {
@@ -206,7 +269,10 @@ impl FlameApi {
             )));
         }
         let dest = install_path(game_root, resource_type, &file.fileName);
-        let req = DownloadRequest::new(url, &dest);
+        let mut req = DownloadRequest::new(url, &dest);
+        if let Some(hash) = file.sha1() {
+            req = req.with_sha1(hash);
+        }
         downloader.download(&req).await?;
         Ok(dest)
     }

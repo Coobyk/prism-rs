@@ -3,6 +3,7 @@
 
 pub mod flame;
 pub mod modrinth;
+pub mod updates;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

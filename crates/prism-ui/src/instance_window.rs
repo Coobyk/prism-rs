@@ -8,6 +8,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 use prism_core::modplatform::modrinth::{ModrinthApi, SearchResult};
+use prism_core::modplatform::updates::{self, UpdateReport};
 use prism_core::modplatform::{LocalResource, ResourceType};
 use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
 use prism_core::{Instance, InstanceKind};
@@ -19,6 +20,7 @@ pub enum Page {
     Log,
     Version,
     Mods,
+    ModUpdates,
     ResourcePacks,
     ShaderPacks,
     BrowseMods,
@@ -37,6 +39,7 @@ impl Page {
             Page::Log => "Minecraft Log",
             Page::Version => "Version",
             Page::Mods => "Mods",
+            Page::ModUpdates => "Mod Updates",
             Page::ResourcePacks => "Resource Packs",
             Page::ShaderPacks => "Shader Packs",
             Page::BrowseMods => "Browse Mods (Modrinth)",
@@ -81,6 +84,7 @@ impl Page {
 
     fn sidebar_page(self) -> Self {
         match self {
+            Self::ModUpdates => Self::Mods,
             Self::BrowseResourcePacks => Self::ResourcePacks,
             Self::BrowseShaderPacks => Self::ShaderPacks,
             _ => self,
@@ -124,11 +128,20 @@ struct ModrinthBrowser {
     install_status: String,
 }
 
+#[derive(Default)]
+struct ModUpdates {
+    target: Option<(std::path::PathBuf, String, prism_core::loaders::Loader)>,
+    report: UpdateReport,
+    busy: bool,
+    status: String,
+}
+
 pub struct InstanceWindow {
     pub app: gpui::Entity<App>,
     pub instance_id: String,
     pub page: Page,
     browsers: HashMap<ResourceType, ModrinthBrowser>,
+    mod_updates: ModUpdates,
     // Loader install state.
     loader_options: Arc<std::sync::Mutex<Vec<String>>>,
     loader_handle: Option<tokio::task::JoinHandle<Result<Vec<String>, String>>>,
@@ -148,6 +161,7 @@ impl InstanceWindow {
             instance_id,
             page: Page::Log,
             browsers: HashMap::new(),
+            mod_updates: ModUpdates::default(),
             loader_options: Arc::new(std::sync::Mutex::new(Vec::new())),
             loader_handle: None,
             servers: None,
@@ -312,6 +326,108 @@ impl InstanceWindow {
         cx.notify();
     }
 
+    fn check_mod_updates(&mut self, cx: &mut Context<Self>) {
+        if self.mod_updates.busy {
+            return;
+        }
+        let app = self.app.read(cx);
+        let Some(instance) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
+            return;
+        };
+        let root = instance.game_root();
+        let mc = prism_core::launch::LaunchSettings::for_instance(instance, &app.paths).mc_version;
+        let loader = prism_core::instance::loader_of(instance);
+        let runtime = app.runtime.clone();
+        let downloader = runtime.downloader.clone();
+        self.page = Page::ModUpdates;
+        self.mod_updates = ModUpdates {
+            target: Some((root.clone(), mc.clone(), loader.clone())),
+            busy: true,
+            status: "Checking installed mods…".into(),
+            ..ModUpdates::default()
+        };
+        let task = runtime.spawn(async move { updates::check(&root, &mc, &loader, &downloader).await });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                let state = &mut this.mod_updates;
+                state.busy = false;
+                state.status = match result {
+                    Ok(report) => {
+                        let count = report.updates.len();
+                        let status = if count > 0 {
+                            format!("{count} compatible update{} available.", if count == 1 { "" } else { "s" })
+                        } else if report.warnings.is_empty() && report.unmatched == 0 {
+                            "No compatible updates found.".into()
+                        } else {
+                            "No updates found for mods that could be checked.".into()
+                        };
+                        state.report = report;
+                        status
+                    }
+                    Err(error) => format!("Could not check for updates: {error}"),
+                };
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
+    fn apply_mod_update(&mut self, update: updates::ModUpdate, cx: &mut Context<Self>) {
+        if self.mod_updates.busy {
+            return;
+        }
+        let app = self.app.read(cx);
+        let Some(instance) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
+            return;
+        };
+        let target = (
+            instance.game_root(),
+            prism_core::launch::LaunchSettings::for_instance(instance, &app.paths).mc_version,
+            prism_core::instance::loader_of(instance),
+        );
+        if self.mod_updates.target.as_ref() != Some(&target) {
+            self.mod_updates.status = "Instance settings changed. Check for updates again.".into();
+            self.mod_updates.report.updates.clear();
+            cx.notify();
+            return;
+        }
+        let lock = match crate::instance_lock::acquire(&app.paths, instance) {
+            Ok(lock) => lock,
+            Err(error) => {
+                self.mod_updates.status = format!("Could not update {}: {error}", update.title);
+                cx.notify();
+                return;
+            }
+        };
+        let runtime = app.runtime.clone();
+        let downloader = runtime.downloader.clone();
+        let filename = update.installed_filename().to_owned();
+        let title = update.title.clone();
+        self.mod_updates.busy = true;
+        self.mod_updates.status = format!("Updating {title}…");
+        let task = runtime.spawn(async move {
+            let _lock = lock;
+            update.apply(&downloader).await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                let state = &mut this.mod_updates;
+                state.busy = false;
+                state.status = match result {
+                    Ok(()) => {
+                        state.report.updates.retain(|row| row.installed_filename() != filename);
+                        format!("Updated {title}.")
+                    }
+                    Err(error) => format!("Could not update {title}: {error}"),
+                };
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+    }
+
     fn instance(&self, cx: &Context<Self>) -> Instance {
         self.app
             .read(cx)
@@ -388,6 +504,7 @@ impl InstanceWindow {
             Page::Log => self.render_log_page(cx),
             Page::Version => self.render_version_page(cx),
             Page::Mods => self.render_resources_page(cx, ResourceType::Mod),
+            Page::ModUpdates => self.render_mod_updates(cx),
             Page::ResourcePacks => self.render_resources_page(cx, ResourceType::ResourcePack),
             Page::ShaderPacks => self.render_resources_page(cx, ResourceType::ShaderPack),
             Page::Notes => self.render_notes_page(cx),
@@ -620,6 +737,14 @@ impl InstanceWindow {
             _ => None,
         };
         let mut header = self.page_header(cx, folder.display().to_string());
+        if rtype == ResourceType::Mod {
+            header = header.child(
+                div().flex_shrink_0().child(Button::new("check-mod-updates")
+                    .label("Check for Updates")
+                    .disabled(self.mod_updates.busy)
+                    .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx)))),
+            );
+        }
         if let Some(page) = browser_page {
             header = header.child(
                 div().flex_shrink_0().child(Button::new("browse-packs")
@@ -757,6 +882,55 @@ impl InstanceWindow {
         }
         panel = panel.child(list);
         panel.into_any_element()
+    }
+
+    fn render_mod_updates(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let updates = &self.mod_updates;
+        let running = self.app.read(cx).is_running(&self.instance_id);
+        let subtitle = updates.target.as_ref()
+            .map(|(_, mc, _)| format!("Mod Updates · Minecraft {mc}"))
+            .unwrap_or_else(|| "Mod Updates".into());
+        let header = self.page_header(cx, subtitle)
+            .child(div().flex_shrink_0().flex().gap_2()
+                .child(Button::new("recheck-mod-updates")
+                    .label("Check again")
+                    .disabled(updates.busy)
+                    .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx))))
+                .child(Button::new("back-to-mods")
+                    .label("Back to installed")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.page = Page::Mods;
+                        cx.notify();
+                    }))));
+        let mut list = div().id("mod-updates-list").min_h_0().flex_1().overflow_y_scroll()
+            .flex().flex_col().gap_2().p_3();
+        for update in &updates.report.updates {
+            let row = update.clone();
+            list = list.child(
+                div().flex().flex_shrink_0().items_center().gap_3().px_3().py_2()
+                    .rounded_md().bg(rgb(0x2b2b2b))
+                    .child(div().min_w_0().flex_1().flex().flex_col()
+                        .child(div().text_ellipsis().child(update.title.clone()))
+                        .child(div().text_ellipsis().text_size(px(11.)).text_color(rgb(0xaaaaaa))
+                            .child(format!("{} → {} · {}", update.current_version, update.new_version, update.provider))))
+                    .child(div().flex_shrink_0().child(Button::new(SharedString::from(format!("update-{}", update.installed_filename())))
+                        .label("Update")
+                        .disabled(updates.busy || running)
+                        .on_click(cx.listener(move |this, _, _, cx| this.apply_mod_update(row.clone(), cx))))),
+            );
+        }
+        if updates.report.locked > 0 || updates.report.unmatched > 0 {
+            list = list.child(div().text_size(px(12.)).text_color(rgb(0xaaaaaa))
+                .child(format!("Skipped: {} locked, {} without a provider match.", updates.report.locked, updates.report.unmatched)));
+        }
+        for warning in &updates.report.warnings {
+            list = list.child(div().text_size(px(12.)).text_color(rgb(0xd8b17c)).child(warning.clone()));
+        }
+        div().min_w_0().min_h_0().flex_1().flex().flex_col()
+            .child(header)
+            .child(div().px_3().pt_3().text_size(px(13.)).text_color(rgb(0x8fb4d9)).child(updates.status.clone()))
+            .child(list)
+            .into_any_element()
     }
 
     fn render_notes_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
