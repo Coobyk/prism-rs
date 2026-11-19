@@ -111,6 +111,7 @@ pub async fn fetch_loader_profile(
 
 pub const FORGE_MAVEN: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge";
 pub const NEOFORGE_MAVEN: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge";
+const LEGACY_NEOFORGE_MAVEN: &str = "https://maven.neoforged.net/releases/net/neoforged/forge";
 
 /// List Forge versions for one Minecraft version, from the maven metadata.
 pub async fn forge_versions(client: &reqwest::Client, mc_version: &str) -> Result<Vec<String>, String> {
@@ -160,6 +161,13 @@ fn installer_url(loader: &Loader, mc_version: &str) -> Option<(String, String)> 
         Loader::Forge { version } => {
             let version = format!("{mc_version}-{}", forge_loader_version(version, mc_version));
             Some((format!("{FORGE_MAVEN}/{version}/forge-{version}-installer.jar"), version))
+        }
+        Loader::NeoForge { version } if mc_version == "1.20.1" => {
+            let version = format!("{mc_version}-{}", forge_loader_version(version, mc_version));
+            Some((
+                format!("{LEGACY_NEOFORGE_MAVEN}/{version}/forge-{version}-installer.jar"),
+                version,
+            ))
         }
         Loader::NeoForge { version } => Some((
             format!("{NEOFORGE_MAVEN}/{version}/neoforge-{version}-installer.jar"),
@@ -232,11 +240,8 @@ pub fn read_forge_version_json(
     mc_dir: &std::path::Path,
     mc_version: &str,
 ) -> Result<VersionData, String> {
-    let dir_name = match loader {
-        Loader::Forge { version } => forge_profile_id(mc_version, version),
-        Loader::NeoForge { version } => version.clone(),
-        _ => return Err("not a forge loader".to_string()),
-    };
+    let dir_name = installer_profile_id(loader, mc_version)
+        .ok_or_else(|| "not a forge loader".to_string())?;
     let json_path = mc_dir
         .join("versions")
         .join(&dir_name)
@@ -247,6 +252,17 @@ pub fn read_forge_version_json(
     let text = std::fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     VersionData::from_json(&json).map_err(|e| e.to_string())
+}
+
+fn installer_profile_id(loader: &Loader, mc_version: &str) -> Option<String> {
+    match loader {
+        Loader::Forge { version } => Some(forge_profile_id(mc_version, version)),
+        Loader::NeoForge { version } if mc_version == "1.20.1" => {
+            Some(forge_profile_id(mc_version, version))
+        }
+        Loader::NeoForge { version } => Some(version.clone()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -262,5 +278,27 @@ mod tests {
             assert_eq!(artifact_version, "1.20.1-47.2.0");
             assert_eq!(forge_profile_id("1.20.1", version), "1.20.1-forge-47.2.0");
         }
+    }
+
+    #[test]
+    fn legacy_neoforge_uses_forge_artifact_and_profile_without_changing_component() {
+        let loader = Loader::NeoForge { version: "47.1.106".into() };
+        let (url, artifact_version) = installer_url(&loader, "1.20.1").unwrap();
+        assert_eq!(
+            url,
+            format!("{LEGACY_NEOFORGE_MAVEN}/1.20.1-47.1.106/forge-1.20.1-47.1.106-installer.jar")
+        );
+        assert_eq!(artifact_version, "1.20.1-47.1.106");
+        assert_eq!(
+            installer_profile_id(&loader, "1.20.1").as_deref(),
+            Some("1.20.1-forge-47.1.106")
+        );
+        assert_eq!(loader.uid(), "net.neoforged");
+        assert_eq!(loader.version(), Some("47.1.106"));
+        let modern = Loader::NeoForge { version: "20.4.237".into() };
+        assert_eq!(
+            installer_url(&modern, "1.20.4").unwrap().0,
+            format!("{NEOFORGE_MAVEN}/20.4.237/neoforge-20.4.237-installer.jar")
+        );
     }
 }
