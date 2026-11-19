@@ -1,6 +1,10 @@
 use crate::modplatform::ResourceType;
+use crate::nbt::{self, Tag};
+use flate2::read::GzDecoder;
 use std::{
+    collections::HashSet,
     fs, io,
+    io::Read,
     path::{Path, PathBuf},
     time::SystemTime,
 };
@@ -44,6 +48,7 @@ pub struct DataPack {
     name: String,
     directory: bool,
     enabled: bool,
+    disabled_in_world: bool,
     stamp: FileStamp,
 }
 
@@ -53,7 +58,11 @@ impl DataPack {
     }
 
     pub fn enabled(&self) -> bool {
-        self.enabled
+        self.enabled && !self.disabled_in_world
+    }
+
+    pub fn disabled_in_world(&self) -> bool {
+        self.disabled_in_world
     }
 }
 
@@ -85,6 +94,49 @@ fn level_stamp(world: &Path) -> io::Result<FileStamp> {
         return Err(io::Error::other("Not a Java world (no regular level.dat)"));
     }
     Ok(FileStamp::from(&metadata))
+}
+
+fn nbt_child<'a>(root: &'a Tag, name: &str) -> Option<&'a Tag> {
+    let Tag::Compound(entries) = root else {
+        return None;
+    };
+    entries
+        .iter()
+        .find_map(|(key, value)| (key == name).then_some(value))
+}
+
+fn pack_names<'a>(packs: &'a Tag, key: &str) -> impl Iterator<Item = &'a str> {
+    let values = match nbt_child(packs, key) {
+        Some(Tag::List(8, names)) => names.as_slice(),
+        _ => &[],
+    };
+    values.iter().filter_map(|tag| match tag {
+        Tag::String(name) => name.strip_prefix("file/"),
+        _ => None,
+    })
+}
+
+fn disabled_world_packs(path: &Path) -> io::Result<HashSet<String>> {
+    const MAX_LEVEL_NBT: u64 = 16 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    GzDecoder::new(fs::File::open(path)?)
+        .take(MAX_LEVEL_NBT + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LEVEL_NBT {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "level.dat exceeds the NBT size limit",
+        ));
+    }
+    let (_, root) = nbt::read(&bytes)?;
+    let Some(packs) = nbt_child(&root, "Data").and_then(|data| nbt_child(data, "DataPacks")) else {
+        return Ok(HashSet::new());
+    };
+    let enabled: HashSet<_> = pack_names(packs, "Enabled").collect();
+    Ok(pack_names(packs, "Disabled")
+        .filter(|name| !enabled.contains(name))
+        .map(str::to_owned)
+        .collect())
 }
 
 fn ensure_absent(path: &Path) -> io::Result<()> {
@@ -186,6 +238,13 @@ impl World {
             &mut packs,
         )?;
         Self::scan(&world.join(DISABLED_FOLDERS), false, &mut packs)?;
+        if packs.iter().any(|pack| pack.enabled) {
+            if let Ok(disabled) = disabled_world_packs(&world.join("level.dat")) {
+                for pack in &mut packs {
+                    pack.disabled_in_world = pack.enabled && disabled.contains(&pack.name);
+                }
+            }
+        }
         packs.sort_by_key(|pack| (pack.name.to_lowercase(), pack.name.clone(), !pack.enabled));
         Ok(packs)
     }
@@ -213,6 +272,7 @@ impl World {
                 packs.push(DataPack {
                     folder: folder.into(),
                     enabled: active_folder && (directory || !name.ends_with(DISABLED)),
+                    disabled_in_world: false,
                     name,
                     directory,
                     stamp: FileStamp::from(&meta),
@@ -282,6 +342,9 @@ impl World {
     }
 
     pub fn toggle(&self, pack: &DataPack) -> io::Result<()> {
+        if pack.disabled_in_world() {
+            return Err(io::Error::other("This pack is disabled in Minecraft"));
+        }
         let world = self.world_path()?;
         let path = Self::pack_path(&world, pack)?;
         let target = if pack.directory {
@@ -440,6 +503,59 @@ mod tests {
         }
         assert!(active.join("pack.zip").is_file());
         assert!(unpacked.join("pack.mcmeta").is_file());
+    }
+
+    #[test]
+    fn reads_in_game_disabled_packs_without_editing_level_dat() {
+        let root = tempfile::tempdir().unwrap();
+        let save = world(root.path(), "Save");
+        let level_path = save.join("level.dat");
+        let list = |packs: &[&str]| {
+            Tag::List(
+                8,
+                packs
+                    .iter()
+                    .map(|name| Tag::String((*name).into()))
+                    .collect(),
+            )
+        };
+        let nbt = Tag::Compound(vec![(
+            "Data".into(),
+            Tag::Compound(vec![(
+                "DataPacks".into(),
+                Tag::Compound(vec![
+                    ("Enabled".into(), list(&["vanilla", "file/active.zip"])),
+                    (
+                        "Disabled".into(),
+                        list(&["file/disabled.zip", "file/active.zip"]),
+                    ),
+                ]),
+            )]),
+        )]);
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(&nbt::write("", &nbt).unwrap()).unwrap();
+        let level = gzip.finish().unwrap();
+        fs::write(&level_path, &level).unwrap();
+        let world = World::open(root.path(), "Save").unwrap();
+        for name in ["active.zip", "disabled.zip", "new.zip"] {
+            world
+                .add_zip(&zip(root.path(), name, "pack.mcmeta"))
+                .unwrap();
+        }
+        let packs = world.packs().unwrap();
+        let disabled = packs
+            .iter()
+            .find(|pack| pack.name() == "disabled.zip")
+            .unwrap();
+        assert!(disabled.disabled_in_world());
+        assert!(!disabled.enabled());
+        assert!(world.toggle(disabled).is_err());
+        assert!(save.join("datapacks/disabled.zip").is_file());
+        assert!(packs
+            .iter()
+            .filter(|pack| pack.name() != "disabled.zip")
+            .all(DataPack::enabled));
+        assert_eq!(fs::read(level_path).unwrap(), level);
     }
 
     #[test]

@@ -419,6 +419,7 @@ impl InstanceWindow {
                     for pack in packs {
                         let name = pack.name().to_owned();
                         let enabled = pack.enabled();
+                        let disabled_in_world = pack.disabled_in_world();
                         let toggle = pack.clone();
                         let toggle_scope = scope.clone();
                         let remove_scope = scope.clone();
@@ -443,14 +444,16 @@ impl InstanceWindow {
                                             div()
                                                 .text_size(px(11.))
                                                 .text_color(rgb(0xaaaaaa))
-                                                .child(if enabled {
+                                                .child(if disabled_in_world {
+                                                    "Disabled in world · manage in Minecraft"
+                                                } else if enabled {
                                                     "Enabled"
                                                 } else {
                                                     "Disabled"
                                                 }),
                                         ),
                                 )
-                                .child(
+                                .children((!disabled_in_world).then(|| {
                                     Button::new(SharedString::from(format!(
                                         "toggle-datapack-{enabled}-{name}"
                                     )))
@@ -460,11 +463,11 @@ impl InstanceWindow {
                                         this.datapack_action(&toggle_scope, cx, |world| {
                                             world.toggle(&toggle)
                                         });
-                                    })),
-                                )
+                                    }))
+                                }))
                                 .child(
                                     Button::new(SharedString::from(format!(
-                                        "remove-datapack-{enabled}-{name}"
+                                        "remove-datapack-{enabled}-{disabled_in_world}-{name}"
                                     )))
                                     .label("Remove")
                                     .disabled(running)
