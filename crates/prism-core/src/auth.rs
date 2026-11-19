@@ -3,7 +3,7 @@
 
 use crate::launch::MSA_CLIENT_ID;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{io::{self, Write}, path::Path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -73,18 +73,13 @@ impl AccountList {
         let refreshed = refresh(account.clone())
             .await
             .map_err(|_| AuthError::SignInAgain)?;
-        let mut updated: AccountList = match std::fs::read_to_string(path) {
-            Ok(json) => serde_json::from_str(&json)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => AccountList::default(),
-            Err(error) => return Err(error.into()),
-        };
-        for stored in &mut updated.accounts {
-            if stored.id == account.id {
-                *stored = refreshed.clone();
+        *self = Self::edit(path, |updated| {
+            for stored in &mut updated.accounts {
+                if stored.id == account.id && stored.refresh_token == account.refresh_token {
+                    *stored = refreshed.clone();
+                }
             }
-        }
-        updated.save(path)?;
-        *self = updated;
+        })?;
         Ok(Some(self.to_session(&refreshed)))
     }
 
@@ -95,11 +90,33 @@ impl AccountList {
             .unwrap_or_default()
     }
 
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
+    pub fn edit(path: &Path, edit: impl FnOnce(&mut Self)) -> io::Result<Self> {
+        let parent = account_dir(path);
+        std::fs::create_dir_all(parent)?;
+        let lock = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let mut accounts = match std::fs::read_to_string(path) {
+            Ok(json) => serde_json::from_str(&json)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
+            Err(error) => return Err(error),
+        };
+        edit(&mut accounts);
+        accounts.save(path)?;
+        Ok(accounts)
+    }
+
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        let parent = account_dir(path);
+        std::fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(&mut file, self)?;
+        file.flush()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 
     pub fn active_account(&self) -> Option<&MinecraftAccount> {
@@ -143,6 +160,10 @@ impl AccountList {
             client_id: MSA_CLIENT_ID.to_string(),
         }
     }
+}
+
+fn account_dir(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +456,26 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_active_account_preserves_credentials_refreshed_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let mut gui = AccountList::default();
+        gui.add_offline("Online");
+        gui.accounts[0].account_type = AccountType::Msa;
+        gui.accounts[0].refresh_token = Some("old".into());
+        let offline_id = gui.add_offline("Offline").id.clone();
+        gui.save(&path).unwrap();
+        AccountList::edit(&path, |accounts| {
+            accounts.accounts[0].refresh_token = Some("refreshed".into());
+        }).unwrap();
+        assert_eq!(gui.accounts[0].refresh_token.as_deref(), Some("old"));
+        AccountList::edit(&path, |accounts| accounts.active = Some(offline_id.clone())).unwrap();
+        let saved = AccountList::load(&path);
+        assert_eq!(saved.active, Some(offline_id));
+        assert_eq!(saved.accounts[0].refresh_token.as_deref(), Some("refreshed"));
+    }
 
     #[tokio::test]
     async fn expired_launch_refreshes_and_persists() {

@@ -106,9 +106,10 @@ impl App {
         });
     }
 
-    pub fn save_accounts(&self) {
-        if let Err(e) = self.accounts.save(&self.paths.accounts_file()) {
-            tracing::error!("failed to save accounts: {e}");
+    pub fn edit_accounts(&mut self, edit: impl FnOnce(&mut AccountList)) {
+        match AccountList::edit(&self.paths.accounts_file(), edit) {
+            Ok(accounts) => self.accounts = accounts,
+            Err(error) => self.toast = Some((format!("Could not save accounts: {error}"), std::time::Instant::now())),
         }
     }
 
@@ -223,12 +224,11 @@ impl App {
         let mut settings = LaunchSettings::for_instance(&inst, &self.paths);
         settings.quick_play = quick_play;
         let accounts_path = self.paths.accounts_file();
-        let mut accounts = AccountList::load(&accounts_path);
         let (accounts_tx, accounts_rx) = tokio::sync::oneshot::channel();
         cx.spawn(async move |this, cx| {
-            if let Ok(accounts) = accounts_rx.await {
+            if accounts_rx.await.is_ok() {
                 let _ = this.update(cx, |app, cx| {
-                    app.accounts = accounts;
+                    app.accounts = AccountList::load(&app.paths.accounts_file());
                     cx.notify();
                 });
             }
@@ -265,7 +265,7 @@ impl App {
                 }
             };
 
-            let session = match accounts.session_for_launch(&accounts_path).await {
+            let session = match AccountList::load(&accounts_path).session_for_launch(&accounts_path).await {
                 Ok(session) => session,
                 Err(error) => {
                     log_lock(&log).push(format!("Fatal: {error}"));
@@ -273,7 +273,7 @@ impl App {
                     return;
                 }
             };
-            let _ = accounts_tx.send(accounts);
+            let _ = accounts_tx.send(());
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
             monitor_launch(running, "Minecraft", prepared.spawn(), lock);
         });

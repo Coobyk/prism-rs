@@ -143,20 +143,19 @@ impl MainWindow {
 
     fn on_cycle_account(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _cx| {
-            if app.accounts.accounts.is_empty() {
-                app.accounts.add_offline("Player");
-            } else {
-                // Cycle to the next account.
-                let idx = app
-                    .accounts
-                    .active
-                    .as_deref()
-                    .and_then(|id| app.accounts.accounts.iter().position(|a| a.id == id))
-                    .map(|i| (i + 1) % app.accounts.accounts.len())
-                    .unwrap_or(0);
-                app.accounts.active = Some(app.accounts.accounts[idx].id.clone());
-            }
-            app.save_accounts();
+            app.edit_accounts(|accounts| {
+                if accounts.accounts.is_empty() {
+                    accounts.add_offline("Player");
+                } else {
+                    let idx = accounts
+                        .active
+                        .as_deref()
+                        .and_then(|id| accounts.accounts.iter().position(|a| a.id == id))
+                        .map(|i| (i + 1) % accounts.accounts.len())
+                        .unwrap_or(0);
+                    accounts.active = Some(accounts.accounts[idx].id.clone());
+                }
+            });
         });
         cx.notify();
     }

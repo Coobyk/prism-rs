@@ -36,9 +36,9 @@ impl AccountsWindow {
             return;
         }
         self.app.update(cx, |app, _cx| {
-            app.accounts.add_offline(&name);
-            app.accounts.active = Some(app.accounts.accounts.last().unwrap().id.clone());
-            app.save_accounts();
+            app.edit_accounts(|accounts| {
+                accounts.active = Some(accounts.add_offline(&name).id.clone());
+            });
         });
         *self.status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Added offline account: {name}");
         cx.notify();
@@ -103,10 +103,11 @@ impl AccountsWindow {
         match result {
             Ok(Ok(account)) => {
                 self.app.update(cx, |app, _cx| {
-                    app.accounts.accounts.retain(|a| a.id != account.id);
-                    app.accounts.accounts.push(account.clone());
-                    app.accounts.active = Some(account.id.clone());
-                    app.save_accounts();
+                    app.edit_accounts(|accounts| {
+                        accounts.accounts.retain(|a| a.id != account.id);
+                        accounts.accounts.push(account.clone());
+                        accounts.active = Some(account.id.clone());
+                    });
                 });
                 *self.status.lock().unwrap_or_else(|p| p.into_inner()) =
                     format!("Signed in as {}", account.player_name);
@@ -124,19 +125,23 @@ impl AccountsWindow {
 
     fn set_active(&mut self, id: String, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _cx| {
-            app.accounts.active = Some(id.clone());
-            app.save_accounts();
+            app.edit_accounts(|accounts| {
+                if accounts.accounts.iter().any(|account| account.id == id) {
+                    accounts.active = Some(id);
+                }
+            });
         });
         cx.notify();
     }
 
     fn remove_account(&mut self, id: String, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _cx| {
-            app.accounts.accounts.retain(|a| a.id != id);
-            if app.accounts.active.as_deref() == Some(id.as_str()) {
-                app.accounts.active = app.accounts.accounts.first().map(|a| a.id.clone());
-            }
-            app.save_accounts();
+            app.edit_accounts(|accounts| {
+                accounts.accounts.retain(|a| a.id != id);
+                if accounts.active.as_deref() == Some(id.as_str()) {
+                    accounts.active = accounts.accounts.first().map(|a| a.id.clone());
+                }
+            });
         });
         cx.notify();
     }
