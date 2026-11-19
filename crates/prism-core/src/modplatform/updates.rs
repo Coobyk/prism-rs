@@ -46,6 +46,17 @@ struct Providers {
     curseforge: Option<CurseForgeId>,
 }
 
+impl Providers {
+    fn keep_alternates(&mut self, previous: &Self) {
+        if self.modrinth.is_none() {
+            self.modrinth = previous.modrinth.clone();
+        }
+        if self.curseforge.is_none() {
+            self.curseforge = previous.curseforge.clone();
+        }
+    }
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 struct ModrinthId {
     #[serde(rename = "mod-id")]
@@ -247,6 +258,21 @@ fn record(game_root: &Path, index: Option<Index>) {
         Some([previous]) => {
             index.side = previous.index.side.clone();
             index.locked = previous.index.locked;
+            let new = &index.update;
+            let old = &previous.index.update;
+            let same_project = new
+                .modrinth
+                .as_ref()
+                .zip(old.modrinth.as_ref())
+                .is_some_and(|(new, old)| new.project == old.project)
+                || new
+                    .curseforge
+                    .as_ref()
+                    .zip(old.curseforge.as_ref())
+                    .is_some_and(|(new, old)| new.project == old.project);
+            if same_project {
+                index.update.keep_alternates(old);
+            }
             save_index(&previous.path, &index, Some(&previous.original))
         }
         Some(_) => Err(problem(format!(
@@ -317,6 +343,15 @@ async fn check_modrinth(
         })
         .max_by_key(|(date, _, _, _)| *date)
         .map(|(_, version, index, url)| (current.version_number.clone(), version, index, url)))
+}
+
+fn matches_modrinth_install(version: &ModVersion, project: &str, hash: &str) -> bool {
+    version.project_id == project
+        && version.files.iter().any(|file| {
+            file.hashes
+                .get("sha1")
+                .is_some_and(|sha1| hash.eq_ignore_ascii_case(sha1))
+        })
 }
 
 fn curseforge_loader(loader: &Loader) -> Option<u8> {
@@ -422,17 +457,19 @@ pub async fn check(
     }
     let mr = ModrinthApi::with_client(downloader.client().clone());
     let cf = FlameApi::new();
-    let uses_curseforge = |file: &Installed| {
-        file.index
-            .as_ref()
-            .and_then(|metadata| metadata.index.update.curseforge.as_ref())
-            .is_some()
+    let use_curseforge = |index: &Index| {
+        index.update.curseforge.is_some()
+            && (index.update.modrinth.is_none()
+                || (cf.has_api_key()
+                    && index.download.mode.as_deref() == Some("metadata:curseforge")))
     };
     let hashes = installed
         .iter()
         .filter(|file| {
             file.index.as_ref().is_none_or(|meta| {
-                meta.index.update.curseforge.is_none() && meta.index.update.modrinth.is_none()
+                !use_curseforge(&meta.index)
+                    && (meta.index.update.modrinth.is_none()
+                        || meta.index.update.curseforge.is_some())
             })
         })
         .map(|file| file.sha1.clone())
@@ -448,16 +485,27 @@ pub async fn check(
                 .push(format!("Modrinth file lookup failed: {error}")),
         }
     }
-    if installed.iter().any(uses_curseforge) && !cf.has_api_key() {
+    if !cf.has_api_key()
+        && installed.iter().any(|file| {
+            file.index
+                .as_ref()
+                .is_some_and(|meta| use_curseforge(&meta.index))
+        })
+    {
         report
             .warnings
             .push(format!("Set {API_KEY_ENV} to check CurseForge mods."));
     }
     let results = stream::iter(installed.into_iter().map(|file| {
-        let (mr, cf, current_versions) = (&mr, &cf, &current_versions);
+        let (mr, cf, current_versions, use_curseforge) =
+            (&mr, &cf, &current_versions, &use_curseforge);
         async move {
             let providers = file.index.as_ref().map(|meta| &meta.index.update);
-            let (provider, result) = if let Some(id) = providers.and_then(|p| p.curseforge.as_ref())
+            let (provider, result) = if let Some(id) = file
+                .index
+                .as_ref()
+                .filter(|meta| use_curseforge(&meta.index))
+                .and_then(|meta| meta.index.update.curseforge.as_ref())
             {
                 if !cf.has_api_key() {
                     return (file, None);
@@ -468,15 +516,14 @@ pub async fn check(
                 )
             } else if let Some(id) = providers.and_then(|p| p.modrinth.as_ref()) {
                 let result = async {
+                    // An update from the other provider may leave this version ID stale.
+                    if let Some(current) = current_versions.get(&file.sha1).filter(|current| {
+                        matches_modrinth_install(current, &id.project, &file.sha1)
+                    }) {
+                        return check_modrinth(mr, current, mc, mr_loader).await;
+                    }
                     let current = mr.version(&id.version).await?;
-                    if current.project_id != id.project
-                        || !current.files.iter().any(|entry| {
-                            entry
-                                .hashes
-                                .get("sha1")
-                                .is_some_and(|sha1| file.sha1.eq_ignore_ascii_case(sha1))
-                        })
-                    {
+                    if !matches_modrinth_install(&current, &id.project, &file.sha1) {
                         return Err(problem("installed file does not match its Modrinth index"));
                     }
                     check_modrinth(mr, &current, mc, mr_loader).await
@@ -506,6 +553,7 @@ pub async fn check(
                 }
                 let (title, path, old_index) = if let Some(previous) = &file.index {
                     index.side = previous.index.side.clone();
+                    index.update.keep_alternates(&previous.index.update);
                     (
                         previous.index.name.clone(),
                         previous.path.clone(),
@@ -734,6 +782,28 @@ file-id = 3509043
         assert_eq!(recorded.index.download.hash, "replacement");
         assert!(recorded.index.locked);
         assert_eq!(recorded.index.side.as_deref(), Some("client"));
+    }
+
+    #[test]
+    fn refreshing_a_sidecar_keeps_the_alternate_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let mods = temp.path().join("mods");
+        let mut index: Index = toml::from_str(CURSEFORGE).unwrap();
+        index.update.modrinth = Some(ModrinthId {
+            project: "modrinth-project".into(),
+            version: "old".into(),
+        });
+        record(temp.path(), Some(index.clone()));
+        index.update.modrinth = None;
+        index.update.curseforge.as_mut().unwrap().file = 5;
+        record(temp.path(), Some(index));
+        let records = read_index(&mods);
+        let recorded = &records["example.jar"][0].index.update;
+        assert_eq!(
+            recorded.modrinth.as_ref().unwrap().project,
+            "modrinth-project"
+        );
+        assert_eq!(recorded.curseforge.as_ref().unwrap().file, 5);
     }
 
     #[tokio::test]
