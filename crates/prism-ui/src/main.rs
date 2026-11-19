@@ -96,6 +96,13 @@ fn headless_instances() -> i32 {
                 println!("No instances found.");
             }
             for inst in &list.instances {
+                if let prism_core::InstanceKind::Horizon { id, home, .. } = &inst.kind {
+                    println!(
+                        "- {:?} (Horizon, Horizon ID: {}, group {}, game dir: {})",
+                        inst.name, id, inst.group.as_deref().unwrap_or("-"), home.display()
+                    );
+                    continue;
+                }
                 let loader = prism_core::instance::loader_of(inst);
                 let mc = prism_core::launch::LaunchSettings::for_instance(inst, &paths).mc_version;
                 let group = inst.group.clone().unwrap_or_else(|| "-".to_string());

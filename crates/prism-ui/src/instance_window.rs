@@ -5,11 +5,11 @@
 use crate::state::{App, InstanceRunState};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 use prism_core::modplatform::{LocalResource, ResourceType};
-use prism_core::Instance;
 use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use prism_core::{Instance, InstanceKind};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -58,6 +58,21 @@ impl Page {
             Page::Notes,
             Page::Settings,
         ]
+    }
+
+    fn available(self, horizon: bool) -> bool {
+        !horizon || matches!(self, Self::Log | Self::Worlds | Self::Screenshots | Self::Notes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Page;
+
+    #[test]
+    fn resource_pack_editor_is_only_available_for_java() {
+        assert!(Page::ResourcePacks.available(false));
+        assert!(!Page::ResourcePacks.available(true));
     }
 }
 
@@ -297,6 +312,7 @@ impl InstanceWindow {
             .cloned()
             .unwrap_or(Instance {
                 id: self.instance_id.clone(),
+                kind: InstanceKind::Java,
                 root: Default::default(),
                 name: self.instance_id.clone(),
                 icon_key: "default".into(),
@@ -323,8 +339,9 @@ impl InstanceWindow {
             )
             .child(div().h(px(1.)).bg(rgb(0x1c1c1c)));
 
-        for page in Page::all() {
+        for page in Page::all().into_iter().filter(|page| page.available(inst.is_horizon())) {
             let active = self.page == page;
+            let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
             col = col.child(
                 div()
                     .id(SharedString::from(format!("page-{:?}", page)))
@@ -337,7 +354,7 @@ impl InstanceWindow {
                         this.page = page;
                         cx.notify();
                     }))
-                    .child(page.label().to_string()),
+                    .child(label),
             );
         }
 
@@ -351,7 +368,7 @@ impl InstanceWindow {
                         .disabled(running)
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             let id = this.instance_id.clone();
-                            this.app.update(cx, |app, _cx| app.start_launch(&id));
+                            this.app.update(cx, |app, cx| app.start_launch(&id, cx));
                             cx.notify();
                         })),
                 ),
@@ -829,6 +846,9 @@ impl InstanceWindow {
             cx.notify();
             return;
         };
+        if !Page::Servers.available(instance.is_horizon()) {
+            return;
+        }
         let game_root = instance.game_root();
         if let (Some(list), Some(snapshot)) = (&mut self.servers, &mut self.servers_snapshot) {
             match snapshot.save_or_reload(&game_root, list) {
@@ -1095,6 +1115,9 @@ impl InstanceWindow {
 
 impl Render for InstanceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if !self.page.available(self.instance(cx).is_horizon()) {
+            self.page = Page::Log;
+        }
         let running = self.servers_running(cx);
         if self.servers_was_running && !running {
             self.servers = None;

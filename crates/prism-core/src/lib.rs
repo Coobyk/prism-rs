@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod export;
+pub mod horizon;
 pub mod import;
 pub mod ini;
 pub mod instance;
@@ -25,5 +26,5 @@ pub mod settings;
 pub mod servers;
 
 pub use auth::AccountList;
-pub use instance::{Instance, InstanceGroups, InstanceList};
+pub use instance::{Instance, InstanceGroups, InstanceKind, InstanceList};
 pub use paths::Paths;
