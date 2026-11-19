@@ -152,6 +152,38 @@ async fn installs_skips_server_and_reports_missing_files() {
 }
 
 #[tokio::test]
+async fn reports_url_less_files_without_usable_curseforge_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        root: dir.path().into(),
+    };
+    let mut m = manifest("http://127.0.0.1:1");
+    m.files = serde_json::from_value(json!([
+        {"path":"mods","name":"no-id.jar"},
+        {"path":"config","name":"empty-url.cfg","url":" ","curseforge":{"project":0,"file":2}},
+        {"path":"mods","name":"partial-id.jar","curseforge":{"project":3,"file":0}}
+    ]))
+    .unwrap();
+    let out = FtbApi::new(Arc::new(Downloader::new()))
+        .install_manifest(&paths, &pack(), &m, &FlameApi::new())
+        .await
+        .unwrap();
+    assert_eq!(out.missing_files.len(), 3);
+    assert_eq!(out.curseforge_key_issue, None);
+    let report =
+        std::fs::read_to_string(out.instance.root.join(CURSEFORGE_MISSING_FILES_REPORT)).unwrap();
+    for (file, expected) in out.missing_files.iter().zip([
+        "mods/no-id.jar",
+        "config/empty-url.cfg",
+        "mods/partial-id.jar",
+    ]) {
+        assert_eq!(file.filename.as_deref(), Some(expected));
+        assert!(report.contains(expected));
+        assert!(!out.instance.game_root().join(expected).exists());
+    }
+}
+
+#[tokio::test]
 async fn installs_square_artwork_best_effort() {
     let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDAT\x78\xda\x63\x64\xf8\x0f\x00\x01\x05\x01\x01\x27\x18\xe3\x66\x00\x00\x00\x00IEND\xae\x42\x60\x82";
     for (status, blocked_storage, expected_icon) in [
