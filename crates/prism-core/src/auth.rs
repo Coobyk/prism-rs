@@ -73,7 +73,11 @@ impl AccountList {
         let refreshed = refresh(account.clone())
             .await
             .map_err(|_| AuthError::SignInAgain)?;
-        let mut updated = self.clone();
+        let mut updated: AccountList = match std::fs::read_to_string(path) {
+            Ok(json) => serde_json::from_str(&json)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => AccountList::default(),
+            Err(error) => return Err(error.into()),
+        };
         for stored in &mut updated.accounts {
             if stored.id == account.id {
                 *stored = refreshed.clone();
@@ -460,6 +464,53 @@ mod tests {
         );
         assert_eq!(saved.accounts[0].expires_at, 5000);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn refresh_preserves_accounts_edited_on_disk() {
+        for remove_original in [false, true] {
+            let path =
+                std::env::temp_dir().join(format!("prism-auth-{}.json", uuid::Uuid::new_v4()));
+            let mut captured = AccountList::default();
+            captured.add_offline("Original");
+            captured.accounts[0].account_type = AccountType::Msa;
+            captured.save(&path).unwrap();
+            let mut current = captured.clone();
+            let added_id = current.add_offline("Added").id.clone();
+            current.active = Some(added_id.clone());
+            if remove_original {
+                current.accounts.remove(0);
+            }
+            let session = captured
+                .session_for_launch_with(&path, 1000, |mut account| async {
+                    current.save(&path).unwrap();
+                    account.access_token = "refreshed-access".into();
+                    account.refresh_token = Some("refreshed-refresh".into());
+                    account.expires_at = 5000;
+                    Ok(account)
+                })
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(session.access_token, "refreshed-access");
+            let saved = AccountList::load(&path);
+            assert_eq!(saved.active.as_deref(), Some(added_id.as_str()));
+            assert_eq!(saved.accounts.last().unwrap().player_name, "Added");
+            assert_eq!(saved.accounts.len(), if remove_original { 1 } else { 2 });
+            if !remove_original {
+                assert_eq!(saved.accounts[0].access_token, "refreshed-access");
+                assert_eq!(
+                    saved.accounts[0].refresh_token.as_deref(),
+                    Some("refreshed-refresh")
+                );
+                assert_eq!(saved.accounts[0].expires_at, 5000);
+            }
+            assert_eq!(
+                serde_json::to_value(&captured).unwrap(),
+                serde_json::to_value(&saved).unwrap()
+            );
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]
