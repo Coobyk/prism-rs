@@ -311,7 +311,7 @@ pub fn render(
                 .filter(|e| e.client && e.optional && !e.hidden && !e.library)
                 .count();
             body = body.child(div().text_sm().text_color(rgb(0xb8b8b8)).child(format!(
-                    "Minecraft {} · {} optional mods selected",
+                    "Minecraft {} · Optional mods selected: {}",
                     m.minecraft,
                     m.mods
                         .iter()
@@ -423,6 +423,8 @@ pub fn render(
                         .child(
                             Button::new(SharedString::from(format!("atl-mod-{i}")))
                                 .label(if checked { "[x]" } else { "[ ]" })
+                                .w(px(40.))
+                                .flex_shrink_0()
                                 .border_1()
                                 .border_color(rgb(0x777777))
                                 .disabled(busy)
