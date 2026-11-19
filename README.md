@@ -76,6 +76,11 @@ home paths, and tokens; review the log for other private information before shar
 `.log.gz` files. Select a file to view, search, copy, or share it. Stop Minecraft
 before deleting logs; deletion requires confirmation.
 
+Open **Screenshots** to browse Minecraft PNGs as thumbnails. Select one to rename
+it, delete it with confirmation, or share it on Imgur. To enable sharing, start
+prism-rs with your own Imgur application client ID in `PRISM_RS_IMGUR_CLIENT_ID`.
+Each upload asks for confirmation before sending the selected screenshot.
+
 Open **Data Packs** on a Java instance and select a saved world. Use **Add ZIP…** for
 an archive with `pack.mcmeta` at its root, or use **Browse Modrinth** to install a
 compatible data pack. Enable, disable, or remove installed packs and open that
@@ -155,6 +160,7 @@ Working today:
 - Global + per-instance settings (memory, Java, window size)
 - Live console with log capture, search, copy, and confirmed mclo.gs sharing; kill running instances
 - Other Logs page: browse and decompress Java logs, search, copy, share, and confirm deletion
+- Screenshots page: thumbnail grid, rename, confirmed delete, and opt-in Imgur upload
 - Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
 - Worlds page: save details, rename, copy, confirmed delete, and folder browsing
 - News feed, grouped instance list, persistent config
@@ -162,8 +168,7 @@ Working today:
 - Direct instance launch from the CLI and Linux desktop shortcuts
 
 Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
-import, CurseForge export, screenshots
-upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
+import, CurseForge export, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options.
 
 ## License

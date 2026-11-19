@@ -23,6 +23,9 @@ use datapacks_page::DataPacksPage;
 #[path = "logs_page.rs"]
 mod logs_page;
 use logs_page::LogsPages;
+#[path = "screenshots_page.rs"]
+mod screenshots_page;
+use screenshots_page::ScreenshotsPage;
 #[path = "worlds_page.rs"]
 mod worlds_page;
 use worlds_page::WorldsPage;
@@ -242,6 +245,7 @@ pub struct InstanceWindow {
     servers_was_running: bool,
     datapacks: DataPacksPage,
     logs: LogsPages,
+    screenshots: ScreenshotsPage,
     worlds: WorldsPage,
     pub(crate) settings_editor: Option<crate::instance_settings_page::SettingsEditor>,
 }
@@ -264,6 +268,7 @@ impl InstanceWindow {
             servers_was_running: false,
             datapacks: DataPacksPage::default(),
             logs: LogsPages::default(),
+            screenshots: ScreenshotsPage::default(),
             worlds: WorldsPage::default(),
             settings_editor: None,
         }
@@ -611,6 +616,10 @@ impl InstanceWindow {
                             if page == Page::OtherLogs {
                                 this.refresh_other_logs(cx);
                             }
+                            if page == Page::Screenshots {
+                                this.load_screenshots(None, cx);
+                            }
+                            this.screenshots.on_navigation();
                         }
                         this.page = page;
                         cx.notify();
@@ -1345,37 +1354,6 @@ impl InstanceWindow {
         panel.into_any_element()
     }
 
-    fn render_screenshots_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let inst = self.instance(cx);
-        let dir = inst.game_root().join("screenshots");
-        let mut list = div().flex().flex_col().gap_1().p_3();
-        let mut found = false;
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
-                if !name.to_lowercase().ends_with(".png") {
-                    continue;
-                }
-                found = true;
-                list = list.child(
-                    div().px_3().py_2().bg(rgb(0x2b2b2b)).rounded_md().child(name.to_string()),
-                );
-            }
-        }
-        if !found {
-            list = list.child(div().text_color(rgb(0x777777)).child("No screenshots."));
-        }
-
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(self.page_header(cx, dir.display().to_string()).into_any_element())
-            .child(div().id("shots-scroll").flex_1().overflow_y_scroll().child(list))
-            .into_any_element()
-    }
 }
 
 impl Render for InstanceWindow {
