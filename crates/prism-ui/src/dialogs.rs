@@ -232,6 +232,8 @@ pub struct PromptState {
     pub target_id: String,
     pub input: Entity<InputState>,
     pub error: Option<String>,
+    pub export_fields: Option<[Entity<InputState>; 3]>,
+    pub mrpack: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -239,6 +241,7 @@ pub enum PromptKind {
     Rename,
     ChangeGroup,
     ImportPath,
+    Export,
 }
 
 impl PromptState {
@@ -247,6 +250,7 @@ impl PromptState {
             PromptKind::Rename => "Instance name",
             PromptKind::ChangeGroup => "Group name (empty = none)",
             PromptKind::ImportPath => "Path or URL to .zip/.mrpack",
+            PromptKind::Export => "Destination path (must not already exist)",
         };
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         input.update(cx, |s, cx| {
@@ -257,6 +261,15 @@ impl PromptState {
             target_id,
             input,
             error: None,
+            export_fields: if kind == PromptKind::Export {
+                Some(
+                    ["Pack name", "Version (e.g. 1.0.0)", "Summary"]
+                        .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(label))),
+                )
+            } else {
+                None
+            },
+            mrpack: false,
         }
     }
 
@@ -265,6 +278,7 @@ impl PromptState {
             PromptKind::Rename => "Rename Instance",
             PromptKind::ChangeGroup => "Change Group",
             PromptKind::ImportPath => "Import Instance",
+            PromptKind::Export => "Export Instance",
         };
         let input = self.input.clone();
 
@@ -295,11 +309,62 @@ impl PromptState {
             .flex_col()
             .gap_3()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::BOLD)
+                    .child(title),
+            )
             .child(Input::new(&input));
 
+        if let Some(fields) = &self.export_fields {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("export-zip")
+                            .label(if self.mrpack {
+                                "Prism zip"
+                            } else {
+                                "✓ Prism zip"
+                            })
+                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                                if let Some(prompt) = this.prompt.as_mut() {
+                                    prompt.mrpack = false;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("export-mrpack")
+                            .label(if self.mrpack {
+                                "✓ Modrinth mrpack"
+                            } else {
+                                "Modrinth mrpack"
+                            })
+                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                                if let Some(prompt) = this.prompt.as_mut() {
+                                    prompt.mrpack = true;
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+            if self.mrpack {
+                for field in fields {
+                    panel = panel.child(Input::new(field));
+                }
+            }
+        }
+
         if let Some(e) = &self.error {
-            panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
+            panel = panel.child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(rgb(0xff6666))
+                    .child(e.clone()),
+            );
         }
 
         panel = panel.child(
@@ -334,6 +399,52 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     let value = prompt.input.read(cx).value().trim().to_string();
     let kind = prompt.kind;
     let target = prompt.target_id.clone();
+    if kind == PromptKind::Export {
+        let mrpack = prompt.mrpack;
+        let fields = prompt.export_fields.as_ref().unwrap();
+        let metadata = prism_core::export::MrpackMetadata {
+            name: fields[0].read(cx).value().to_string(),
+            version: fields[1].read(cx).value().to_string(),
+            summary: fields[2].read(cx).value().to_string(),
+        };
+        let mut output = std::path::PathBuf::from(&value);
+        output.set_extension(if mrpack { "mrpack" } else { "zip" });
+        if value.is_empty() {
+            this.prompt.as_mut().unwrap().error = Some("Choose a destination path".into());
+            cx.notify();
+            return;
+        }
+        let instance = this.app.read(cx).instances.get(&target).cloned();
+        if let Some(instance) = instance {
+            let app = this.app.clone();
+            let runtime = app.read(cx).runtime.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            runtime.handle().spawn(async move {
+                let result = if mrpack {
+                    prism_core::export::export_mrpack(&instance, &output, metadata).await
+                } else {
+                    prism_core::export::export_zip(&instance, &output)
+                };
+                let message = match result {
+                    Ok(()) => format!("Exported: {}", output.display()),
+                    Err(e) => format!("Export failed: {e}"),
+                };
+                let _ = tx.send(message);
+            });
+            cx.spawn(async move |this, cx| {
+                if let Ok(message) = rx.await {
+                    let _ = app.update(cx, |app, _| {
+                        app.toast = Some((message, std::time::Instant::now()))
+                    });
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                }
+            })
+            .detach();
+        }
+        this.prompt = None;
+        cx.notify();
+        return;
+    }
 
     if kind == PromptKind::Rename && value.is_empty() {
         this.prompt.as_mut().unwrap().error = Some("Name cannot be empty.".to_string());
@@ -343,6 +454,7 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
 
     this.app.update(cx, |app, _cx| {
         match kind {
+            PromptKind::Export => unreachable!(),
             PromptKind::Rename => {
                 if let Some(inst) = app.instances.get_mut(&target) {
                     inst.name = value.clone();

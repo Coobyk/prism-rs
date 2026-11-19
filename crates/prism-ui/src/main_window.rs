@@ -334,6 +334,22 @@ impl MainWindow {
             )
             .child(toolbar_separator())
             .child(self.sidebar_button("rename", "Rename", enabled).on_click(cx.listener(Self::on_rename)))
+            .child(
+                self.sidebar_button("export", "Export", enabled)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let selected = this.app.read(cx).selected.clone();
+                        if let Some(id) = selected {
+                            this.prompt = Some(PromptState::new(
+                                crate::dialogs::PromptKind::Export,
+                                id,
+                                String::new(),
+                                window,
+                                cx,
+                            ));
+                            cx.notify();
+                        }
+                    })),
+            )
             .child(self.sidebar_button("change-icon", "Change Icon", enabled))
             .child(toolbar_separator())
             .child(
@@ -353,8 +369,10 @@ impl MainWindow {
                 self.sidebar_button("change-group", "Change Group", enabled)
                     .on_click(cx.listener(Self::on_change_group)),
             )
-            .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
-            .child(self.sidebar_button("export", "Export", enabled))
+            .child(
+                self.sidebar_button("view-folder", "View Folder", enabled)
+                    .on_click(cx.listener(Self::on_view_folder)),
+            )
             .child(self.sidebar_button("copy", "Copy", enabled))
             .child(
                 self.sidebar_button("delete", "Delete", enabled)
