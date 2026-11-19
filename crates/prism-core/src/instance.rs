@@ -61,7 +61,9 @@ impl Instance {
 
     pub fn worlds(&self) -> Vec<String> {
         let mut worlds: Vec<_> = std::fs::read_dir(self.game_root().join("saves"))
-            .into_iter().flatten().flatten()
+            .into_iter()
+            .flatten()
+            .flatten()
             .filter(|entry| entry.path().is_dir() && entry.path().join("level.dat").is_file())
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
@@ -348,7 +350,9 @@ mod tests {
         let saves = inst.game_root().join("saves");
         for name in ["zebra", "Alpha", "empty"] {
             std::fs::create_dir_all(saves.join(name)).unwrap();
-            if name != "empty" { std::fs::write(saves.join(name).join("level.dat"), []).unwrap(); }
+            if name != "empty" {
+                std::fs::write(saves.join(name).join("level.dat"), []).unwrap();
+            }
         }
         std::fs::write(saves.join("file"), []).unwrap();
         assert_eq!(inst.worlds(), ["Alpha", "zebra"]);

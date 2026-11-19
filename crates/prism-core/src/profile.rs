@@ -64,11 +64,13 @@ impl LaunchProfile {
     }
 
     fn has_game_feature(&self, feature: &str) -> bool {
-        self.modern_arguments.as_ref().is_some_and(|args| args.game.iter().any(|arg| {
-            matches!(arg, meta::ArgValue::Conditional { rules, .. } if rules.iter().any(|rule| {
-                rule.features.as_ref().is_some_and(|features| features.contains_key(feature))
-            }))
-        }))
+        self.modern_arguments.as_ref().is_some_and(|args| {
+            args.game.iter().any(|arg| {
+                matches!(arg, meta::ArgValue::Conditional { rules, .. } if rules.iter().any(|rule| {
+                    rule.features.as_ref().is_some_and(|features| features.contains_key(feature))
+                }))
+            })
+        })
     }
 
     /// Resolve a Mojang version JSON into a platform-evaluated profile.

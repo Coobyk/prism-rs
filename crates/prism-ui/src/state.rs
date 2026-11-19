@@ -161,7 +161,11 @@ impl App {
         self.start_launch_with(id, None);
     }
 
-    pub fn start_launch_with(&mut self, id: &str, quick_play: Option<prism_core::launch::QuickPlayTarget>) {
+    pub fn start_launch_with(
+        &mut self,
+        id: &str,
+        quick_play: Option<prism_core::launch::QuickPlayTarget>,
+    ) {
         if self.is_running(id) {
             return;
         }
@@ -190,7 +194,9 @@ impl App {
         let id_owned = id.to_string();
         if let Some(target) = &settings.quick_play {
             let destination = match target {
-                prism_core::launch::QuickPlayTarget::Singleplayer { world } => format!("world {world:?}"),
+                prism_core::launch::QuickPlayTarget::Singleplayer { world } => {
+                    format!("world {world:?}")
+                }
                 _ => format!("server {}", target.address()),
             };
             log_lock(&log).push(format!("Quick Play: joining {destination}"));

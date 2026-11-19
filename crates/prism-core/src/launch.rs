@@ -12,6 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub const LAUNCHER_NAME: &str = "prism-rs";
+pub const MSA_CLIENT_ID: &str = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb";
+
+/// A world or server to join immediately after Minecraft starts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickPlayTarget {
     Singleplayer { world: String },
@@ -19,11 +22,14 @@ pub enum QuickPlayTarget {
 }
 
 impl QuickPlayTarget {
+    /// Parse a server address, using Minecraft's default port when omitted.
     pub fn parse_server(address: &str) -> Result<Self, String> {
         let address = address.trim();
         let (host, port) = if let Some(rest) = address.strip_prefix('[') {
             let (host, suffix) = rest.split_once(']').ok_or("Missing closing bracket")?;
-            let port = if suffix.is_empty() { None } else {
+            let port = if suffix.is_empty() {
+                None
+            } else {
                 Some(suffix.strip_prefix(':').ok_or("Invalid server address")?)
             };
             (host, port)
@@ -40,7 +46,10 @@ impl QuickPlayTarget {
             Some(port) => port.parse::<u16>().map_err(|_| "Invalid server port")?,
             None => 25565,
         };
-        Ok(Self::Multiplayer { host: host.into(), port })
+        Ok(Self::Multiplayer {
+            host: host.into(),
+            port,
+        })
     }
 
     pub fn address(&self) -> String {
@@ -51,7 +60,6 @@ impl QuickPlayTarget {
         }
     }
 }
-pub const MSA_CLIENT_ID: &str = "c36a9fb6-4f2a-41ff-90bd-ae7cc92031eb";
 
 /// Auth data handed to the launched game.
 #[derive(Debug, Clone, Default)]
@@ -535,8 +543,20 @@ impl Launcher {
         // Game arguments.
         if let Some(args) = &profile.modern_arguments {
             let mut features = std::collections::BTreeMap::new();
-            features.insert("is_quick_play_singleplayer".into(), matches!(settings.quick_play, Some(QuickPlayTarget::Singleplayer { .. })));
-            features.insert("is_quick_play_multiplayer".into(), matches!(settings.quick_play, Some(QuickPlayTarget::Multiplayer { .. })));
+            features.insert(
+                "is_quick_play_singleplayer".into(),
+                matches!(
+                    settings.quick_play,
+                    Some(QuickPlayTarget::Singleplayer { .. })
+                ),
+            );
+            features.insert(
+                "is_quick_play_multiplayer".into(),
+                matches!(
+                    settings.quick_play,
+                    Some(QuickPlayTarget::Multiplayer { .. })
+                ),
+            );
             for arg in &args.game {
                 match arg {
                     meta::ArgValue::Str(s) => command.push(substitute(s)),
@@ -558,7 +578,12 @@ impl Launcher {
 
         if !profile.supports_quick_play_multiplayer() {
             if let Some(QuickPlayTarget::Multiplayer { host, port }) = &settings.quick_play {
-                command.extend(["--server".into(), host.clone(), "--port".into(), port.to_string()]);
+                command.extend([
+                    "--server".into(),
+                    host.clone(),
+                    "--port".into(),
+                    port.to_string(),
+                ]);
             }
         }
         let mut env = settings.env.clone();
@@ -623,55 +648,122 @@ mod tests {
 
     #[test]
     fn server_addresses() {
-        for (input, host, port) in [(" example.org ", "example.org", 25565), ("h:42", "h", 42), ("[::1]:123", "::1", 123), ("::1", "::1", 25565), ("[::1]", "::1", 25565)] {
-            assert_eq!(QuickPlayTarget::parse_server(input).unwrap(), QuickPlayTarget::Multiplayer { host: host.into(), port });
+        for (input, host, port) in [
+            (" example.org ", "example.org", 25565),
+            ("h:42", "h", 42),
+            ("[::1]:123", "::1", 123),
+            ("::1", "::1", 25565),
+            ("[::1]", "::1", 25565),
+        ] {
+            assert_eq!(
+                QuickPlayTarget::parse_server(input).unwrap(),
+                QuickPlayTarget::Multiplayer {
+                    host: host.into(),
+                    port
+                }
+            );
         }
-        for input in ["", " ", ":12", "h:", "h:no", "h:65536", "[::1", "[]:12", "[::1]oops"] {
+        for input in [
+            "",
+            " ",
+            ":12",
+            "h:",
+            "h:no",
+            "h:65536",
+            "[::1",
+            "[]:12",
+            "[::1]oops",
+        ] {
             assert!(QuickPlayTarget::parse_server(input).is_err(), "{input}");
         }
-        assert_eq!(QuickPlayTarget::parse_server("[::1]:42").unwrap().address(), "[::1]:42");
+        assert_eq!(
+            QuickPlayTarget::parse_server("[::1]:42").unwrap().address(),
+            "[::1]:42"
+        );
     }
 
     #[test]
     fn quick_play_commands() {
-        let paths = Paths { root: std::env::temp_dir().join("prism-quick-play-command-test") };
+        let paths = Paths {
+            root: std::env::temp_dir().join("prism-quick-play-command-test"),
+        };
         let inst = crate::instance::Instance {
-            id: "test".into(), root: paths.root.clone(), name: "Test".into(),
-            icon_key: "default".into(), notes: String::new(), total_time_played: 0,
-            last_launch: 0, group: None,
+            id: "test".into(),
+            root: paths.root.clone(),
+            name: "Test".into(),
+            icon_key: "default".into(),
+            notes: String::new(),
+            total_time_played: 0,
+            last_launch: 0,
+            group: None,
         };
         let mut settings = LaunchSettings::for_instance(&inst, &paths);
         let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
         let mut profile = LaunchProfile::default();
         profile.modern_arguments = Some(meta::Arguments {
             jvm: vec![],
-            game: [("singleplayer", "Singleplayer"), ("multiplayer", "Multiplayer")].into_iter().map(|(feature, token)| {
-                meta::ArgValue::Conditional {
-                    rules: vec![meta::Rule { action: meta::RuleAction::Allow, os: None,
-                        features: Some([(format!("is_quick_play_{feature}"), true)].into()) }],
-                    value: vec![format!("--quickPlay{token}"), format!("${{quickPlay{token}}}")],
-                }
-            }).collect(),
+            game: [
+                ("singleplayer", "Singleplayer"),
+                ("multiplayer", "Multiplayer"),
+            ]
+            .into_iter()
+            .map(|(feature, token)| meta::ArgValue::Conditional {
+                rules: vec![meta::Rule {
+                    action: meta::RuleAction::Allow,
+                    os: None,
+                    features: Some([(format!("is_quick_play_{feature}"), true)].into()),
+                }],
+                value: vec![
+                    format!("--quickPlay{token}"),
+                    format!("${{quickPlay{token}}}"),
+                ],
+            })
+            .collect(),
         });
         assert!(profile.supports_quick_play_singleplayer());
         assert!(profile.supports_quick_play_multiplayer());
         let command = launcher.build_command(&settings, None, &profile).command;
         assert!(!command.iter().any(|arg| arg.contains("quickPlay")));
         for (target, flag, value) in [
-            (QuickPlayTarget::parse_server("host:42").unwrap(), "--quickPlayMultiplayer", "host:42"),
-            (QuickPlayTarget::Singleplayer { world: "World".into() }, "--quickPlaySingleplayer", "World"),
+            (
+                QuickPlayTarget::parse_server("host:42").unwrap(),
+                "--quickPlayMultiplayer",
+                "host:42",
+            ),
+            (
+                QuickPlayTarget::Singleplayer {
+                    world: "World".into(),
+                },
+                "--quickPlaySingleplayer",
+                "World",
+            ),
         ] {
             settings.quick_play = Some(target);
             let command = launcher.build_command(&settings, None, &profile).command;
             assert!(command.windows(2).any(|args| args == [flag, value]));
-            assert_eq!(command.iter().filter(|arg| arg.starts_with("--quickPlay")).count(), 1);
+            assert_eq!(
+                command
+                    .iter()
+                    .filter(|arg| arg.starts_with("--quickPlay"))
+                    .count(),
+                1
+            );
         }
         profile.modern_arguments = None;
         profile.legacy_arguments = Some("--username ${auth_player_name}".into());
         settings.quick_play = Some(QuickPlayTarget::parse_server("h:43").unwrap());
-        assert!(launcher.build_command(&settings, None, &profile).command.ends_with(&["--server".into(), "h".into(), "--port".into(), "43".into()]));
-        settings.quick_play = Some(QuickPlayTarget::Singleplayer { world: "World".into() });
-        assert!(!launcher.build_command(&settings, None, &profile).command.iter().any(|arg| arg.contains("quickPlay")));
+        assert!(launcher
+            .build_command(&settings, None, &profile)
+            .command
+            .ends_with(&["--server".into(), "h".into(), "--port".into(), "43".into()]));
+        settings.quick_play = Some(QuickPlayTarget::Singleplayer {
+            world: "World".into(),
+        });
+        assert!(!launcher
+            .build_command(&settings, None, &profile)
+            .command
+            .iter()
+            .any(|arg| arg.contains("quickPlay")));
     }
 
     #[test]

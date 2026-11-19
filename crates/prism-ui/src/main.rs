@@ -128,12 +128,22 @@ fn headless_import(path: &str) -> i32 {
 fn headless_prepare(version: &str, args: &[String]) -> i32 {
     let quick_play = match args {
         [] => None,
-        [flag, world] if flag == "--world" && !world.is_empty() => Some(QuickPlayTarget::Singleplayer { world: world.clone() }),
+        [flag, world] if flag == "--world" && !world.is_empty() => {
+            Some(QuickPlayTarget::Singleplayer {
+                world: world.clone(),
+            })
+        }
         [flag, address] if flag == "--server" => match QuickPlayTarget::parse_server(address) {
             Ok(target) => Some(target),
-            Err(error) => { eprintln!("{error}"); return 1; }
+            Err(error) => {
+                eprintln!("{error}");
+                return 1;
+            }
         },
-        _ => { eprintln!("Expected [--world <name> | --server <host[:port]>]"); return 1; }
+        _ => {
+            eprintln!("Expected [--world <name> | --server <host[:port]>]");
+            return 1;
+        }
     };
     let paths = prism_core::Paths::new();
     paths.ensure().expect("failed to create data dirs");

@@ -766,22 +766,35 @@ impl InstanceWindow {
         let worlds = inst.worlds();
         let running = self.app.read(cx).is_running(&inst.id);
         for (index, name) in worlds.iter().enumerate() {
-                let world = name.clone();
-                let id = inst.id.clone();
-                list = list.child(
-                    div()
-                        .flex().items_center().justify_between()
-                        .px_3()
-                        .py_2()
-                        .bg(rgb(0x2b2b2b))
-                        .rounded_md()
-                        .child(name.clone())
-                        .child(Button::new(("join-world", index)).label("Join").disabled(running)
+            let world = name.clone();
+            let id = inst.id.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(0x2b2b2b))
+                    .rounded_md()
+                    .child(name.clone())
+                    .child(
+                        Button::new(("join-world", index))
+                            .label("Join")
+                            .disabled(running)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.app.update(cx, |app, _| app.start_launch_with(&id, Some(prism_core::launch::QuickPlayTarget::Singleplayer { world: world.clone() })));
+                                this.app.update(cx, |app, _| {
+                                    app.start_launch_with(
+                                        &id,
+                                        Some(prism_core::launch::QuickPlayTarget::Singleplayer {
+                                            world: world.clone(),
+                                        }),
+                                    )
+                                });
                                 cx.notify();
-                            }))),
-                );
+                            })),
+                    ),
+            );
         }
         if worlds.is_empty() {
             list = list.child(div().text_color(rgb(0x777777)).child("No worlds."));

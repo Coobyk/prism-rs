@@ -342,14 +342,22 @@ impl MainWindow {
                 self.sidebar_button("launch", "Launch", enabled && !is_running)
                     .on_click(cx.listener(Self::on_launch)),
             )
-            .child(self.sidebar_button("quick-play", "Quick Play…", enabled && !is_running)
-                .on_click(cx.listener(|this, _, window, cx| {
-                    let app = this.app.read(cx);
-                    if let Some(inst) = app.selected.as_ref().and_then(|id| app.instances.get(id)).cloned() {
-                        this.quick_play = Some(crate::dialogs::QuickPlayState::new(&inst, window, cx));
-                        cx.notify();
-                    }
-                })))
+            .child(
+                self.sidebar_button("quick-play", "Quick Play…", enabled && !is_running)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let app = this.app.read(cx);
+                        if let Some(inst) = app
+                            .selected
+                            .as_ref()
+                            .and_then(|id| app.instances.get(id))
+                            .cloned()
+                        {
+                            this.quick_play =
+                                Some(crate::dialogs::QuickPlayState::new(&inst, window, cx));
+                            cx.notify();
+                        }
+                    })),
+            )
             .child(
                 self.sidebar_button("kill", "Kill", is_running)
                     .on_click(cx.listener(Self::on_kill)),
