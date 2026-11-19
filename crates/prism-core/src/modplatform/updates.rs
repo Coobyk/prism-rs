@@ -810,7 +810,7 @@ file-id = 3509043
     }
 
     #[tokio::test]
-    async fn curseforge_prefers_the_latest_compatible_release_over_betas() {
+    async fn curseforge_finds_a_compatible_release_on_a_later_page() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let api =
             FlameApi::with_test_endpoint(format!("http://{}", listener.local_addr().unwrap()));
@@ -838,9 +838,21 @@ file-id = 3509043
                         "GET /mods/42/files?",
                         "gameVersion=1.20.1",
                         "modLoaderType=4",
+                        "index=0",
                     ],
-                    serde_json::to_vec(&serde_json::json!({"data": [beta, wrong_game, newer]}))
-                        .unwrap(),
+                    serde_json::to_vec(&serde_json::json!({
+                        "data": [beta, wrong_game],
+                        "pagination": {"index": 0, "totalCount": 3}
+                    }))
+                    .unwrap(),
+                ),
+                (
+                    &["GET /mods/42/files?", "index=2"],
+                    serde_json::to_vec(&serde_json::json!({
+                        "data": [newer],
+                        "pagination": {"index": 2, "totalCount": 3}
+                    }))
+                    .unwrap(),
                 ),
             ],
         );

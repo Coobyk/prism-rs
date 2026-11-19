@@ -186,16 +186,40 @@ impl FlameApi {
         #[derive(Deserialize)]
         struct Response {
             data: Vec<FlameFile>,
+            pagination: Pagination,
         }
-        let resp = self.get(&format!("/mods/{project_id}/files"))?
-            .query(&[("gameVersion", game_version)])
-            .query(&[("modLoaderType", loader), ("pageSize", 50)])
-            .send()
-            .await?;
-        if !resp.status().is_success() {
-            return Err(Self::lookup_error(resp.status(), format!("CurseForge project {project_id}")));
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Pagination {
+            index: usize,
+            total_count: usize,
         }
-        Ok(resp.json::<Response>().await?.data)
+
+        let mut files = Vec::new();
+        let path = format!("/mods/{project_id}/files");
+        loop {
+            let index = files.len();
+            let resp = self
+                .get(&path)?
+                .query(&[("gameVersion", game_version)])
+                .query(&[("modLoaderType", loader)])
+                .query(&[("pageSize", 50), ("index", index)])
+                .send()
+                .await?;
+            if !resp.status().is_success() {
+                return Err(Self::lookup_error(resp.status(), format!("CurseForge project {project_id}")));
+            }
+            let page: Response = resp.json().await?;
+            if page.pagination.index != index || (page.data.is_empty() && index < page.pagination.total_count) {
+                return Err(PlatformError::Request(format!(
+                    "incomplete CurseForge file listing for project {project_id} at index {index}"
+                )));
+            }
+            files.extend(page.data);
+            if files.len() >= page.pagination.total_count {
+                return Ok(files);
+            }
+        }
     }
 
     pub async fn project_resource_type(&self, project_id: i64) -> Result<ResourceType, PlatformError> {
