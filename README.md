@@ -43,6 +43,28 @@ Files unavailable for automatic download are listed in
 `curseforge-missing-files.txt` in the new instance folder and can be added
 manually to the appropriate Minecraft folder (`mods`, `resourcepacks`, or `shaderpacks`).
 
+### Horizon
+
+Install the [official Horizon launcher](https://playhorizon.dev/download). Put
+`horizon-launcher` on your PATH or set **Horizon launcher path** in Prism's
+global settings. In **Add Instance**, choose **Horizon** to create a Horizon
+instance, then select it and click **Launch**.
+
+Prism creates a hidden `.prism-horizon-link` file inside the Horizon instance's
+game folder. It lets Prism recognize the same instance after a move and reject
+a replacement that reuses its ID. Keep the marker when moving the folder or
+backing it up; a full game-folder backup that includes hidden files keeps it.
+
+Horizon manages its own game builds, Microsoft accounts, preparation and mods.
+Use the Horizon launcher to install a build and sign in with an account that
+owns Minecraft: Java Edition. The corresponding CLI commands are
+`horizon-launcher install latest`, `horizon-launcher account sign-in`, and
+`horizon-launcher prepare` (if the build needs assets prepared).
+**Remove from Prism** removes only the link; the Horizon game folder and saves
+remain. Manage Horizon mods, servers, and exports through the official Horizon
+launcher, and select resource packs in the Horizon game. Prism's mod browser,
+server editor, resource-pack editor, and export are for Java instances.
+
 ## Architecture
 
 ```
@@ -91,7 +113,7 @@ Working today:
 - Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
 
 Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
-import, CurseForge export, servers.dat NBT editing, screenshots
+import, CurseForge export, screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options, quick-play singleplayer/multiplayer dialogs.
 

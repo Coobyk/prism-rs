@@ -1,9 +1,10 @@
 //! Application state shared across the UI.
 
-use prism_core::launch::{AuthSession, LaunchSettings, PreparedLaunch};
+use prism_core::horizon::HorizonLauncher;
+use prism_core::launch::{AuthSession, LaunchSettings};
 use prism_core::meta::VersionManifest;
 use prism_core::net::CoreRuntime;
-use prism_core::{AccountList, InstanceList, Paths};
+use prism_core::{AccountList, InstanceKind, InstanceList, Paths};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -157,7 +158,7 @@ impl App {
 
     /// Kick off launching the instance. The heavy lifting runs on the core
     /// tokio runtime; progress lands in `running[id]`.
-    pub fn start_launch(&mut self, id: &str) {
+    pub fn start_launch(&mut self, id: &str, cx: &mut gpui_kit::Context<Self>) {
         if self.is_running(id) {
             return;
         }
@@ -166,6 +167,40 @@ impl App {
         };
         let running = RunningInstance::new();
         self.running.insert(id.to_string(), running.clone());
+
+        if let InstanceKind::Horizon { id, home, token } = inst.kind {
+            let config = self.paths.global_config();
+            log_lock(&running.log).push(format!("Launching Horizon instance {:?}", inst.name));
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            let log = running.log.clone();
+            self.runtime.handle().spawn_blocking(move || {
+                let settings = prism_core::settings::Settings::load(&config);
+                let launcher = HorizonLauncher::from_settings(&settings);
+                let result = launcher.play(&id, token).map(|(child, current_home)| {
+                    if home != current_home {
+                        let _ = tx.send(current_home);
+                    }
+                    child
+                });
+                monitor_launch(running, "Horizon", result);
+            });
+            cx.spawn(async move |this, cx| {
+                if let Ok(current_home) = rx.await {
+                    let _ = this.update(cx, |app, cx| {
+                        let Some(instance) = app.instances.get_mut(&inst.id) else { return };
+                        let InstanceKind::Horizon { token: current_token, .. } = &instance.kind else { return };
+                        if *current_token != token {
+                            return;
+                        }
+                        if let Err(error) = instance.save_horizon_home(current_home) {
+                            log_lock(&log).push(format!("Could not save the moved Horizon game folder: {error}"));
+                        }
+                        cx.notify();
+                    });
+                }
+            }).detach();
+            return;
+        }
 
         let settings = LaunchSettings::for_instance(&inst, &self.paths);
         let session: Option<AuthSession> = self
@@ -182,7 +217,6 @@ impl App {
             inst.name, settings.mc_version
         ));
 
-        let id_owned = id.to_string();
         self.runtime.spawn(async move {
             // 1. Version metadata.
             state_lock(&state, |s| *s = InstanceRunState::Preparing);
@@ -266,71 +300,14 @@ impl App {
             // 3. Command + spawn.
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
             log_lock(&log).push(format!("Command: {}", prepared.command.join(" ")));
-            match prepared.spawn() {
-                Ok(mut child) => {
-                    *pid_lock(&running.pid) = Some(child.id());
-                    state_lock(&state, |s| *s = InstanceRunState::Running);
-                    log_lock(&log).push(format!("Minecraft process ID: {}", child.id()));
-
-                    // Pump stdout/stderr into the log (std threads: the child
-                    // handles are plain std::process).
-                    if let Some(stdout) = child.stdout.take() {
-                        let log2 = log.clone();
-                        std::thread::spawn(move || {
-                            use std::io::BufRead;
-                            let reader = std::io::BufReader::new(stdout);
-                            for line in reader.lines().map_while(Result::ok) {
-                                log_lock(&log2).push(line);
-                            }
-                        });
-                    }
-                    if let Some(stderr) = child.stderr.take() {
-                        let log2 = log.clone();
-                        std::thread::spawn(move || {
-                            use std::io::BufRead;
-                            let reader = std::io::BufReader::new(stderr);
-                            for line in reader.lines().map_while(Result::ok) {
-                                log_lock(&log2).push(line);
-                            }
-                        });
-                    }
-
-                    // Wait on a dedicated thread so the async task returns.
-                    let log2 = log.clone();
-                    let state2 = state.clone();
-                    let pid2 = running.pid.clone();
-                    std::thread::spawn(move || {
-                        let status = child.wait();
-                        match status {
-                            Ok(code) if code.success() => {
-                                state_lock(&state2, |s| *s = InstanceRunState::Finished);
-                                log_lock(&log2).push("Game exited normally".to_string());
-                            }
-                            Ok(code) => {
-                                let e = format!("exit code {code}");
-                                state_lock(&state2, |s| *s = InstanceRunState::Crashed(e.clone()));
-                                log_lock(&log2).push(format!("Game crashed: {e}"));
-                            }
-                            Err(e) => {
-                                state_lock(&state2, |s| *s = InstanceRunState::Crashed(e.to_string()));
-                                log_lock(&log2).push(format!("Process error: {e}"));
-                            }
-                        }
-                        *pid_lock(&pid2) = None;
-                    });
-                }
-                Err(e) => {
-                    let msg = format!("Could not launch Minecraft: {e}");
-                    log_lock(&log).push(msg.clone());
-                    state_lock(&state, |s| *s = InstanceRunState::Crashed(msg));
-                }
-            }
-            let _ = downloader;
-            let _ = id_owned;
+            monitor_launch(running, "Minecraft", prepared.spawn());
         });
     }
 
     pub fn kill_instance(&mut self, id: &str) {
+        if !self.instances.get(id).is_some_and(|inst| !inst.is_horizon()) {
+            return;
+        }
         if let Some(running) = self.running.get(id) {
             if let Ok(Some(pid)) = running.pid.lock().map(|p| *p) {
                 // Best-effort kill through the OS.
@@ -388,6 +365,63 @@ impl Default for App {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn monitor_launch(
+    running: RunningInstance,
+    game: &str,
+    result: Result<std::process::Child, impl std::fmt::Display>,
+) {
+    let mut child = match result {
+        Ok(child) => child,
+        Err(e) => {
+            let message = format!("Could not launch {game}: {e}");
+            log_lock(&running.log).push(message.clone());
+            state_lock(&running.state, |state| *state = InstanceRunState::Crashed(message));
+            return;
+        }
+    };
+    *pid_lock(&running.pid) = Some(child.id());
+    state_lock(&running.state, |state| *state = InstanceRunState::Running);
+    log_lock(&running.log).push(format!("{game} process ID: {}", child.id()));
+
+    if let Some(pipe) = child.stdout.take() {
+        read_output(pipe, running.log.clone());
+    }
+    if let Some(pipe) = child.stderr.take() {
+        read_output(pipe, running.log.clone());
+    }
+    std::thread::spawn(move || {
+        let status = child.wait();
+        *pid_lock(&running.pid) = None;
+        match status {
+            Ok(code) if code.success() => {
+                log_lock(&running.log).push("Game exited normally".to_string());
+                state_lock(&running.state, |state| *state = InstanceRunState::Finished);
+            }
+            Ok(code) => {
+                let message = code.to_string();
+                log_lock(&running.log).push(format!("Game exited with {message}"));
+                state_lock(&running.state, |state| *state = InstanceRunState::Crashed(message));
+            }
+            Err(e) => {
+                log_lock(&running.log).push(format!("Process error: {e}"));
+                state_lock(&running.state, |state| *state = InstanceRunState::Crashed(e.to_string()));
+            }
+        }
+    });
+}
+
+fn read_output(
+    pipe: impl std::io::Read + Send + 'static,
+    log: Arc<Mutex<Vec<String>>>,
+) {
+    use std::io::BufRead;
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+            log_lock(&log).push(line);
+        }
+    });
 }
 
 pub fn format_play_time(seconds: u64) -> String {

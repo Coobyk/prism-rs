@@ -433,6 +433,9 @@ fn import_multimc(paths: &Paths, dir: &Path) -> Result<Instance, ImportError> {
         return Err(ImportError::UnknownFormat);
     };
     let inst = Instance::load(src).ok_or(ImportError::UnknownFormat)?;
+    if inst.is_horizon() {
+        return Err(ImportError::Other("Horizon links cannot be imported as Prism instances".into()));
+    }
 
     // Copy into the instances dir under a fresh unique name.
     let dest_root = paths.instances_dir();
