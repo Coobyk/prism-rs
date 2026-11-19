@@ -91,6 +91,109 @@ impl Component {
                 )));
             }
         }
+        for key in ["requires", "conflicts"] {
+            if self
+                .0
+                .get(key)
+                .is_some_and(|v| v.as_array().is_none_or(|a| !a.is_empty()))
+            {
+                return Err(invalid(format!(
+                    "Component {}: dependency field {key} is not supported",
+                    self.id()
+                )));
+            }
+        }
+        for key in ["version", "assets"] {
+            if let Some(value) = self.0.get(key) {
+                version_id(
+                    value
+                        .as_str()
+                        .ok_or_else(|| invalid(format!("{key} must be a string")))?,
+                )?;
+            }
+        }
+        if let Some(index) = self.0.get("assetIndex") {
+            version_id(
+                index["id"]
+                    .as_str()
+                    .ok_or_else(|| invalid("assetIndex requires an id"))?,
+            )?;
+            if !index["url"].is_string() {
+                return Err(invalid("assetIndex requires a URL"));
+            }
+        }
+        if let Some(java) = self.0.get("javaVersion") {
+            version_id(
+                java["component"]
+                    .as_str()
+                    .ok_or_else(|| invalid("javaVersion requires a component"))?,
+            )?;
+            if !java["majorVersion"]
+                .as_u64()
+                .is_some_and(|v| v > 0 && v < 1000)
+            {
+                return Err(invalid("Invalid Java majorVersion"));
+            }
+        }
+        if let Some(arguments) = self.0.get("arguments") {
+            if !arguments.is_object() {
+                return Err(invalid("arguments must be an object"));
+            }
+            for (key, args) in arguments.as_object().unwrap() {
+                if !["jvm", "game"].contains(&key.as_str()) {
+                    return Err(invalid(format!("Unsupported argument kind {key}")));
+                }
+                let args = args
+                    .as_array()
+                    .ok_or_else(|| invalid("arguments must contain arrays"))?;
+                for arg in args {
+                    if arg.is_string() {
+                        continue;
+                    }
+                    if !arg.is_object()
+                        || arg
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .any(|key| !["rules", "value"].contains(&key.as_str()))
+                    {
+                        return Err(invalid("Invalid conditional argument"));
+                    }
+                    validate_rules(&arg["rules"])?;
+                    if !arg["value"].is_string()
+                        && !arg["value"]
+                            .as_array()
+                            .is_some_and(|values| values.iter().all(Value::is_string))
+                    {
+                        return Err(invalid("Invalid argument value"));
+                    }
+                }
+            }
+        }
+        if let Some(downloads) = self.0.get("downloads") {
+            if self.id() != crate::version_components::MINECRAFT {
+                return Err(invalid("downloads is only supported on net.minecraft"));
+            }
+            if !downloads.is_object() {
+                return Err(invalid("downloads must be an object"));
+            }
+            for (kind, artifact) in downloads.as_object().unwrap() {
+                if ![
+                    "client",
+                    "client_mappings",
+                    "server",
+                    "server_mappings",
+                    "windows_server",
+                ]
+                .contains(&kind.as_str())
+                {
+                    return Err(invalid(format!("Unsupported download kind {kind}")));
+                }
+                if !artifact["url"].is_string() {
+                    return Err(invalid("Download requires a URL"));
+                }
+            }
+        }
         for field in ["libraries", "mavenFiles", "jarMods", "+jarMods", "+agents"] {
             if let Some(value) = self.0.get(field) {
                 let entries = value
@@ -183,6 +286,13 @@ impl Component {
                 profile.assets_id = assets;
             }
             profile.version_type = data.version_type;
+            if self.0.get("mainJar").is_none() {
+                if let Some(client) = self.0["downloads"].get("client") {
+                    let raw = serde_json::json!({"name":format!("net.minecraft:client:{}", profile.minecraft_version), "downloads":{"artifact":client}});
+                    let lib = library(&raw, root, false)?;
+                    profile.component_main_jar = Some(lib.clone());
+                }
+            }
         }
         for arg in self.0["+jvmArgs"].as_array().into_iter().flatten() {
             profile
@@ -201,40 +311,61 @@ impl Component {
             let mut resolved = LaunchProfile::from_mojang(&meta::VersionData::from_json(
                 &serde_json::json!({"libraries":[raw]}),
             )?);
-            if raw["MMC-hint"] == "local" {
+            if raw.get("MMC-hint").is_some()
+                || raw.get("MMC-filename").is_some()
+                || raw.get("MMC-absoluteUrl").is_some()
+            {
                 if !resolved.natives.is_empty() {
-                    return Err(invalid("Local native libraries are not supported."));
+                    return Err(invalid(
+                        "Native libraries with MMC overrides are not supported.",
+                    ));
                 }
                 resolved.libraries = vec![library(raw, root, false)?];
             }
             for lib in resolved.libraries {
-                let name: Vec<_> = lib.spec.split(':').take(2).collect();
+                let mut lib = lib;
+                if lib.url.is_none() && !lib.path.is_absolute() {
+                    lib.url = Some(format!(
+                        "https://libraries.minecraft.net/{}",
+                        lib.path.to_string_lossy().replace('\\', "/")
+                    ));
+                }
                 profile
                     .libraries
-                    .retain(|old| old.spec.split(':').take(2).collect::<Vec<_>>() != name);
+                    .retain(|old| library_key(&old.spec) != library_key(&lib.spec));
                 profile.libraries.push(lib);
             }
             profile.natives.extend(resolved.natives);
         }
         for raw in self.0["mavenFiles"].as_array().into_iter().flatten() {
-            profile.component_artifacts.push(library(raw, root, false)?);
+            if library_allowed(raw)? {
+                profile.component_artifacts.push(library(raw, root, false)?);
+            }
         }
         for key in ["jarMods", "+jarMods"] {
             if key == "+jarMods" && self.0.get("jarMods").is_some() {
                 continue;
             }
             for raw in self.0[key].as_array().into_iter().flatten() {
+                if !library_allowed(raw)? {
+                    continue;
+                }
                 let lib = library(raw, root, true)?;
                 profile.component_jar_mods.push(lib.clone());
                 profile.component_artifacts.push(lib);
             }
         }
         if let Some(raw) = self.0.get("mainJar") {
+            if !library_allowed(raw)? {
+                return Err(invalid("The mainJar is not applicable on this platform."));
+            }
             let lib = library(raw, root, false)?;
             profile.component_main_jar = Some(lib.clone());
-            profile.component_artifacts.push(lib);
         }
         for raw in self.0["+agents"].as_array().into_iter().flatten() {
+            if !library_allowed(raw)? {
+                continue;
+            }
             let lib = library(raw, root, false)?;
             let argument = raw
                 .get("argument")
@@ -250,6 +381,56 @@ impl Component {
         }
         Ok(())
     }
+}
+
+fn library_allowed(raw: &Value) -> io::Result<bool> {
+    let data = meta::VersionData::from_json(&serde_json::json!({"libraries":[raw]}))?;
+    Ok(meta::rules_allow(
+        &data.libraries[0].rules,
+        &Default::default(),
+    ))
+}
+
+fn library_key(spec: &str) -> (&str, &str, Option<&str>) {
+    let mut parts = spec.split(':');
+    let group = parts.next().unwrap_or_default();
+    let artifact = parts.next().unwrap_or_default();
+    parts.next();
+    (group, artifact, parts.next())
+}
+
+fn validate_rules(value: &Value) -> io::Result<()> {
+    let rules = value
+        .as_array()
+        .ok_or_else(|| invalid("rules must be an array"))?;
+    for rule in rules {
+        if !rule.is_object() || !matches!(rule["action"].as_str(), Some("allow" | "disallow")) {
+            return Err(invalid("Invalid rule action"));
+        }
+        for key in rule.as_object().unwrap().keys() {
+            if !["action", "os", "features"].contains(&key.as_str()) {
+                return Err(invalid(format!("Unsupported rule field {key}")));
+            }
+        }
+        if let Some(os) = rule.get("os") {
+            if !os.is_object()
+                || os.as_object().unwrap().iter().any(|(key, value)| {
+                    !["name", "arch", "version"].contains(&key.as_str()) || !value.is_string()
+                })
+            {
+                return Err(invalid("Invalid OS rule"));
+            }
+        }
+        if let Some(features) = rule.get("features") {
+            if !features
+                .as_object()
+                .is_some_and(|values| values.values().all(Value::is_boolean))
+            {
+                return Err(invalid("Invalid feature rules"));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_library(value: &Value) -> io::Result<()> {
@@ -282,6 +463,20 @@ fn validate_library(value: &Value) -> io::Result<()> {
     if let Some(hint) = value.get("MMC-hint") {
         if hint != "local" {
             return Err(invalid("Only MMC-hint local is supported"));
+        }
+    }
+    if let Some(rules) = value.get("rules") {
+        validate_rules(rules)?;
+    }
+    if value.get("argument").is_some_and(|arg| !arg.is_string()) {
+        return Err(invalid("Agent argument must be a string"));
+    }
+    if let Some(natives) = value.get("natives") {
+        if !natives
+            .as_object()
+            .is_some_and(|values| values.values().all(Value::is_string))
+        {
+            return Err(invalid("natives must be an object of classifier strings"));
         }
     }
     if let Some(file) = value.get("MMC-filename") {
@@ -325,15 +520,18 @@ pub fn library(raw: &Value, root: &Path, jar_mod: bool) -> io::Result<ResolvedLi
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(path.file_name().unwrap()));
     let local = raw["MMC-hint"] == "local";
-    let resolved = if local {
+    let mut resolved = if local {
         root.join(if jar_mod { "jarmods" } else { "libraries" })
-            .join(filename)
+            .join(&filename)
     } else {
         raw["downloads"]["artifact"]["path"]
             .as_str()
             .map(PathBuf::from)
             .unwrap_or(path)
     };
+    if !local && raw.get("MMC-filename").is_some() {
+        resolved.set_file_name(filename);
+    }
     let url = if local {
         None
     } else {
@@ -342,7 +540,12 @@ pub fn library(raw: &Value, root: &Path, jar_mod: bool) -> io::Result<ResolvedLi
             .or(raw["downloads"]["artifact"]["url"].as_str())
             .map(str::to_owned)
             .or_else(|| {
-                raw["url"].as_str().map(|url| {
+                Some(
+                    raw["url"]
+                        .as_str()
+                        .unwrap_or("https://libraries.minecraft.net"),
+                )
+                .map(|url| {
                     format!(
                         "{}/{}",
                         url.trim_end_matches('/'),

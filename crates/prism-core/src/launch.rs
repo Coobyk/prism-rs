@@ -472,19 +472,28 @@ impl Launcher {
         Launcher { paths, downloader }
     }
 
-    pub async fn component_document(&self, uid: &str, version: &str) -> Result<serde_json::Value, LaunchError> {
+    pub async fn component_document(
+        &self,
+        uid: &str,
+        version: &str,
+    ) -> Result<serde_json::Value, LaunchError> {
         if uid != version_components::MINECRAFT {
             return Err(std::io::Error::other("Customize is only available for Minecraft; an equivalent loader component is not available.").into());
         }
         self.fetch_version_data(version).await?;
-        let path = self.paths.metadata_dir().join(uid).join(format!("{version}.json"));
+        let path = self
+            .paths
+            .metadata_dir()
+            .join(uid)
+            .join(format!("{version}.json"));
         let mut value: serde_json::Value = serde_json::from_slice(&tokio::fs::read(path).await?)?;
         value["uid"] = serde_json::json!(uid);
         value["version"] = serde_json::json!(version);
         value["formatVersion"] = serde_json::json!(1);
         value["name"] = serde_json::json!("Minecraft");
         value.as_object_mut().unwrap().remove("logging");
-        crate::component::Component::parse(&serde_json::to_string(&value)?, Some(uid))?.validate_launch()?;
+        crate::component::Component::parse(&serde_json::to_string(&value)?, Some(uid))?
+            .validate_launch()?;
         Ok(value)
     }
 
@@ -663,10 +672,21 @@ impl Launcher {
         // natives); downloading one path twice at once races on the rename.
         let mut queued = std::collections::HashSet::new();
         let mut requests = Vec::new();
-        for lib in profile.libraries.iter().chain(profile.natives.iter()).chain(profile.component_artifacts.iter()) {
+        for lib in profile
+            .libraries
+            .iter()
+            .chain(profile.natives.iter())
+            .chain(profile.component_artifacts.iter())
+            .chain(profile.component_main_jar.iter())
+        {
             let dest = libraries_dir.join(&lib.path);
             if lib.path.is_absolute() {
-                crate::component::check_local(&dest).map_err(|e| std::io::Error::new(e.kind(), format!("Missing or unsafe local artifact {}: {e}", dest.display())))?;
+                crate::component::check_local(&dest).map_err(|e| {
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("Missing or unsafe local artifact {}: {e}", dest.display()),
+                    )
+                })?;
             }
             if dest.exists() || queued.contains(&dest) {
                 continue;
@@ -679,7 +699,12 @@ impl Launcher {
                 }
                 requests.push(req);
             } else if !dest.exists() {
-                return Err(std::io::Error::other(format!("Missing library {}: {}", lib.spec, dest.display())).into());
+                return Err(std::io::Error::other(format!(
+                    "Missing library {}: {}",
+                    lib.spec,
+                    dest.display()
+                ))
+                .into());
             }
         }
         self.downloader
@@ -760,48 +785,89 @@ impl Launcher {
         loader: Loader,
         mut progress: impl FnMut(String),
     ) -> Result<LaunchProfile, LaunchError> {
-        let mut profile = LaunchProfile { minecraft_version: settings.mc_version.clone(), ..Default::default() };
+        let mut profile = LaunchProfile {
+            minecraft_version: settings.mc_version.clone(),
+            assets_id: "legacy".into(),
+            ..Default::default()
+        };
         let pack = match Pack::load(&settings.instance_dir) {
             Ok(pack) => Some(pack),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
         let components: Vec<(String, String)> = match &pack {
-            Some(pack) => pack.enabled_components().map(|(uid, version)| (uid.to_owned(), version.to_owned())).collect(),
-            None => std::iter::once((version_components::MINECRAFT.to_owned(), settings.mc_version.clone()))
-                .chain((loader != Loader::None).then(|| (loader.uid().to_owned(), loader.version().unwrap_or_default().to_owned()))).collect(),
+            Some(pack) => pack
+                .enabled_components()
+                .map(|(uid, version)| (uid.to_owned(), version.to_owned()))
+                .collect(),
+            None => std::iter::once((
+                version_components::MINECRAFT.to_owned(),
+                settings.mc_version.clone(),
+            ))
+            .chain((loader != Loader::None).then(|| {
+                (
+                    loader.uid().to_owned(),
+                    loader.version().unwrap_or_default().to_owned(),
+                )
+            }))
+            .collect(),
         };
         for (uid, version) in components {
-            if let Some(patch) = pack.as_ref().map(|pack| pack.patch(&uid)).transpose()?.flatten() {
-                if matches!(uid.as_str(), version_components::LWJGL | version_components::LWJGL3) {
-                    profile.libraries.retain(|lib| !lib.spec.starts_with("org.lwjgl"));
-                    profile.natives.retain(|lib| !lib.spec.starts_with("org.lwjgl"));
+            if let Some(patch) = pack
+                .as_ref()
+                .map(|pack| pack.patch(&uid))
+                .transpose()?
+                .flatten()
+            {
+                if matches!(
+                    uid.as_str(),
+                    version_components::LWJGL | version_components::LWJGL3
+                ) {
+                    profile
+                        .libraries
+                        .retain(|lib| !lib.spec.starts_with("org.lwjgl"));
+                    profile
+                        .natives
+                        .retain(|lib| !lib.spec.starts_with("org.lwjgl"));
                 }
                 patch.apply(&mut profile, &settings.instance_dir)?;
                 continue;
             }
             if uid == version_components::MINECRAFT {
                 let document = self.component_document(&uid, &version).await?;
-                crate::component::Component(document).apply(&mut profile, &settings.instance_dir)?;
+                crate::component::Component(document)
+                    .apply(&mut profile, &settings.instance_dir)?;
                 continue;
             }
-            if matches!(uid.as_str(), version_components::LWJGL | version_components::LWJGL3) {
-            if profile.lwjgl_family() != Some(uid.as_str()) {
-                return Err(std::io::Error::other("The LWJGL override does not match this Minecraft version. Reset it on the Version page.").into());
+            if matches!(
+                uid.as_str(),
+                version_components::LWJGL | version_components::LWJGL3
+            ) {
+                if profile.lwjgl_family() != Some(uid.as_str()) {
+                    return Err(std::io::Error::other("The LWJGL override does not match this Minecraft version. Reset it on the Version page.").into());
+                }
+                let replacement = self.fetch_lwjgl(&uid, &version).await?;
+                profile.apply_lwjgl(&replacement)?;
+                profile.natives_override = Some(
+                    settings
+                        .game_dir
+                        .join("bin")
+                        .join(format!("lwjgl-{uid}-{version}")),
+                );
+                progress(format!("Using {uid} {version}"));
+                continue;
             }
-            let replacement = self.fetch_lwjgl(&uid, &version).await?;
-            profile.apply_lwjgl(&replacement)?;
-            profile.natives_override = Some(settings.game_dir.join("bin").join(format!("lwjgl-{uid}-{version}")));
-            progress(format!("Using {uid} {version}"));
-            continue;
-        }
-        let loader = match uid.as_str() {
-            "net.fabricmc.fabric-loader" => Loader::Fabric { version },
-            "org.quiltmc.quilt-loader" => Loader::Quilt { version },
-            "net.minecraftforge" => Loader::Forge { version },
-            "net.neoforged" => Loader::NeoForge { version },
-            _ => return Err(std::io::Error::other(format!("Component {uid} has no local patch and no supported metadata resolver.")).into()),
-        };
+            let loader =
+                match uid.as_str() {
+                    "net.fabricmc.fabric-loader" => Loader::Fabric { version },
+                    "org.quiltmc.quilt-loader" => Loader::Quilt { version },
+                    "net.minecraftforge" => Loader::Forge { version },
+                    "net.neoforged" => Loader::NeoForge { version },
+                    _ => return Err(std::io::Error::other(format!(
+                        "Component {uid} has no local patch and no supported metadata resolver."
+                    ))
+                    .into()),
+                };
             progress(format!("Preparing loader: {loader:?}"));
             let version = settings.mc_version.clone();
             let overlay = match &loader {
@@ -823,7 +889,10 @@ impl Launcher {
                     )
                     .await
                 }
-                _ => loaders::fetch_loader_profile(&self.downloader.client(), &loader, &version).await,
+                _ => {
+                    loaders::fetch_loader_profile(&self.downloader.client(), &loader, &version)
+                        .await
+                }
             }
             .map_err(|message| LaunchError::Loader { loader, message })?;
             profile.apply_loader(&overlay);
@@ -847,7 +916,11 @@ impl Launcher {
             ));
         }
         self.prepare_files(&profile, settings).await?;
-        let mut mods: Vec<_> = profile.component_jar_mods.iter().map(|lib| self.paths.libraries_dir().join(&lib.path)).collect();
+        let mut mods: Vec<_> = profile
+            .component_jar_mods
+            .iter()
+            .map(|lib| self.paths.libraries_dir().join(&lib.path))
+            .collect();
         if let Some(main) = &profile.component_main_jar {
             profile.client_override = Some(self.paths.libraries_dir().join(&main.path));
         }
@@ -855,21 +928,37 @@ impl Launcher {
             mods.extend(pack.archive_paths(ArchiveKind::JarMod)?);
             profile.extra_classpath = pack.archive_paths(ArchiveKind::Classpath)?;
         }
-            if !mods.is_empty() {
-                let client = profile.client_override.clone().unwrap_or_else(|| self.client_jar_path(&settings.mc_version));
-                let root = settings.instance_dir.clone();
-                std::fs::create_dir_all(root.join("version-files"))?;
-                let count = mods.len();
-                let patched = tokio::task::spawn_blocking(move || version_components::patched_client(&root, &client, &mods))
-                    .await.map_err(std::io::Error::other)??;
-                profile.client_override = Some(patched);
-                progress(format!("Applied {count} jar mod(s) to the Minecraft client"));
-            }
-            if !profile.extra_classpath.is_empty() {
-                progress(format!("Added {} extra classpath archive(s)", profile.extra_classpath.len()));
-            }
-            std::env::join_paths(profile.extra_classpath.iter().chain(profile.client_override.iter()))
-                .map_err(std::io::Error::other)?;
+        if !mods.is_empty() {
+            let client = profile
+                .client_override
+                .clone()
+                .unwrap_or_else(|| self.client_jar_path(&settings.mc_version));
+            let root = settings.instance_dir.clone();
+            std::fs::create_dir_all(root.join("version-files"))?;
+            let count = mods.len();
+            let patched = tokio::task::spawn_blocking(move || {
+                version_components::patched_client(&root, &client, &mods)
+            })
+            .await
+            .map_err(std::io::Error::other)??;
+            profile.client_override = Some(patched);
+            progress(format!(
+                "Applied {count} jar mod(s) to the Minecraft client"
+            ));
+        }
+        if !profile.extra_classpath.is_empty() {
+            progress(format!(
+                "Added {} extra classpath archive(s)",
+                profile.extra_classpath.len()
+            ));
+        }
+        std::env::join_paths(
+            profile
+                .extra_classpath
+                .iter()
+                .chain(profile.client_override.iter()),
+        )
+        .map_err(std::io::Error::other)?;
         progress("Downloads complete".to_string());
         Ok(profile)
     }
@@ -1015,14 +1104,24 @@ impl Launcher {
             jvm_done_library_path = command.iter().any(|a| a.starts_with("-Djava.library.path"));
         }
         if !jvm_done_library_path {
-            command.push(format!("-Djava.library.path={}", natives_dir.to_string_lossy()));
+            command.push(format!(
+                "-Djava.library.path={}",
+                natives_dir.to_string_lossy()
+            ));
         }
 
         command.extend(profile.component_jvm_args.iter().map(|arg| substitute(arg)));
         for (agent, argument) in &profile.agents {
             let path = libraries_dir.join(&agent.path);
-            command.push(format!("-javaagent:{}{}", path.to_string_lossy(),
-                if argument.is_empty() { String::new() } else { format!("={argument}") }));
+            command.push(format!(
+                "-javaagent:{}{}",
+                path.to_string_lossy(),
+                if argument.is_empty() {
+                    String::new()
+                } else {
+                    format!("={argument}")
+                }
+            ));
         }
 
         // Classpath + main class.
@@ -1386,6 +1485,132 @@ mod tests {
         let classpath = command.windows(2).find(|args| args[0] == "-cp").unwrap();
         assert_eq!(std::env::split_paths(&classpath[1]).collect::<Vec<_>>(),
             [patched, extra[0].clone(), extra[1].clone()]);
+    }
+
+    #[test]
+    fn agents_are_single_jvm_arguments_and_never_classpath_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: temp.path().into(),
+        };
+        let inst =
+            crate::instance::InstanceList::create(&paths, "QA", "default", "1.20.1").unwrap();
+        let settings = LaunchSettings::for_instance(&inst, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let mut profile = LaunchProfile {
+            main_class: "GameMain".into(),
+            minecraft_version: "1.20.1".into(),
+            ..Default::default()
+        };
+        for (index, argument) in ["", "spaces and = signs"].iter().enumerate() {
+            profile.agents.push((
+                ResolvedLibrary {
+                    spec: format!("custom:agent:{index}"),
+                    path: temp.path().join(format!("agent {index}.jar")),
+                    url: None,
+                    sha1: None,
+                    native: false,
+                },
+                (*argument).into(),
+            ));
+        }
+        let command = launcher.build_command(&settings, None, &profile).command;
+        let agents: Vec<_> = command
+            .iter()
+            .filter(|arg| arg.starts_with("-javaagent:"))
+            .collect();
+        assert_eq!(agents.len(), 2);
+        assert!(agents[0].ends_with("agent 0.jar"));
+        assert!(agents[1].ends_with("agent 1.jar=spaces and = signs"));
+        let main = command.iter().position(|arg| arg == "GameMain").unwrap();
+        assert!(command[..main].iter().any(|arg| arg == agents[1]));
+        let classpath = command.windows(2).find(|args| args[0] == "-cp").unwrap();
+        assert!(!classpath[1].contains("agent"));
+    }
+
+    #[tokio::test]
+    async fn patches_replace_metadata_and_legacy_mods_overlay_component_mods() {
+        use std::io::{Read, Write};
+        fn jar(path: &std::path::Path, content: &str) {
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+            zip.start_file("marker", zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: temp.path().into(),
+        };
+        let inst =
+            crate::instance::InstanceList::create(&paths, "QA", "default", "1.20.1").unwrap();
+        let mut settings = LaunchSettings::for_instance(&inst, &paths);
+        let launcher = Launcher::new(paths.clone(), Arc::new(Downloader::new()));
+        std::fs::create_dir_all(inst.root.join("libraries")).unwrap();
+        std::fs::create_dir_all(inst.root.join("jarmods")).unwrap();
+        jar(
+            &inst.root.join("libraries/customjar-1.jar"),
+            "custom client",
+        );
+        jar(&inst.root.join("jarmods/component.jar"), "component");
+        let legacy = temp.path().join("legacy.jar");
+        jar(&legacy, "legacy");
+        let mc = serde_json::json!({"uid":"net.minecraft","formatVersion":1,"version":"1.20.1","mainClass":"PatchMain",
+            "mainJar":{"name":"custom:customjar:1","MMC-hint":"local"},
+            "jarMods":[{"name":"custom:component:1","MMC-hint":"local","MMC-filename":"component.jar"}]});
+        let pack = Pack::load(&inst.root)
+            .unwrap()
+            .customize(version_components::MINECRAFT, &mc)
+            .unwrap();
+        let profile = launcher
+            .prepare_instance(&mut settings, Loader::None, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(profile.main_class, "PatchMain");
+        let read_marker = |profile: &LaunchProfile| {
+            let mut archive = zip::ZipArchive::new(
+                std::fs::File::open(profile.client_override.as_ref().unwrap()).unwrap(),
+            )
+            .unwrap();
+            let mut text = String::new();
+            archive
+                .by_name("marker")
+                .unwrap()
+                .read_to_string(&mut text)
+                .unwrap();
+            text
+        };
+        assert_eq!(read_marker(&profile), "component");
+        let pack = pack.add_archive(&legacy, ArchiveKind::JarMod).unwrap();
+        let profile = launcher
+            .prepare_instance(&mut settings, Loader::None, |_| {})
+            .await
+            .unwrap();
+        assert_eq!(read_marker(&profile), "legacy");
+        assert!(
+            std::fs::read_to_string(paths.metadata_dir().join("net.minecraft/1.20.1.json"))
+                .is_err(),
+            "local Minecraft patch must not fetch metadata"
+        );
+        let unsupported = mc
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .chain([("+traits".into(), serde_json::json!(["unsupported"]))])
+            .collect::<serde_json::Map<_, _>>();
+        std::fs::write(
+            inst.root.join("patches/net.minecraft.json"),
+            serde_json::to_vec(&unsupported).unwrap(),
+        )
+        .unwrap();
+        assert!(launcher
+            .prepare_instance(&mut settings, Loader::None, |_| {})
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("+traits"));
+        drop(pack);
     }
 
     #[cfg(unix)]

@@ -75,6 +75,20 @@ struct Dialog {
     id: u64,
 }
 
+#[derive(Clone, Copy)]
+enum ComponentAction {
+    Customize,
+    Revert,
+    Remove,
+}
+
+#[derive(Clone, Copy)]
+enum ComponentFile {
+    Json,
+    ClientJar,
+    Agent,
+}
+
 #[derive(Default)]
 pub(super) struct VersionPage {
     pack: Option<Pack>,
@@ -91,6 +105,182 @@ impl VersionPage {
 }
 
 impl InstanceWindow {
+    fn open_component_editor(&self, uid: Option<String>, cx: &mut Context<Self>) {
+        let Some(pack) = self.version_editor.pack.clone() else {
+            return;
+        };
+        let app = self.app.read(cx);
+        let Some(instance) = app.instances.get(&self.instance_id).cloned() else {
+            return;
+        };
+        if app.is_running(&self.instance_id) || self.version_editor.busy {
+            return;
+        }
+        super::component_editor::open(
+            cx.entity().downgrade(),
+            self.app.clone(),
+            instance,
+            pack,
+            uid,
+            cx,
+        );
+    }
+
+    fn component_action(
+        &mut self,
+        uid: String,
+        action: ComponentAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.version_editor.busy || self.app.read(cx).is_running(&self.instance_id) {
+            return;
+        }
+        let Some(pack) = self.version_editor.pack.clone() else {
+            return;
+        };
+        let app = self.app.read(cx);
+        let Some(instance) = app.instances.get(&self.instance_id).cloned() else {
+            return;
+        };
+        let paths = app.paths.clone();
+        let runtime = app.runtime.clone();
+        let launcher = Launcher::new(paths.clone(), runtime.downloader.clone());
+        let confirmation = (!matches!(action, ComponentAction::Customize)).then(|| window.prompt(
+            PromptLevel::Warning,
+            if matches!(action, ComponentAction::Revert) { "Revert component?" } else { "Remove component?" },
+            Some("This permanently deletes the patch. Remove also deletes its unshared local artifacts."),
+            &[PromptButton::cancel("Cancel"), PromptButton::new("Continue")], cx));
+        self.version_editor.busy = true;
+        cx.spawn(async move |this, cx| {
+            let confirmed = match confirmation {
+                Some(answer) => answer.await == Ok(1),
+                None => true,
+            };
+            if !confirmed {
+                let _ = this.update(cx, |this, cx| {
+                    this.version_editor.busy = false;
+                    cx.notify();
+                });
+                return;
+            }
+            let task = runtime.spawn(async move {
+                let doc = if matches!(action, ComponentAction::Customize) {
+                    Some(
+                        launcher
+                            .component_document(&uid, pack.version(&uid).unwrap_or_default())
+                            .await
+                            .map_err(|e| e.to_string())?,
+                    )
+                } else {
+                    None
+                };
+                tokio::task::spawn_blocking(move || {
+                    let _lock = crate::instance_lock::acquire(&paths, &instance)?;
+                    match action {
+                        ComponentAction::Customize => pack.customize(&uid, doc.as_ref().unwrap()),
+                        ComponentAction::Revert => pack.revert(&uid),
+                        ComponentAction::Remove => pack.remove_component(&uid),
+                    }
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())
+            });
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r);
+            let _ = this.update(cx, |this, cx| {
+                this.version_editor.busy = false;
+                match result {
+                    Ok(pack) => {
+                        this.version_editor.pack = Some(pack);
+                        this.version_editor.message = "Component changes saved.".into();
+                    }
+                    Err(error) => this.version_editor.message = error,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn import_components(&mut self, kind: ComponentFile, cx: &mut Context<Self>) {
+        if self.version_editor.busy || self.app.read(cx).is_running(&self.instance_id) {
+            return;
+        }
+        let Some(mut pack) = self.version_editor.pack.clone() else {
+            return;
+        };
+        let app = self.app.read(cx);
+        let Some(instance) = app.instances.get(&self.instance_id).cloned() else {
+            return;
+        };
+        let runtime = app.runtime.clone();
+        let paths = app.paths.clone();
+        let files = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: !matches!(kind, ComponentFile::ClientJar),
+            prompt: Some(
+                match kind {
+                    ComponentFile::Json => "Import component JSON files",
+                    ComponentFile::ClientJar => "Replace Minecraft.jar — select a trusted JAR",
+                    ComponentFile::Agent => "Add trusted Java agents",
+                }
+                .into(),
+            ),
+        });
+        self.version_editor.busy = true;
+        cx.spawn(async move |this, cx| {
+            let selected = files.await;
+            let result = if let Ok(Ok(Some(files))) = selected {
+                runtime
+                    .handle()
+                    .spawn_blocking(move || -> std::io::Result<_> {
+                        let _lock = crate::instance_lock::acquire(&paths, &instance)?;
+                        let mut failures = Vec::new();
+                        let mut count = 0;
+                        for file in files {
+                            let result = match kind {
+                                ComponentFile::Json => pack.clone().import_component(&file),
+                                ComponentFile::ClientJar => pack.clone().install_custom_jar(&file),
+                                ComponentFile::Agent => pack.clone().install_agent(&file),
+                            };
+                            match result {
+                                Ok(saved) => {
+                                    pack = saved;
+                                    count += 1;
+                                }
+                                Err(error) => failures.push(format!("{}: {error}", file.display())),
+                            }
+                        }
+                        Ok((
+                            pack,
+                            format!("Imported {count} component(s). {}", failures.join("; ")),
+                        ))
+                    })
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|r| r.map_err(|e| e.to_string()))
+            } else {
+                Ok((pack, String::new()))
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.version_editor.busy = false;
+                match result {
+                    Ok((pack, message)) => {
+                        this.version_editor.pack = Some(pack);
+                        this.version_editor.message = message;
+                    }
+                    Err(error) => this.version_editor.message = error,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
     pub(super) fn refresh_version(&mut self, cx: &mut Context<Self>) {
         if self.version_editor.busy {
             return;
@@ -500,6 +690,106 @@ impl InstanceWindow {
                                 .child(control("Remove", Edit::Remove(index), false)),
                         );
                     }
+                }
+                rows = rows.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new("component-import")
+                                .label("Import components")
+                                .disabled(blocked)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.import_components(ComponentFile::Json, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("component-empty")
+                                .label("Add empty")
+                                .disabled(blocked)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_component_editor(None, cx)
+                                })),
+                        ),
+                );
+                rows = rows.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new("component-client")
+                                .label("Replace Minecraft.jar")
+                                .disabled(blocked)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.import_components(ComponentFile::ClientJar, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new("component-agents")
+                                .label("Add agents")
+                                .disabled(blocked)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.import_components(ComponentFile::Agent, cx)
+                                })),
+                        ),
+                );
+                rows = rows.child(div().child("Component patches"));
+                for (index, (uid, version)) in pack.components().enumerate() {
+                    let uid = uid.to_owned();
+                    let mut controls = row(&uid, version);
+                    if pack.is_custom(&uid) {
+                        let edit_uid = uid.clone();
+                        controls = controls.child(
+                            Button::new(("component-edit", index))
+                                .label("Edit")
+                                .disabled(blocked)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.open_component_editor(Some(edit_uid.clone()), cx)
+                                })),
+                        );
+                        let meta = pack.has_meta(&uid);
+                        let uid = uid.clone();
+                        controls = controls.child(
+                            Button::new(("component-remove", index))
+                                .label(if meta { "Revert" } else { "Remove" })
+                                .disabled(blocked)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.component_action(
+                                        uid.clone(),
+                                        if meta {
+                                            ComponentAction::Revert
+                                        } else {
+                                            ComponentAction::Remove
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        );
+                    } else {
+                        let supported = uid == MINECRAFT;
+                        controls = controls.child(
+                            Button::new(("component-customize", index))
+                                .label("Customize")
+                                .disabled(blocked || !supported)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.component_action(
+                                        uid.clone(),
+                                        ComponentAction::Customize,
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        );
+                        if !supported {
+                            controls = controls.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .child("Equivalent component JSON unavailable"),
+                            );
+                        }
+                    }
+                    rows = rows.child(controls);
                 }
                 rows
             }));
