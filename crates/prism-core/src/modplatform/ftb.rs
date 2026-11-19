@@ -5,7 +5,7 @@ use crate::import::{
     CURSEFORGE_MISSING_FILES_REPORT,
 };
 use crate::ini::IniFile;
-use crate::instance::{set_loader, InstanceList};
+use crate::instance::{set_loader, Instance, InstanceList};
 use crate::loaders::Loader;
 use crate::modplatform::{flame::FlameApi, PlatformError};
 use crate::net::{DownloadRequest, Downloader};
@@ -327,7 +327,7 @@ impl FtbApi {
         } else {
             &pack.name
         };
-        let instance = InstanceList::create(paths, title, "default", &mc.version)?;
+        let mut instance = InstanceList::create(paths, title, "default", &mc.version)?;
         let result = async {
             if let Some(loader) = loaders.first() {
                 set_loader(&instance, loader)?;
@@ -390,6 +390,7 @@ impl FtbApi {
                 manifest.id,
                 &manifest.name,
             )?;
+            let _ = self.install_icon(paths, pack, &mut instance).await;
             Ok(ImportOutcome {
                 instance: instance.clone(),
                 missing_files: missing,
@@ -401,6 +402,27 @@ impl FtbApi {
             let _ = std::fs::remove_dir_all(&instance.root);
         }
         result
+    }
+
+    async fn install_icon(
+        &self,
+        paths: &Paths,
+        pack: &Pack,
+        instance: &mut Instance,
+    ) -> Result<(), ImportError> {
+        let Some(art) = pack.art.iter().find(|art| art.kind == "square") else {
+            return Ok(());
+        };
+        let staging = tempfile::tempdir_in(&instance.root)?;
+        let image = staging.path().join(format!("ftb-{}.png", pack.id));
+        self.downloader
+            .download(&DownloadRequest::new(&art.url, image.clone()))
+            .await?;
+        let mut updated = instance.clone();
+        updated.icon_key = crate::icons::add_icon(&paths.icons_dir(), &image)?;
+        updated.save()?;
+        *instance = updated;
+        Ok(())
     }
 }
 

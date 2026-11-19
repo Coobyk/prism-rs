@@ -146,7 +146,57 @@ async fn installs_skips_server_and_reports_missing_files() {
     );
     let cfg = IniFile::load(&out.instance.root.join("instance.cfg")).unwrap();
     assert_eq!(cfg.get("ManagedPackType"), Some("ftb"));
+    assert_eq!(out.instance.icon_key, "default");
     assert!(!crate::managed_pack::ManagedPack::present(&out.instance));
+}
+
+#[tokio::test]
+async fn installs_square_artwork_best_effort() {
+    let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x04\x00\x00\x00\xb5\x1c\x0c\x02\x00\x00\x00\x0bIDAT\x78\xda\x63\x64\xf8\x0f\x00\x01\x05\x01\x01\x27\x18\xe3\x66\x00\x00\x00\x00IEND\xae\x42\x60\x82";
+    for (status, blocked_storage, expected_icon) in [
+        ("200 OK", false, true),
+        ("404 Not Found", false, false),
+        ("200 OK", true, false),
+    ] {
+        let (base, thread) = server(vec![("/icon".into(), status.into(), png.to_vec())]);
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().into(),
+        };
+        if blocked_storage {
+            std::fs::write(paths.icons_dir(), b"not a directory").unwrap();
+        }
+        let mut p = pack();
+        p.art = vec![
+            Artwork {
+                kind: "banner".into(),
+                url: format!("{base}/unused-banner"),
+            },
+            Artwork {
+                kind: "square".into(),
+                url: format!("{base}/icon"),
+            },
+        ];
+        let mut m = manifest(&base);
+        m.files.clear();
+        let out = FtbApi::with_endpoint(Arc::new(Downloader::new()), base)
+            .install_manifest(&paths, &p, &m, &FlameApi::new())
+            .await
+            .unwrap();
+        thread.join().unwrap();
+        let cfg = IniFile::load(&out.instance.root.join("instance.cfg")).unwrap();
+        let key = if expected_icon { "ftb-1" } else { "default" };
+        assert_eq!(out.instance.icon_key, key);
+        assert_eq!(cfg.get("iconKey"), Some(key));
+        assert_eq!(cfg.get("ManagedPackType"), Some("ftb"));
+        if expected_icon {
+            assert_eq!(
+                std::fs::read(paths.icons_dir().join("ftb-1.png")).unwrap(),
+                png
+            );
+        }
+        assert_eq!(std::fs::read_dir(&out.instance.root).unwrap().count(), 3);
+    }
 }
 
 #[tokio::test]
