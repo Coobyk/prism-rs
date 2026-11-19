@@ -33,6 +33,22 @@ prism-rs prepare 1.20.1          # fetch metadata, download game files, print th
 prism-rs import pack.mrpack      # import a Modrinth modpack / MultiMC instance zip
 ```
 
+### Horizon
+
+Install the [official Horizon launcher](https://playhorizon.dev/download). Put
+`horizon-launcher` on your PATH or set **Horizon launcher path** in Prism's
+global settings. In **Add Instance**, choose **Horizon** to create a Horizon
+instance, then select it and click **Launch**.
+
+Horizon manages its own game builds, Microsoft accounts, preparation and mods.
+Use the Horizon launcher to install a build and sign in with an account that
+owns Minecraft: Java Edition. The corresponding CLI commands are
+`horizon-launcher install latest`, `horizon-launcher account sign-in`, and
+`horizon-launcher prepare` (if the build needs assets prepared).
+**Remove from Prism** removes only the link; the Horizon game folder and saves
+remain. Manage Horizon mods through the official launcher, not Prism's Java mod
+browser.
+
 ## Architecture
 
 ```

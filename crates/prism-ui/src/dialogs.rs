@@ -2,7 +2,8 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::component::button::Button;
+use gpui_kit::base::Disableable;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 
@@ -12,6 +13,8 @@ pub struct CreateInstanceState {
     pub version_filter: Entity<InputState>,
     pub selected_version: Option<String>,
     pub error: Option<String>,
+    horizon: bool,
+    creating: bool,
 }
 
 impl CreateInstanceState {
@@ -25,6 +28,8 @@ impl CreateInstanceState {
             version_filter,
             selected_version: None,
             error: None,
+            horizon: false,
+            creating: false,
         }
     }
 
@@ -39,7 +44,7 @@ impl CreateInstanceState {
         let selected = self.selected_version.clone();
 
         let mut version_rows: Vec<(String, String)> = Vec::new(); // (id, type)
-        if let Some(manifest) = &manifest {
+        if let Some(manifest) = manifest.as_ref().filter(|_| !self.horizon) {
             for v in manifest.versions.iter().take(300) {
                 if !filter.is_empty() && !v.id.to_lowercase().contains(&filter) {
                     continue;
@@ -59,8 +64,10 @@ impl CreateInstanceState {
             .items_center()
             .justify_center()
             .on_click(cx.listener(|this: &mut MainWindow, _ev, _window, cx| {
-                this.create_dialog = None;
-                cx.notify();
+                if this.create_dialog.as_ref().is_some_and(|d| !d.creating) {
+                    this.create_dialog = None;
+                    cx.notify();
+                }
             }));
 
         let mut panel = div()
@@ -87,8 +94,37 @@ impl CreateInstanceState {
                     .gap_1()
                     .child("Group")
                     .child(Input::new(&self.group_input)),
-            )
-            .child(
+            );
+
+        let mut types = div().flex().items_center().gap_2().child("Game:");
+        for (horizon, label) in [(false, "Minecraft: Java Edition"), (true, "Horizon")] {
+            let selected = horizon == self.horizon;
+            let button = Button::new(if horizon { "type-horizon" } else { "type-java" });
+            types = types.child(
+                (if selected { button.primary() } else { button })
+                    .label(label)
+                    .disabled(self.creating)
+                    .on_click(cx.listener(move |this: &mut MainWindow, _ev, _window, cx| {
+                        if let Some(dialog) = this.create_dialog.as_mut() {
+                            if dialog.horizon != horizon {
+                                dialog.horizon = horizon;
+                                dialog.error = None;
+                            }
+                        }
+                        cx.notify();
+                    })),
+            );
+        }
+        panel = panel.child(types);
+
+        if self.horizon {
+            panel = panel.child(
+                div().flex_1().text_size(px(13.)).child(
+                    "Creates a Horizon game folder through the official Horizon launcher. Install Horizon and sign in there before playing.",
+                ),
+            );
+        } else {
+            panel = panel.child(
                 div()
                     .flex()
                     .flex_col()
@@ -107,46 +143,47 @@ impl CreateInstanceState {
                     .child(Input::new(&self.version_filter)),
             );
 
-        let mut list = div()
-            .id("version-list")
-            .flex_1()
-            .flex()
-            .flex_col()
-            .gap_y_0p5()
-            .overflow_y_scroll()
-            .bg(rgb(0x242424))
-            .rounded_md()
-            .p_1();
-        for (id, vtype) in &version_rows {
-            let is_selected = selected.as_deref() == Some(id.as_str());
-            let id2 = id.clone();
-            list = list.child(
-                div()
-                    .id(SharedString::from(format!("ver-{id}")))
-                    .flex()
-                    .justify_between()
-                    .px_2()
-                    .py_1()
-                    .rounded_sm()
-                    .text_size(px(12.))
-                    .bg(if is_selected { rgb(0x3d5a80) } else { rgba(0x00000000) })
-                    .hover(|s| s.bg(rgb(0x333333)))
-                    .on_click(cx.listener(move |this: &mut MainWindow, _ev, _window, cx| {
-                        if let Some(d) = this.create_dialog.as_mut() {
-                            d.selected_version = Some(id2.clone());
-                        }
-                        cx.notify();
-                    }))
-                    .child(id.clone())
-                    .child(
-                        div()
-                            .text_size(px(10.))
-                            .text_color(rgb(0x888888))
-                            .child(vtype.clone()),
-                    ),
-            );
+            let mut list = div()
+                .id("version-list")
+                .flex_1()
+                .flex()
+                .flex_col()
+                .gap_y_0p5()
+                .overflow_y_scroll()
+                .bg(rgb(0x242424))
+                .rounded_md()
+                .p_1();
+            for (id, vtype) in &version_rows {
+                let is_selected = selected.as_deref() == Some(id.as_str());
+                let id2 = id.clone();
+                list = list.child(
+                    div()
+                        .id(SharedString::from(format!("ver-{id}")))
+                        .flex()
+                        .justify_between()
+                        .px_2()
+                        .py_1()
+                        .rounded_sm()
+                        .text_size(px(12.))
+                        .bg(if is_selected { rgb(0x3d5a80) } else { rgba(0x00000000) })
+                        .hover(|s| s.bg(rgb(0x333333)))
+                        .on_click(cx.listener(move |this: &mut MainWindow, _ev, _window, cx| {
+                            if let Some(d) = this.create_dialog.as_mut() {
+                                d.selected_version = Some(id2.clone());
+                            }
+                            cx.notify();
+                        }))
+                        .child(id.clone())
+                        .child(
+                            div()
+                                .text_size(px(10.))
+                                .text_color(rgb(0x888888))
+                                .child(vtype.clone()),
+                        ),
+                );
+            }
+            panel = panel.child(list);
         }
-        panel = panel.child(list);
 
         if let Some(e) = &self.error {
             panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
@@ -160,6 +197,7 @@ impl CreateInstanceState {
                 .child(
                     gpui_kit::component::button::Button::new("cancel")
                         .label("Cancel")
+                        .disabled(self.creating)
                         .on_click(cx.listener(|this: &mut MainWindow, _ev, _window, cx| {
                             this.create_dialog = None;
                             cx.notify();
@@ -167,7 +205,8 @@ impl CreateInstanceState {
                 )
                 .child(
                     gpui_kit::component::button::Button::new("ok")
-                        .label("OK")
+                        .label(if self.creating { "Creating…" } else { "OK" })
+                        .disabled(self.creating)
                         .on_click(cx.listener(confirm_create)),
                 ),
         );
@@ -180,6 +219,9 @@ fn confirm_create(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     let Some(dialog) = this.create_dialog.as_mut() else {
         return;
     };
+    if dialog.creating {
+        return;
+    }
     let name = dialog.name_input.read(cx).value().trim().to_string();
     let group = dialog.group_input.read(cx).value().trim().to_string();
     let version = dialog.selected_version.clone();
@@ -189,38 +231,62 @@ fn confirm_create(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
         cx.notify();
         return;
     }
+    if dialog.horizon {
+        dialog.creating = true;
+        dialog.error = None;
+        let app = this.app.read(cx);
+        let paths = app.paths.clone();
+        let task = app.runtime.handle().spawn_blocking(move || {
+            let settings = prism_core::settings::Settings::load(&paths.global_config());
+            let launcher = prism_core::horizon::HorizonLauncher::from_settings(&settings);
+            let horizon = launcher.create(&name).map_err(|e| e.to_string())?;
+            prism_core::InstanceList::link_horizon(&paths, horizon).map_err(|e| {
+                format!("Horizon created the game folder, but Prism could not save its link: {e}")
+            })
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.map_err(|e| e.to_string()).and_then(|result| result);
+            let _ = this.update(cx, |this, cx| finish_create(this, &group, result, cx));
+        })
+        .detach();
+        cx.notify();
+        return;
+    }
     let Some(version) = version else {
         dialog.error = Some("Please select a Minecraft version.".to_string());
         cx.notify();
         return;
     };
 
-    let app = this.app.clone();
-    let mut error = None;
-    let mut created_id = None;
-    app.update(cx, |app, _cx| {
-        match prism_core::InstanceList::create(&app.paths, &name, "default", &version) {
-            Ok(inst) => {
-                let inst_id = inst.id.clone();
-                if !group.is_empty() {
-                    app.instances.groups.set_group(&inst_id, Some(&group));
-                    let _ = app.instances.groups.save(&app.paths.instances_dir());
-                }
-                created_id = Some(inst_id);
+    let result = prism_core::InstanceList::create(&this.app.read(cx).paths, &name, "default", &version)
+        .map_err(|e| e.to_string());
+    finish_create(this, &group, result, cx);
+}
+
+fn finish_create(
+    this: &mut MainWindow,
+    group: &str,
+    result: Result<prism_core::Instance, String>,
+    cx: &mut Context<MainWindow>,
+) {
+    let inst = match result {
+        Ok(inst) => inst,
+        Err(e) => {
+            if let Some(dialog) = this.create_dialog.as_mut() {
+                dialog.creating = false;
+                dialog.error = Some(format!("Failed to create instance: {e}"));
             }
-            Err(e) => error = Some(format!("Failed to create instance: {e}")),
+            cx.notify();
+            return;
         }
-    });
-
-    if let Some(e) = error {
-        dialog.error = Some(e);
-        cx.notify();
-        return;
-    }
-
-    app.update(cx, |app, _cx| {
+    };
+    this.app.update(cx, |app, _cx| {
+        if !group.is_empty() {
+            app.instances.groups.set_group(&inst.id, Some(group));
+            let _ = app.instances.groups.save(&app.paths.instances_dir());
+        }
         app.reload_instances();
-        app.selected = created_id.clone();
+        app.selected = Some(inst.id);
     });
     this.create_dialog = None;
     cx.notify();

@@ -228,6 +228,7 @@ impl MainWindow {
             app.selected.as_deref() == Some(id.as_str())
         };
         let running = app.read(cx).is_running(&id);
+        let horizon = app.read(cx).instances.get(&id).is_some_and(|inst| inst.is_horizon());
         let tile_bg = if selected { rgb(0x3d5a80) } else { rgb(0x2b2b2b) };
         let id2 = id.clone();
 
@@ -285,6 +286,7 @@ impl MainWindow {
                     .text_ellipsis()
                     .child(name),
             )
+            .children(horizon.then(|| div().text_size(px(11.)).child("Horizon")))
     }
 
     // -- sidebar ------------------------------------------------------------
@@ -298,6 +300,7 @@ impl MainWindow {
             .map(|i| i.name.clone())
             .unwrap_or_default();
         let enabled = selected.is_some();
+        let horizon = app.selected_instance().is_some_and(|inst| inst.is_horizon());
         let is_running = selected
             .as_deref()
             .map(|id| app.is_running(id))
@@ -311,7 +314,7 @@ impl MainWindow {
         let selected2 = selected.clone();
         let _ = selected2;
         div()
-            .w(px(160.))
+            .w(px(if horizon { 184. } else { 160. }))
             .flex()
             .flex_col()
             .gap_1()
@@ -340,10 +343,10 @@ impl MainWindow {
                 self.sidebar_button("launch", "Launch", enabled && !is_running)
                     .on_click(cx.listener(Self::on_launch)),
             )
-            .child(
+            .children((!horizon).then(|| {
                 self.sidebar_button("kill", "Kill", is_running)
-                    .on_click(cx.listener(Self::on_kill)),
-            )
+                    .on_click(cx.listener(Self::on_kill))
+            }))
             .child(toolbar_separator())
             .child(
                 self.sidebar_button("edit", "Edit", enabled)
@@ -354,10 +357,14 @@ impl MainWindow {
                     .on_click(cx.listener(Self::on_change_group)),
             )
             .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
-            .child(self.sidebar_button("export", "Export", enabled))
-            .child(self.sidebar_button("copy", "Copy", enabled))
+            .child(self.sidebar_button("export", "Export", enabled && !horizon))
+            .child(self.sidebar_button("copy", "Copy", enabled && !horizon))
             .child(
-                self.sidebar_button("delete", "Delete", enabled)
+                self.sidebar_button(
+                    "delete",
+                    if horizon { "Remove from Prism" } else { "Delete" },
+                    enabled && !(horizon && is_running),
+                )
                     .on_click(cx.listener(Self::on_delete)),
             )
             .child(self.sidebar_button("shortcut", "Create Shortcut", enabled))
@@ -453,7 +460,7 @@ impl MainWindow {
             .app
             .read(cx)
             .selected_instance()
-            .map(|i| i.root.clone());
+            .map(|i| if i.is_horizon() { i.game_root() } else { i.root.clone() });
         if let Some(dir) = dir {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }

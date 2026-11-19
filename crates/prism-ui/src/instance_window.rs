@@ -7,7 +7,7 @@ use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use prism_core::modplatform::{LocalResource, ResourceType};
-use prism_core::Instance;
+use prism_core::{Instance, InstanceKind};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,6 +53,10 @@ impl Page {
             Page::Notes,
             Page::Settings,
         ]
+    }
+
+    fn available(self, inst: &Instance) -> bool {
+        !inst.is_horizon() || matches!(self, Self::Log | Self::ResourcePacks | Self::Worlds | Self::Screenshots | Self::Notes)
     }
 }
 
@@ -280,6 +284,7 @@ impl InstanceWindow {
             .cloned()
             .unwrap_or(Instance {
                 id: self.instance_id.clone(),
+                kind: InstanceKind::Java,
                 root: Default::default(),
                 name: self.instance_id.clone(),
                 icon_key: "default".into(),
@@ -306,8 +311,9 @@ impl InstanceWindow {
             )
             .child(div().h(px(1.)).bg(rgb(0x1c1c1c)));
 
-        for page in Page::all() {
+        for page in Page::all().into_iter().filter(|page| page.available(&inst)) {
             let active = self.page == page;
+            let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
             col = col.child(
                 div()
                     .id(SharedString::from(format!("page-{:?}", page)))
@@ -320,7 +326,7 @@ impl InstanceWindow {
                         this.page = page;
                         cx.notify();
                     }))
-                    .child(page.label().to_string()),
+                    .child(label),
             );
         }
 
@@ -342,6 +348,9 @@ impl InstanceWindow {
     }
 
     fn render_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if !self.page.available(&self.instance(cx)) {
+            self.page = Page::Log;
+        }
         match self.page {
             Page::Log => self.render_log_page(cx),
             Page::Version => self.render_version_page(cx),

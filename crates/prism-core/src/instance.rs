@@ -2,17 +2,25 @@
 //! and the instance list. Mirrors PrismLauncher's `BaseInstance` +
 //! `InstanceList` (minus Qt model machinery, which the UI layer provides).
 
+use crate::horizon::HorizonInstance;
 use crate::ini::IniFile;
 use crate::Paths;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-/// A Minecraft instance directory (a "OneSix"-style instance).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstanceKind {
+    Java,
+    Horizon { id: String, home: PathBuf },
+}
+
+/// A Prism instance directory, holding a Java game or a link to a Horizon game.
 #[derive(Debug, Clone)]
 pub struct Instance {
     /// Directory name; also the stable id used by the UI.
     pub id: String,
-    /// Root of the instance (contains `instance.cfg`, `mmc-pack.json`, `.minecraft`).
+    pub kind: InstanceKind,
+    /// Prism directory containing `instance.cfg` and, for Java, the component pack and game.
     pub root: PathBuf,
     pub name: String,
     pub icon_key: String,
@@ -32,8 +40,19 @@ impl Instance {
         let cfg_path = dir.join("instance.cfg");
         let cfg = IniFile::load(&cfg_path).ok()?;
         let id = dir.file_name()?.to_string_lossy().to_string();
+        let kind = if cfg.get("InstanceType") == Some("Horizon") {
+            let home = PathBuf::from(cfg.get("HorizonGameHome")?);
+            let id = cfg.get("HorizonInstanceId")?;
+            if !home.is_absolute() || id.is_empty() {
+                return None;
+            }
+            InstanceKind::Horizon { id: id.to_string(), home }
+        } else {
+            InstanceKind::Java
+        };
         Some(Instance {
             id,
+            kind,
             name: cfg.get_or("name", &dir.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default()),
             icon_key: cfg.get_or("iconKey", "default"),
             notes: cfg.get_or("notes", ""),
@@ -47,6 +66,9 @@ impl Instance {
     /// The Minecraft game directory. PrismLauncher (and MultiMC) use
     /// `minecraft` on Linux/Windows; older layouts may have `.minecraft`.
     pub fn game_root(&self) -> PathBuf {
+        if let InstanceKind::Horizon { home, .. } = &self.kind {
+            return home.clone();
+        }
         let mc = self.root.join("minecraft");
         if mc.is_dir() {
             mc
@@ -56,7 +78,11 @@ impl Instance {
     }
 
     pub fn mods_dir(&self) -> PathBuf {
-        self.game_root().join("mods")
+        self.game_root().join(if self.is_horizon() { "horizon-mods" } else { "mods" })
+    }
+
+    pub fn is_horizon(&self) -> bool {
+        matches!(self.kind, InstanceKind::Horizon { .. })
     }
 
     pub fn save(&self) -> std::io::Result<()> {
@@ -68,7 +94,14 @@ impl Instance {
         if self.last_launch > 0 {
             cfg.set("lastLaunchTime", self.last_launch.to_string());
         }
-        cfg.set("InstanceType", "OneSix");
+        match &self.kind {
+            InstanceKind::Java => cfg.set("InstanceType", "OneSix"),
+            InstanceKind::Horizon { id, home } => {
+                cfg.set("InstanceType", "Horizon");
+                cfg.set("HorizonInstanceId", id.as_str());
+                cfg.set("HorizonGameHome", home.to_string_lossy().into_owned());
+            }
+        }
         cfg.save(&self.root.join("instance.cfg"))
     }
 }
@@ -176,8 +209,9 @@ impl InstanceList {
         let dir = unique_dir_name(paths.instances_dir(), name);
         std::fs::create_dir_all(dir.join("minecraft"))?;
 
-        let mut inst = Instance {
+        let inst = Instance {
             id: dir.file_name().unwrap().to_string_lossy().to_string(),
+            kind: InstanceKind::Java,
             root: dir.clone(),
             name: name.to_string(),
             icon_key: icon_key.to_string(),
@@ -198,6 +232,23 @@ impl InstanceList {
         });
         std::fs::write(dir.join("mmc-pack.json"), serde_json::to_string_pretty(&pack).unwrap())?;
 
+        Ok(inst)
+    }
+
+    pub fn link_horizon(paths: &Paths, horizon: HorizonInstance) -> std::io::Result<Instance> {
+        let dir = unique_dir_name(paths.instances_dir(), &horizon.name);
+        let inst = Instance {
+            id: dir.file_name().unwrap().to_string_lossy().to_string(),
+            kind: InstanceKind::Horizon { id: horizon.id, home: horizon.home },
+            root: dir,
+            name: horizon.name,
+            icon_key: "default".to_string(),
+            notes: String::new(),
+            total_time_played: 0,
+            last_launch: 0,
+            group: None,
+        };
+        inst.save()?;
         Ok(inst)
     }
 
@@ -340,6 +391,29 @@ mod tests {
         assert_eq!(list.instances.len(), 1);
         assert_eq!(list.instances[0].name, "My Test");
         assert!(list.instances[0].root.join("mmc-pack.json").exists());
+    }
+
+    #[test]
+    fn horizon_link_roundtrip_and_removal_leave_game_files_alone() {
+        let (paths, _guard) = temp_paths();
+        let home = paths.root.join("Horizon game");
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(home.join("options.txt"), "").unwrap();
+        let horizon = serde_json::from_value(serde_json::json!({
+            "id": "native", "name": "Native", "home": home, "java": null
+        })).unwrap();
+        let inst = InstanceList::link_horizon(&paths, horizon).unwrap();
+        let mut reloaded = Instance::load(&inst.root).unwrap();
+        assert_eq!(reloaded.kind, InstanceKind::Horizon { id: "native".into(), home: home.clone() });
+        assert_eq!(reloaded.game_root(), home);
+        assert!(!reloaded.root.join("mmc-pack.json").exists());
+        reloaded.name = "New Prism name".into();
+        reloaded.save().unwrap();
+        assert_eq!(Instance::load(&inst.root).unwrap().kind, reloaded.kind);
+
+        InstanceList::remove(&paths, &inst.id).unwrap();
+        assert!(!inst.root.exists());
+        assert!(home.join("options.txt").is_file());
     }
 
     #[test]

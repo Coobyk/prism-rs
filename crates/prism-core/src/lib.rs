@@ -6,6 +6,7 @@
 //! - [`paths`]: launcher data directory layout
 
 pub mod auth;
+pub mod horizon;
 pub mod import;
 pub mod ini;
 pub mod instance;
@@ -22,5 +23,5 @@ pub mod resources;
 pub mod settings;
 
 pub use auth::AccountList;
-pub use instance::{Instance, InstanceGroups, InstanceList};
+pub use instance::{Instance, InstanceGroups, InstanceKind, InstanceList};
 pub use paths::Paths;

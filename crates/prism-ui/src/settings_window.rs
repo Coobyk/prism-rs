@@ -6,12 +6,14 @@ use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
+use prism_core::horizon::LAUNCHER_PATH_SETTING;
 
 pub struct SettingsWindow {
     pub app: gpui::Entity<App>,
     min_mem: gpui::Entity<InputState>,
     max_mem: gpui::Entity<InputState>,
     java_path: gpui::Entity<InputState>,
+    horizon_launcher_path: gpui::Entity<InputState>,
     win_width: gpui::Entity<InputState>,
     win_height: gpui::Entity<InputState>,
     status: String,
@@ -35,6 +37,7 @@ impl SettingsWindow {
             min_mem: mk("512", cfg.get_or("MinMemAlloc", "512"), window, cx),
             max_mem: mk("4096", cfg.get_or("MaxMemAlloc", "4096"), window, cx),
             java_path: mk("(auto-detect)", cfg.get_or("JavaPath", ""), window, cx),
+            horizon_launcher_path: mk("(find on PATH)", cfg.get_or(LAUNCHER_PATH_SETTING, ""), window, cx),
             win_width: mk("854", cfg.get_or("MinecraftWinWidth", "854"), window, cx),
             win_height: mk("480", cfg.get_or("MinecraftWinHeight", "480"), window, cx),
             status: String::new(),
@@ -56,6 +59,7 @@ impl SettingsWindow {
         cfg.set("JavaPath", values.2);
         cfg.set("MinecraftWinWidth", values.3);
         cfg.set("MinecraftWinHeight", values.4);
+        cfg.set(LAUNCHER_PATH_SETTING, self.horizon_launcher_path.read(cx).value().trim());
         match cfg.save(&config_path) {
             Ok(()) => self.status = "Settings saved.".to_string(),
             Err(e) => self.status = format!("Save failed: {e}"),
@@ -113,6 +117,8 @@ impl Render for SettingsWindow {
                     .text_color(rgb(0x777777))
                     .child(format!("Auto-detected: {detected_java}")),
             )
+            .child(div().text_size(px(12.)).text_color(rgb(0x8fb4d9)).child("Horizon"))
+            .child(row("Horizon launcher path", &self.horizon_launcher_path))
             .child(div().flex_1())
             .child(
                 div()
