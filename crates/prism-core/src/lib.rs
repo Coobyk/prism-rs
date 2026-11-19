@@ -6,6 +6,7 @@
 //! - [`paths`]: launcher data directory layout
 
 pub mod auth;
+pub mod export;
 pub mod import;
 pub mod ini;
 pub mod instance;
