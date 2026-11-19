@@ -41,7 +41,8 @@ On Linux, select an instance and click **Create Shortcut** to add a `.desktop` l
 your desktop. It uses the current launcher binary and data directory, so recreate the
 shortcut if either moves. Some desktop environments ask you to trust a new shortcut before
 opening it. A terminal shows game output and stays open on launch or cleanup failure.
-Redirect output from background hooks that need to outlive the launcher or terminal.
+Redirect stdout and stderr from any background hook job that should outlive the hook.
+The GUI waits for captured output to close; CLI launches pass hook output to the terminal.
 
 For automatic CurseForge downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
 your own CurseForge API key before running the CLI or opening the launcher.

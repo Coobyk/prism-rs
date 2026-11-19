@@ -332,32 +332,7 @@ pub struct PreparedLaunch {
     pub command_error: Option<String>,
 }
 
-pub type HookOutput = Box<dyn Fn(String) + Send + Sync>;
-
-fn read_hook_output(
-    pipe: impl std::io::Read + Send + 'static,
-    label: &'static str,
-    stream: &'static str,
-    output: std::sync::Weak<dyn Fn(String) + Send + Sync>,
-    done: std::sync::mpsc::Sender<()>,
-) {
-    use std::io::{self, BufRead, Read};
-    std::thread::spawn(move || {
-        let mut reader = io::BufReader::new(pipe);
-        let mut bytes = Vec::new();
-        while let Ok(1..) = reader.by_ref().take(8192).read_until(b'\n', &mut bytes) {
-            let Some(output) = output.upgrade() else {
-                let _ = io::copy(&mut reader, &mut io::sink());
-                break;
-            };
-            let line = bytes.strip_suffix(b"\n").unwrap_or(&bytes);
-            let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line));
-            output(format!("{label} ({stream}): {line}"));
-            bytes.clear();
-        }
-        let _ = done.send(());
-    });
-}
+pub type HookOutput = Box<dyn FnMut(String)>;
 
 impl PreparedLaunch {
     fn hook(&self, script: &str, label: &'static str, output: Option<HookOutput>) -> std::io::Result<()> {
@@ -379,22 +354,14 @@ impl PreparedLaunch {
             .current_dir(&self.instance_dir)
             .envs(self.env.iter().cloned())
             .stdin(Stdio::null());
-        let status = if let Some(output) = output {
-            let mut child = command.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let output = Arc::from(output);
-            read_hook_output(child.stdout.take().unwrap(), label, "stdout", Arc::downgrade(&output), done_tx.clone());
-            read_hook_output(child.stderr.take().unwrap(), label, "stderr", Arc::downgrade(&output), done_tx);
-            let status = child.wait()?;
-            // Flush foreground output without waiting for background jobs to close the pipes.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-            for _ in 0..2 {
-                if done_rx.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).is_err() {
-                    break;
+        let status = if let Some(mut output) = output {
+            let captured = command.output()?;
+            for (stream, bytes) in [("stdout", &captured.stdout), ("stderr", &captured.stderr)] {
+                for line in String::from_utf8_lossy(bytes).lines() {
+                    output(format!("{label} ({stream}): {line}"));
                 }
             }
-            drop(output);
-            status
+            captured.status
         } else {
             command.status()?
         };
@@ -1056,7 +1023,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn post_exit_hook_does_not_wait_for_background_output() {
+    fn post_exit_hook_reports_partial_output_on_the_calling_thread() {
         use std::{sync::mpsc, time::Duration};
 
         let dir = tempfile::tempdir().unwrap();
@@ -1067,38 +1034,47 @@ mod tests {
             instance_dir: dir.path().into(),
             pre_launch_command: String::new(),
             post_exit_command: r#"
-                echo foreground
+                printf foreground
+                printf diagnostic >&2
                 (
                     i=0
                     while [ ! -f release ] && [ "$i" -lt 100 ]; do
                         sleep 0.05
                         i=$((i+1))
                     done
-                    trap '' PIPE
-                    if printf 'background\n' 2>/dev/null; then touch output-still-open; fi
+                    printf 'background\n'
                     touch background-finished
-                ) &
+                ) >background.log 2>&1 &
             "#.into(),
             command_error: None,
         };
         let (tx, rx) = mpsc::channel();
         let runner = std::thread::spawn(move || {
             let (output_tx, output_rx) = mpsc::channel();
+            let caller = std::thread::current().id();
             let result = launch.run_post_exit_with_output(Box::new(move |line| {
-                let _ = output_tx.send(line);
+                let _ = output_tx.send((std::thread::current().id(), line));
             }));
-            let _ = tx.send(result.map(|()| output_rx.try_iter().collect::<Vec<_>>()));
+            let _ = tx.send(result.map(|()| (caller, output_rx.try_iter().collect::<Vec<_>>())));
         });
         let result = rx.recv_timeout(Duration::from_secs(3));
         std::fs::write(dir.path().join("release"), []).unwrap();
         runner.join().unwrap();
-        assert_eq!(result.unwrap().unwrap(), ["Post-exit (stdout): foreground"]);
+        let (caller, mut output) = result.unwrap().unwrap();
+        output.sort_by(|(_, lhs), (_, rhs)| lhs.cmp(rhs));
+        assert_eq!(output, [
+            (caller, "Post-exit (stderr): diagnostic".into()),
+            (caller, "Post-exit (stdout): foreground".into()),
+        ]);
         let deadline = std::time::Instant::now() + Duration::from_secs(3);
         while !dir.path().join("background-finished").exists() {
             assert!(std::time::Instant::now() < deadline, "background hook did not finish");
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert!(dir.path().join("output-still-open").exists());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("background.log")).unwrap(),
+            "background\n"
+        );
     }
 
     #[test]
