@@ -1,6 +1,8 @@
 //! prism-rs: PrismLauncher rewritten in Rust with GPUI.
 
 mod accounts_window;
+mod atlauncher_cli;
+mod atlauncher_dialog;
 mod cli_launch;
 mod dialogs;
 mod instance_lock;
@@ -29,6 +31,9 @@ fn main() {
 
     // Headless CLI: verify/test the launch pipeline without a GUI.
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("atlauncher") {
+        std::process::exit(atlauncher_cli::run(&args[2..]));
+    }
     if args.get(1).map(String::as_str) == Some("launch") {
         let (id, shortcut_token) = match &args[2..] {
             [id] => (id, None),
@@ -345,6 +350,10 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 .expect("loader profile fetch failed");
                 profile.apply_loader(&lvd);
             }
+        }
+        if instance.is_some() {
+            prism_core::modplatform::atlauncher::apply_launch(&settings.instance_dir, &mut profile)
+                .expect("ATLauncher launch metadata failed");
         }
         println!(
             "mainClass: {}\nlibraries: {} (+{} natives)\nassets: {}\njava: {:?}",

@@ -2,6 +2,7 @@
 //! Modrinth first (api.modrinth.com/v2), CurseForge next.
 
 pub mod flame;
+pub mod atlauncher;
 pub mod modrinth;
 pub mod updates;
 
