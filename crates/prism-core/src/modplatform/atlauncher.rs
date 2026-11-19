@@ -249,7 +249,12 @@ impl Selection {
                 }
             }
             self.enabled.insert(name.into());
-            for dep in &entry.depends {
+            for dep in entry.depends.iter().filter(|dep| {
+                entry.optional
+                    && m.mods
+                        .iter()
+                        .any(|e| e.optional && e.client && &e.name == *dep)
+            }) {
                 self.change(m, dep, true, visiting)?;
             }
         } else {
@@ -257,20 +262,29 @@ impl Selection {
             for other in m
                 .mods
                 .iter()
-                .filter(|e| e.depends.iter().any(|d| d == name) && self.enabled.contains(&e.name))
+                .filter(|e| {
+                    entry.optional
+                        && e.optional
+                        && e.depends.iter().any(|d| d == name)
+                        && self.enabled.contains(&e.name)
+                })
                 .cloned()
                 .collect::<Vec<_>>()
             {
                 self.change(m, &other.name, false, visiting)?;
             }
-            for dep in &entry.depends {
+            for dep in entry.depends.iter().filter(|dep| {
+                entry.optional
+                    && m.mods
+                        .iter()
+                        .any(|e| e.optional && e.client && &e.name == *dep)
+            }) {
                 if m.mods
                     .iter()
                     .any(|e| &e.name == dep && (e.hidden || e.library))
-                    && !m
-                        .mods
-                        .iter()
-                        .any(|e| self.enabled.contains(&e.name) && e.depends.contains(dep))
+                    && !m.mods.iter().any(|e| {
+                        e.optional && self.enabled.contains(&e.name) && e.depends.contains(dep)
+                    })
                 {
                     self.change(m, dep, false, visiting)?;
                 }
@@ -286,7 +300,17 @@ impl Selection {
                 return Err(error(format!("Missing required mod: {}", e.name)));
             }
             if self.enabled.contains(&e.name) {
-                if !e.depends.iter().all(|d| self.enabled.contains(d)) {
+                if e.optional
+                    && !e
+                        .depends
+                        .iter()
+                        .filter(|d| {
+                            m.mods
+                                .iter()
+                                .any(|other| other.optional && other.client && &other.name == *d)
+                        })
+                        .all(|d| self.enabled.contains(d))
+                {
                     return Err(error(format!("Missing dependency for {}", e.name)));
                 }
                 if !e.group.is_empty() && !groups.insert(&e.group) {
@@ -794,6 +818,31 @@ mod tests {
             .is_empty());
     }
     #[test]
+    fn selection_stale_dependencies() {
+        let m: Manifest = serde_json::from_value(json!({"mods":[
+            {"name":"Buildcraft","client":true},
+            {"name":"BuildCraft Compat","client":true,"depends":["BuildCraft"]},
+            {"name":"Addon","client":true,"optional":true,"selected":true,
+             "recommended":true,"depends":["BuildCraft","missing","server","Buildcraft"]},
+            {"name":"server","client":false,"optional":true}
+        ]}))
+        .unwrap();
+        for preset in [
+            Selection::defaults,
+            Selection::recommended,
+            Selection::clear,
+        ] {
+            let s = preset(&m).unwrap();
+            s.validate(&m).unwrap();
+            assert!(s.enabled.contains("Buildcraft"));
+            assert!(s.enabled.contains("BuildCraft Compat"));
+            assert!(!s.enabled.contains("BuildCraft"));
+        }
+        let mut s = Selection::defaults(&m).unwrap();
+        s.set(&m, "Addon", false).unwrap();
+        assert!(s.enabled.contains("Buildcraft"));
+    }
+    #[test]
     fn rejects_unsafe_paths_and_archives() {
         for raw in [
             "../escape",
@@ -892,7 +941,11 @@ mod tests {
         apply_launch(&inst.root, &mut profile).unwrap();
         assert_eq!(profile.main_class, "example.Main");
         assert_eq!(
-            profile.legacy_arguments.unwrap().split_whitespace().collect::<Vec<_>>(),
+            profile
+                .legacy_arguments
+                .unwrap()
+                .split_whitespace()
+                .collect::<Vec<_>>(),
             ["--tweakClass", "example.Tweak"]
         );
     }
