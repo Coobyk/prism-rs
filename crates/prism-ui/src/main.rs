@@ -21,6 +21,39 @@ fn main() {
     // Headless CLI: verify/test the launch pipeline without a GUI.
     // Usage: prism-rs prepare <mc-version> | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("export") {
+        if args.len() != 4 {
+            eprintln!("Usage: prism-rs export <instance-id> <out.zip|out.mrpack>");
+            std::process::exit(1);
+        }
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let paths = prism_core::Paths::new();
+            let list = prism_core::InstanceList::load(&paths)?;
+            let instance = list.get(&args[2]).ok_or("Instance not found")?;
+            let output = std::path::Path::new(&args[3]);
+            match output.extension().and_then(|s| s.to_str()) {
+                Some("zip") => prism_core::export::export_zip(instance, output)?,
+                Some("mrpack") => {
+                    let metadata = prism_core::export::MrpackMetadata {
+                        name: instance.name.clone(),
+                        version: "1.0.0".into(),
+                        summary: instance.notes.clone(),
+                    };
+                    tokio::runtime::Runtime::new()?.block_on(prism_core::export::export_mrpack(
+                        instance, output, metadata,
+                    ))?;
+                }
+                _ => return Err("Output must end in .zip or .mrpack".into()),
+            }
+            println!("Exported: {}", output.display());
+            Ok(())
+        })();
+        if let Err(error) = result {
+            eprintln!("Export failed: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.len() >= 2 && args[1] == "import" && args.len() >= 3 {
         let code = headless_import(&args[2]);
         std::process::exit(code);
