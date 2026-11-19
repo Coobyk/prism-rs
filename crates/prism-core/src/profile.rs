@@ -109,6 +109,16 @@ impl LaunchProfile {
         }
     }
 
+    /// Java majors this version runs on, most preferred first. Like
+    /// meta.prismlauncher.org, Java 16 versions (1.17) also accept Java 17.
+    pub fn compatible_java_majors(&self) -> Vec<u32> {
+        match self.java_major.and_then(|major| u32::try_from(major).ok()) {
+            Some(16) => vec![16, 17],
+            Some(major) => vec![major],
+            None => Vec::new(),
+        }
+    }
+
     /// Final classpath entries (library dir prefix added by the caller).
     pub fn classpath(&self) -> Vec<PathBuf> {
         self.libraries.iter().map(|l| l.path.clone()).collect()

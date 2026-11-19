@@ -253,6 +253,9 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             game_dir: game_dir.clone(),
             mc_version: version.into(),
             java_path: prism_core::java::find_java().unwrap_or_else(|| "java".into()),
+            java_path_explicit: false,
+            auto_java_download: true,
+            ignore_java_compatibility: false,
             min_memory_mb: 512,
             max_memory_mb: 2048,
             extra_jvm_args: vec![],
@@ -260,6 +263,12 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             window_height: 480,
             env: vec![],
         };
+
+        let mut settings = settings;
+        match launcher.resolve_java(&mut settings, &profile).await {
+            Ok(message) => println!("{message}"),
+            Err(e) => panic!("java selection failed: {e}"),
+        }
 
         println!("Downloading game files…");
         launcher.prepare_files(&profile, &settings).await.expect("prepare failed");

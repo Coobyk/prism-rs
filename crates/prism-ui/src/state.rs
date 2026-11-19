@@ -256,6 +256,14 @@ impl App {
                 }
             };
             let mut profile = prism_core::profile::LaunchProfile::from_mojang(&version_data);
+            match launcher.resolve_java(&mut settings, &profile).await {
+                Ok(message) => log_lock(&log).push(message),
+                Err(e) => {
+                    log_lock(&log).push(format!("Fatal: {e}"));
+                    state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
+                    return;
+                }
+            }
 
             // 1b. Loader component overlay.
             let loader = prism_core::instance::loader_of(&inst);
