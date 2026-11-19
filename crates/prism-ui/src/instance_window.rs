@@ -1,5 +1,5 @@
 //! Instance window: per-instance pages (Log, Version, Mods, Resource Packs,
-//! Shader Packs, Notes, Settings), mirroring PrismLauncher's InstanceWindow
+//! Shader Packs, Data Packs, Notes, Settings), mirroring PrismLauncher's InstanceWindow
 //! + instance pages.
 
 use crate::state::{App, InstanceRunState};
@@ -17,6 +17,10 @@ use prism_core::{Instance, InstanceKind};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+#[path = "datapacks_page.rs"]
+mod datapacks_page;
+use datapacks_page::DataPacksPage;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Page {
     Log,
@@ -25,10 +29,12 @@ pub enum Page {
     ModUpdates,
     ResourcePacks,
     ShaderPacks,
+    DataPacks,
     BrowseMods,
     BrowseCurseForge,
     BrowseResourcePacks,
     BrowseShaderPacks,
+    BrowseDataPacks,
     Notes,
     Settings,
     Worlds,
@@ -45,10 +51,12 @@ impl Page {
             Page::ModUpdates => "Mod Updates",
             Page::ResourcePacks => "Resource Packs",
             Page::ShaderPacks => "Shader Packs",
+            Page::DataPacks => "Data Packs",
             Page::BrowseMods => "Browse Mods (Modrinth)",
             Page::BrowseCurseForge => "Browse Mods (CurseForge)",
             Page::BrowseResourcePacks => "Browse Resource Packs",
             Page::BrowseShaderPacks => "Browse Shader Packs",
+            Page::BrowseDataPacks => "Browse Data Packs",
             Page::Notes => "Notes",
             Page::Settings => "Settings",
             Page::Worlds => "Worlds",
@@ -65,6 +73,7 @@ impl Page {
             Page::BrowseMods,
             Page::ResourcePacks,
             Page::ShaderPacks,
+            Page::DataPacks,
             Page::Worlds,
             Page::Servers,
             Page::Screenshots,
@@ -83,6 +92,7 @@ impl Page {
             Self::BrowseCurseForge => Some(Browser::CurseForge),
             Self::BrowseResourcePacks => Some(Browser::Modrinth(ResourceType::ResourcePack)),
             Self::BrowseShaderPacks => Some(Browser::Modrinth(ResourceType::ShaderPack)),
+            Self::BrowseDataPacks => Some(Browser::Modrinth(ResourceType::DataPack)),
             _ => None,
         }
     }
@@ -92,6 +102,7 @@ impl Page {
             Self::ModUpdates | Self::BrowseCurseForge => Self::Mods,
             Self::BrowseResourcePacks => Self::ResourcePacks,
             Self::BrowseShaderPacks => Self::ShaderPacks,
+            Self::BrowseDataPacks => Self::DataPacks,
             _ => self,
         }
     }
@@ -114,9 +125,12 @@ mod tests {
         for (browser, installed, resource_type) in [
             (Page::BrowseResourcePacks, Page::ResourcePacks, ResourceType::ResourcePack),
             (Page::BrowseShaderPacks, Page::ShaderPacks, ResourceType::ShaderPack),
+            (Page::BrowseDataPacks, Page::DataPacks, ResourceType::DataPack),
         ] {
             assert!(browser.available(false));
             assert!(!browser.available(true));
+            assert!(installed.available(false));
+            assert!(!installed.available(true));
             assert!(!Page::all().contains(&browser));
             assert_eq!(browser.sidebar_page(), installed);
             assert_eq!(browser.browser(), Some(Browser::Modrinth(resource_type)));
@@ -217,6 +231,7 @@ pub struct InstanceWindow {
     server_inputs: Option<(gpui::Entity<InputState>, gpui::Entity<InputState>)>,
     server_status: String,
     servers_was_running: bool,
+    datapacks: DataPacksPage,
     pub(crate) settings_editor: Option<crate::instance_settings_page::SettingsEditor>,
 }
 
@@ -236,6 +251,7 @@ impl InstanceWindow {
             server_inputs: None,
             server_status: String::new(),
             servers_was_running: false,
+            datapacks: DataPacksPage::default(),
             settings_editor: None,
         }
     }
@@ -609,12 +625,13 @@ impl InstanceWindow {
             Page::ModUpdates => self.render_mod_updates(cx),
             Page::ResourcePacks => self.render_resources_page(cx, ResourceType::ResourcePack),
             Page::ShaderPacks => self.render_resources_page(cx, ResourceType::ShaderPack),
+            Page::DataPacks => self.render_datapacks(cx),
             Page::Notes => self.render_notes_page(cx),
             Page::Settings => self.render_settings_page(cx),
             Page::Worlds => self.render_worlds_page(cx),
             Page::Servers => self.render_servers_page(cx),
             Page::Screenshots => self.render_screenshots_page(cx),
-            Page::BrowseMods | Page::BrowseCurseForge | Page::BrowseResourcePacks | Page::BrowseShaderPacks => self
+            Page::BrowseMods | Page::BrowseCurseForge | Page::BrowseResourcePacks | Page::BrowseShaderPacks | Page::BrowseDataPacks => self
                 .render_mod_browser(cx, self.page.browser().expect("browser page")),
         }
     }
@@ -885,11 +902,17 @@ impl InstanceWindow {
         let app = self.app.read(cx);
         let target = BrowserTarget::new(&inst, app);
         let running = app.is_running(&self.instance_id);
+        let is_datapack = provider == Browser::Modrinth(ResourceType::DataPack);
+        let pack_target = is_datapack.then(|| self.datapack_target(cx)).flatten();
 
         let Some(browser) = self.browsers.get(&provider) else {
             return div().into_any_element();
         };
-        let mut header = self.page_header(cx, format!("{} · Minecraft {}", self.page.label(), target.mc_version));
+        let mut subtitle = format!("{} · Minecraft {}", self.page.label(), target.mc_version);
+        if let Some(scope) = &pack_target {
+            subtitle.push_str(&format!(" · World: {}", scope.world.name()));
+        }
+        let mut header = self.page_header(cx, subtitle);
         let installed_page = self.page.sidebar_page();
         if installed_page != self.page {
             header = header.child(
@@ -909,6 +932,9 @@ impl InstanceWindow {
             .min_w_0()
             .min_h_0()
             .child(header);
+        if is_datapack && pack_target.is_none() {
+            return panel.child(div().p_3().child("Select an existing world on the Data Packs page.")).into_any_element();
+        }
         if let Some(message) = provider.prerequisite(&target.loader) {
             return panel.child(div().p_3().text_color(rgb(0x8fb4d9)).child(message)).into_any_element();
         }
@@ -952,6 +978,7 @@ impl InstanceWindow {
             let (id, title, description, downloads) = project.details();
             let is_installing = browser.installing.contains(&id);
             let project = project.clone();
+            let pack_target = pack_target.clone();
             list = list.child(
                 div()
                     .flex()
@@ -989,7 +1016,13 @@ impl InstanceWindow {
                             .label(if is_installing { "Installing…" } else { "Install" })
                             .disabled(running || is_installing)
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.install_project(provider, project.clone(), cx);
+                                if let Some(target) = &pack_target {
+                                    if let BrowserProject::Modrinth(project) = &project {
+                                        this.install_datapack(target.clone(), project.clone(), cx);
+                                    }
+                                } else if !is_datapack {
+                                    this.install_project(provider, project.clone(), cx);
+                                }
                             }))),
                     ),
             );

@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod copy;
+pub mod datapacks;
 pub mod export;
 pub mod horizon;
 pub mod import;
