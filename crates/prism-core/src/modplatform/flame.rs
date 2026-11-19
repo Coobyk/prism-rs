@@ -54,10 +54,10 @@ pub struct FlameFile {
     pub fileLength: i64,
     #[serde(default)]
     pub gameVersions: Vec<String>,
-    #[serde(default)]
-    pub fileDate: String,
-    #[serde(default)]
-    pub releaseType: u8,
+    #[serde(default, rename = "fileDate")]
+    pub file_date: String,
+    #[serde(default, rename = "releaseType")]
+    pub release_type: u8,
     #[serde(default)]
     pub hashes: Vec<FlameHash>,
 }

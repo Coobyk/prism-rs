@@ -337,9 +337,9 @@ async fn check_curseforge(
         .into_iter()
         .filter(|file| {
             file.id != current.id
-                && (1..=current.releaseType).contains(&file.releaseType)
+                && (1..=current.release_type).contains(&file.release_type)
                 && file.gameVersions.iter().any(|game| game == mc)
-                && newer(&file.fileDate, &current.fileDate)
+                && newer(&file.file_date, &current.file_date)
         })
         .filter_map(|file| {
             let url = file
@@ -348,7 +348,7 @@ async fn check_curseforge(
                 .filter(|url| !url.is_empty() && is_jar(&file.fileName))?
                 .clone();
             Some((
-                timestamp(&file.fileDate)?,
+                timestamp(&file.file_date)?,
                 file.id,
                 file.displayName.clone(),
                 curseforge_index(id.project, &file)?,
@@ -608,6 +608,35 @@ project-id = 327154
 file-id = 3509043
 "#;
 
+    fn serve(
+        listener: std::net::TcpListener,
+        responses: Vec<(&'static [&'static str], Vec<u8>)>,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for (parts, body) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = std::io::BufReader::new(&mut stream);
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                assert!(parts.iter().all(|part| line.contains(part)), "{line}");
+                loop {
+                    line.clear();
+                    if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        })
+    }
+
     #[test]
     fn reads_prism_packwiz_metadata_and_preserves_unrelated_properties() {
         let temp = tempfile::tempdir().unwrap();
@@ -661,30 +690,66 @@ file-id = 3509043
         assert!(update.apply(&downloader).await.is_err());
         assert_eq!(fs::read(&new).unwrap(), b"user file");
         fs::remove_file(&new).unwrap();
-        let done = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = std::io::BufReader::new(&mut stream);
-            let mut line = String::new();
-            use std::io::BufRead;
-            loop {
-                line.clear();
-                if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-                    break;
-                }
-            }
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                bytes.len()
-            )
-            .unwrap();
-            stream.write_all(bytes).unwrap();
-        });
+        let done = serve(listener, vec![(&["GET /file "], bytes.to_vec())]);
         assert!(update.apply(&downloader).await.unwrap().is_none());
         done.join().unwrap();
         assert!(!old.exists());
         assert_eq!(fs::read(new).unwrap(), bytes);
         assert!(read_index(mods).contains_key("new.jar"));
+    }
+
+    #[tokio::test]
+    async fn curseforge_prefers_the_latest_compatible_release_over_betas() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api =
+            FlameApi::with_test_endpoint(format!("http://{}", listener.local_addr().unwrap()));
+        let version = |id, name, date, channel, game| {
+            serde_json::json!({
+                "id": id, "displayName": name, "fileName": format!("example-{id}.jar"),
+                "fileDate": date, "releaseType": channel, "gameVersions": [game],
+                "downloadUrl": "https://example.invalid/example.jar",
+                "hashes": [{"algo": 1, "value": "c4293c1483f3b39c1c6c4c69143e8bb2c6e53daf"}]
+            })
+        };
+        let current = version(1, "Installed", "2026-01-01T00:00:00Z", 1, "1.20.1");
+        let beta = version(4, "New Beta", "2026-01-04T00:00:00Z", 2, "1.20.1");
+        let wrong_game = version(3, "Wrong Game", "2026-01-03T00:00:00Z", 1, "1.21");
+        let newer = version(2, "New Stable", "2026-01-02T00:00:00Z", 1, "1.20.1");
+        let service = serve(
+            listener,
+            vec![
+                (
+                    &["GET /mods/42/files/1 "],
+                    serde_json::to_vec(&serde_json::json!({"data": current})).unwrap(),
+                ),
+                (
+                    &[
+                        "GET /mods/42/files?",
+                        "gameVersion=1.20.1",
+                        "modLoaderType=4",
+                    ],
+                    serde_json::to_vec(&serde_json::json!({"data": [beta, wrong_game, newer]}))
+                        .unwrap(),
+                ),
+            ],
+        );
+        let (old, new, index, _) = check_curseforge(
+            &api,
+            &CurseForgeId {
+                project: 42,
+                file: 1,
+            },
+            "1.20.1",
+            4,
+            "c4293c1483f3b39c1c6c4c69143e8bb2c6e53daf",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        service.join().unwrap();
+        assert_eq!(old, "Installed");
+        assert_eq!(new, "New Stable");
+        assert_eq!(index.update.curseforge.unwrap().file, 2);
     }
 
     #[test]
