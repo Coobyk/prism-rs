@@ -11,6 +11,7 @@ pub mod datapacks;
 pub mod export;
 pub mod horizon;
 pub mod import;
+pub mod import_ftb;
 pub mod icons;
 pub mod ini;
 pub mod instance;
