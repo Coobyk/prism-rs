@@ -234,10 +234,15 @@ fn csv(entry: &ModListEntry, fields: Fields) -> String {
         .into_iter()
         .flatten()
         .map(|value| {
+            let value = if value.starts_with(['=', '+', '-', '@', '\t', '\r']) {
+                std::borrow::Cow::Owned(format!("'{value}"))
+            } else {
+                std::borrow::Cow::Borrowed(value)
+            };
             if value.contains([',', '"', '\r', '\n']) {
                 format!("\"{}\"", value.replace('"', "\"\""))
             } else {
-                value.to_owned()
+                value.into_owned()
             }
         })
         .collect::<Vec<_>>()
@@ -302,6 +307,34 @@ mod tests {
         let bare = render(&entries, Format::Json, Fields::default(), "");
         let bare: serde_json::Value = serde_json::from_str(&bare).unwrap();
         assert_eq!(bare, serde_json::json!([{ "name": entries[0].name }]));
+    }
+
+    #[test]
+    fn csv_neutralizes_formula_prefixes_in_each_column() {
+        let mut entry = ModListEntry {
+            name: "=name,other".into(),
+            url: Some("+url".into()),
+            version: Some("-version".into()),
+            authors: vec!["@author".into(), "Another \"Author\"".into()],
+            filename: "\tfile.jar".into(),
+            mod_id: None,
+        };
+        let fields = Fields {
+            url: true,
+            version: true,
+            authors: true,
+            filename: true,
+        };
+        assert_eq!(
+            render(std::slice::from_ref(&entry), Format::Csv, fields, ""),
+            "\"'=name,other\",'+url,'-version,\"'@author,Another \"\"Author\"\"\",'\tfile.jar"
+        );
+
+        entry.name = "\rreturn".into();
+        assert_eq!(
+            render(&[entry], Format::Csv, Fields::default(), ""),
+            "\"'\rreturn\""
+        );
     }
 
     #[test]
