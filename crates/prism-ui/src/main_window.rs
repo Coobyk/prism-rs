@@ -17,7 +17,8 @@ pub struct MainWindow {
     pub(crate) app: gpui::Entity<App>,
     pub create_dialog: Option<CreateInstanceState>,
     pub prompt: Option<PromptState>,
-    console_open: bool,
+    pub quick_play: Option<crate::dialogs::QuickPlayState>,
+    pub(crate) console_open: bool,
     console_filter: String,
 }
 
@@ -32,6 +33,7 @@ impl MainWindow {
             app,
             create_dialog: None,
             prompt: None,
+            quick_play: None,
             console_open: false,
             console_filter: String::new(),
         }
@@ -343,6 +345,22 @@ impl MainWindow {
                 self.sidebar_button("launch", "Launch", enabled && !is_running)
                     .on_click(cx.listener(Self::on_launch)),
             )
+            .children((!horizon).then(|| {
+                self.sidebar_button("quick-play", "Quick Play…", enabled && !is_running)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let app = this.app.read(cx);
+                        if let Some(inst) = app
+                            .selected
+                            .as_ref()
+                            .and_then(|id| app.instances.get(id))
+                            .cloned()
+                        {
+                            this.quick_play =
+                                Some(crate::dialogs::QuickPlayState::new(&inst, window, cx));
+                            cx.notify();
+                        }
+                    }))
+            }))
             .children((!horizon).then(|| {
                 self.sidebar_button("kill", "Kill", is_running)
                     .on_click(cx.listener(Self::on_kill))
@@ -691,6 +709,7 @@ impl Render for MainWindow {
             .children(console_open.then(|| self.render_console(cx)))
             .child(self.render_bottom_bar(cx))
             .children(create_dialog)
+            .children(self.quick_play.as_ref().map(|dialog| dialog.render(cx)))
             .children(prompt_dialog)
             .children(toast)
     }

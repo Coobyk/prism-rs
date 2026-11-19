@@ -159,6 +159,15 @@ impl App {
     /// Kick off launching the instance. The heavy lifting runs on the core
     /// tokio runtime; progress lands in `running[id]`.
     pub fn start_launch(&mut self, id: &str, cx: &mut gpui_kit::Context<Self>) {
+        self.start_launch_with(id, None, cx);
+    }
+
+    pub fn start_launch_with(
+        &mut self,
+        id: &str,
+        quick_play: Option<prism_core::launch::QuickPlayTarget>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
         if self.is_running(id) {
             return;
         }
@@ -202,7 +211,8 @@ impl App {
             return;
         }
 
-        let settings = LaunchSettings::for_instance(&inst, &self.paths);
+        let mut settings = LaunchSettings::for_instance(&inst, &self.paths);
+        settings.quick_play = quick_play;
         let session: Option<AuthSession> = self
             .accounts
             .active_account()
@@ -217,6 +227,15 @@ impl App {
             inst.name, settings.mc_version
         ));
 
+        if let Some(target) = &settings.quick_play {
+            let destination = match target {
+                prism_core::launch::QuickPlayTarget::Singleplayer { world } => {
+                    format!("world {world:?}")
+                }
+                _ => format!("server {}", target.address()),
+            };
+            log_lock(&log).push(format!("Quick Play: joining {destination}"));
+        }
         self.runtime.spawn(async move {
             // 1. Version metadata.
             state_lock(&state, |s| *s = InstanceRunState::Preparing);
@@ -290,6 +309,11 @@ impl App {
             ));
 
             // 2. Files.
+            if matches!(settings.quick_play, Some(prism_core::launch::QuickPlayTarget::Singleplayer { .. }))
+                && !profile.supports_quick_play_singleplayer()
+            {
+                log_lock(&log).push(format!("Minecraft {} does not support Quick Play singleplayer; launching to the title screen", settings.mc_version));
+            }
             if let Err(e) = launcher.prepare_files(&profile, &settings).await {
                 log_lock(&log).push(format!("Fatal: {e}"));
                 state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));

@@ -798,25 +798,41 @@ impl InstanceWindow {
         let inst = self.instance(cx);
         let saves = inst.game_root().join("saves");
         let mut list = div().flex().flex_col().gap_1().p_3();
-        let mut found = false;
-        if let Ok(entries) = std::fs::read_dir(&saves) {
-            for entry in entries.flatten() {
-                if !entry.path().is_dir() {
-                    continue;
-                }
-                found = true;
-                let name = entry.file_name().to_string_lossy().to_string();
-                list = list.child(
-                    div()
-                        .px_3()
-                        .py_2()
-                        .bg(rgb(0x2b2b2b))
-                        .rounded_md()
-                        .child(name),
-                );
-            }
+        let worlds = inst.worlds();
+        let running = self.app.read(cx).is_running(&inst.id);
+        for (index, name) in worlds.iter().enumerate() {
+            let world = name.clone();
+            let id = inst.id.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_3()
+                    .py_2()
+                    .bg(rgb(0x2b2b2b))
+                    .rounded_md()
+                    .child(name.clone())
+                    .child(
+                        Button::new(("join-world", index))
+                            .label("Join")
+                            .disabled(running)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.app.update(cx, |app, cx| {
+                                    app.start_launch_with(
+                                        &id,
+                                        Some(prism_core::launch::QuickPlayTarget::Singleplayer {
+                                            world: world.clone(),
+                                        }),
+                                        cx,
+                                    )
+                                });
+                                cx.notify();
+                            })),
+                    ),
+            );
         }
-        if !found {
+        if worlds.is_empty() {
             list = list.child(div().text_color(rgb(0x777777)).child("No worlds."));
         }
 

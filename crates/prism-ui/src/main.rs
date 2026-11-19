@@ -8,6 +8,7 @@ mod settings_window;
 mod state;
 
 use gpui_kit::*;
+use prism_core::launch::QuickPlayTarget;
 use state::App;
 
 fn main() {
@@ -19,7 +20,7 @@ fn main() {
         .init();
 
     // Headless CLI: verify/test the launch pipeline without a GUI.
-    // Usage: prism-rs prepare <mc-version> | import <pack-file>
+    // Usage: prism-rs prepare <mc-version> [--world <name> | --server <host[:port]>] | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("export") {
         if args.len() != 4 {
@@ -63,7 +64,7 @@ fn main() {
         std::process::exit(code);
     }
     if args.len() >= 3 && args[1] == "prepare" {
-        let code = headless_prepare(&args[2]);
+        let code = headless_prepare(&args[2], &args[3..]);
         std::process::exit(code);
     }
 
@@ -164,7 +165,26 @@ fn headless_import(path: &str) -> i32 {
     }
 }
 
-fn headless_prepare(version: &str) -> i32 {
+fn headless_prepare(version: &str, args: &[String]) -> i32 {
+    let quick_play = match args {
+        [] => None,
+        [flag, world] if flag == "--world" && !world.is_empty() => {
+            Some(QuickPlayTarget::Singleplayer {
+                world: world.clone(),
+            })
+        }
+        [flag, address] if flag == "--server" => match QuickPlayTarget::parse_server(address) {
+            Ok(target) => Some(target),
+            Err(error) => {
+                eprintln!("{error}");
+                return 1;
+            }
+        },
+        _ => {
+            eprintln!("Expected [--world <name> | --server <host[:port]>]");
+            return 1;
+        }
+    };
     let paths = prism_core::Paths::new();
     paths.ensure().expect("failed to create data dirs");
     let runtime = prism_core::net::CoreRuntime::new();
@@ -200,6 +220,7 @@ fn headless_prepare(version: &str) -> i32 {
         let game_dir = paths.instances_dir().join("headless-test").join(".minecraft");
         std::fs::create_dir_all(&game_dir).unwrap();
         let settings = prism_core::launch::LaunchSettings {
+            quick_play,
             instance_name: "headless-test".into(),
             instance_id: "headless-test".into(),
             game_dir: game_dir.clone(),
