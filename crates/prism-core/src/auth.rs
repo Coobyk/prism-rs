@@ -257,7 +257,7 @@ pub struct MsaClient {
 impl MsaClient {
     pub fn new() -> Self {
         MsaClient {
-            http: reqwest::Client::new(),
+            http: crate::net::configured_http_builder().build().expect("failed to build HTTP client"),
         }
     }
 

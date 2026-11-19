@@ -201,10 +201,7 @@ impl Screenshot {
 }
 
 pub fn imgur_client_id() -> Option<String> {
-    std::env::var(IMGUR_CLIENT_ID_ENV)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+    crate::settings::ApiKey::Imgur.load()
 }
 
 #[derive(Deserialize)]
@@ -234,7 +231,7 @@ async fn upload_imgur(
             "Set {IMGUR_CLIENT_ID_ENV} to a valid Imgur client ID."
         ));
     }
-    let client = reqwest::Client::builder()
+    let client = crate::net::configured_http_builder()
         .timeout(Duration::from_secs(45))
         .redirect(reqwest::redirect::Policy::none())
         .build()

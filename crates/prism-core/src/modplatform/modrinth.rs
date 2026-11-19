@@ -94,7 +94,7 @@ impl ModrinthApi {
 
     pub fn new() -> Self {
         ModrinthApi {
-            http: reqwest::Client::builder()
+            http: crate::net::configured_http_builder()
                 .user_agent(format!("prism-rs/{}", env!("CARGO_PKG_VERSION")))
                 .build()
                 .unwrap(),

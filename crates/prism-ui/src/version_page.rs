@@ -178,7 +178,7 @@ impl InstanceWindow {
         });
         if let Edit::SetLoader(kind @ (LoaderKind::Fabric | LoaderKind::Quilt)) = edit {
             let app = self.app.read(cx);
-            let client = app.runtime.downloader.client().clone();
+            let client = app.runtime.downloader.client();
             let version = self
                 .version_editor
                 .pack
@@ -255,7 +255,7 @@ impl InstanceWindow {
         let paths = app.paths.clone();
         let launcher = Launcher::new(paths.clone(), app.runtime.downloader.clone());
         let runtime = app.runtime.clone();
-        let client = runtime.downloader.client().clone();
+        let client = runtime.downloader.client();
         self.version_editor.dialog = None;
         self.version_editor.busy = true;
         self.version_editor.message.clear();

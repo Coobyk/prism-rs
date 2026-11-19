@@ -427,7 +427,7 @@ impl InstanceWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (title, message) = if dialog.missing_key {
-            ("Imgur client ID required", format!("Set {IMGUR_CLIENT_ID_ENV} and restart prism-rs to upload screenshots. No screenshot was sent."))
+            ("Imgur client ID required", format!("Add a client ID in Settings → API Keys or set {IMGUR_CLIENT_ID_ENV}. No screenshot was sent."))
         } else {
             match dialog.action {
                 Action::Rename => (

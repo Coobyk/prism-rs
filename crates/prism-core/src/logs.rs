@@ -56,7 +56,7 @@ async fn upload_to(endpoint: &str, text: &str) -> Result<reqwest::Url, String> {
     if text.len() as u64 > MAX_LOG_BYTES {
         return Err("The log is too large to upload.".into());
     }
-    let client = reqwest::Client::builder()
+    let client = crate::net::configured_http_builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::none())
         .build()

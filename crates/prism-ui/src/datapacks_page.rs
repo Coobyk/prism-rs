@@ -227,7 +227,7 @@ impl InstanceWindow {
         let title = project.title.clone();
         let mc_version = target.mc_version.clone();
         let task = runtime.spawn(async move {
-            ModrinthApi::with_client(downloader.client().clone())
+            ModrinthApi::with_client(downloader.client())
                 .download_datapack(&downloader, &project, &mc_version)
                 .await
         });
