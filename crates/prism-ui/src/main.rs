@@ -10,6 +10,9 @@ mod state;
 use gpui_kit::*;
 use prism_core::launch::QuickPlayTarget;
 use state::App;
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 fn main() {
     tracing_subscriber::fmt()
@@ -247,11 +250,20 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
         println!("Downloading game files…");
         launcher.prepare_files(&profile, &settings).await.expect("prepare failed");
 
-        let session = prism_core::launch::AuthSession::offline("Player");
+        let mut accounts = prism_core::AccountList::load(&paths.accounts_file());
+        let session = match accounts.session_for_launch(&paths.accounts_file()).await {
+            Ok(session) => {
+                session.unwrap_or_else(|| prism_core::launch::AuthSession::offline("Player"))
+            }
+            Err(error) => {
+                eprintln!("Launch preparation failed: {error}");
+                return 1;
+            }
+        };
         let prepared = launcher.build_command(&settings, Some(&session), &profile);
         println!("\nCommand line:");
         for arg in &prepared.command {
-            println!("  {arg}");
+            println!("  {}", redact_launch_arg(arg, &session));
         }
 
         // Emit a runnable script (run paths through the same substitution).
@@ -266,8 +278,82 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 .join(" ")
         );
         let script_path = paths.root.join("launch-headless.sh");
-        std::fs::write(&script_path, script).unwrap();
+        write_launch_script(&script_path, &script).expect("failed to write private launch script");
         println!("\nLaunch script written to {}", script_path.display());
-    });
-    0
+        0
+    })
+}
+
+fn redact_launch_arg(arg: &str, session: &prism_core::launch::AuthSession) -> String {
+    if session.user_type == "msa" && !session.access_token.is_empty() {
+        arg.replace(&session.access_token, "<access token>")
+    } else {
+        arg.to_string()
+    }
+}
+
+fn write_launch_script(path: &std::path::Path, script: &str) -> std::io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.set_len(0)?;
+    file.write_all(script.as_bytes())
+}
+
+#[cfg(test)]
+mod headless_tests {
+    use super::{redact_launch_arg, write_launch_script};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn printed_command_redacts_msa_tokens() {
+        let mut session = prism_core::launch::AuthSession::offline("Player");
+        assert_eq!(redact_launch_arg("token:0:0", &session), "token:0:0");
+        session.user_type = "msa".into();
+        session.access_token = "secret-token".into();
+        assert_eq!(
+            redact_launch_arg("secret-token", &session),
+            "<access token>"
+        );
+        assert_eq!(
+            redact_launch_arg("token:secret-token:uuid", &session),
+            "token:<access token>:uuid"
+        );
+        assert_eq!(redact_launch_arg("--username", &session), "--username");
+        session.access_token.clear();
+        assert_eq!(redact_launch_arg("--username", &session), "--username");
+    }
+
+    #[test]
+    fn script_retains_token_and_is_private_on_creation_and_rewrite() {
+        let path = std::env::temp_dir().join(format!(
+            "prism-script-{}-{}.sh",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let script = "#!/bin/sh\nexec java --accessToken 'secret-token'\n";
+        for existing in [false, true] {
+            if existing {
+                #[cfg(unix)]
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            }
+            write_launch_script(&path, script).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), script);
+            #[cfg(unix)]
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+        assert!(write_launch_script(&std::env::temp_dir(), script).is_err());
+    }
 }

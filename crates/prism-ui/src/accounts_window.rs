@@ -71,8 +71,8 @@ impl AccountsWindow {
                         return Err(prism_core::auth::AuthError::Request("no device code".into()));
                     };
                     let client = prism_core::auth::MsaClient::new();
-                    let (access, refresh, expires) = client.poll_token(&start).await?;
-                    client.login_with_msa_token(&access, refresh, expires).await
+                    let (access, refresh, _) = client.poll_token(&start).await?;
+                    client.login_with_msa_token(&access, refresh).await
                 });
                 *handle_slot.lock().unwrap_or_else(|p| p.into_inner()) = Some(poll);
                 *status2.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
