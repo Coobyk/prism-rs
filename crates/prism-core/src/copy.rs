@@ -36,6 +36,25 @@ pub fn copy_instance(
     group: Option<&str>,
     options: &CopyOptions,
 ) -> io::Result<Instance> {
+    let mut instance = copy_instance_files(paths, source, name, options)?;
+    instance.group = group.filter(|g| !g.trim().is_empty()).map(str::to_string);
+    let mut groups = InstanceGroups::load(&paths.instances_dir());
+    groups.set_group(&instance.id, instance.group.as_deref());
+    if let Err(error) = groups.save(&paths.instances_dir()) {
+        let _ = fs::remove_dir_all(&instance.root);
+        return Err(error);
+    }
+    Ok(instance)
+}
+
+/// Copy files without touching shared group metadata. GUI callers must assign
+/// the returned instance's group through their current App state on the UI thread.
+pub fn copy_instance_files(
+    paths: &Paths,
+    source: &Instance,
+    name: &str,
+    options: &CopyOptions,
+) -> io::Result<Instance> {
     if name.trim().is_empty() || source.is_horizon() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -76,7 +95,6 @@ pub fn copy_instance(
             )
         })?;
         instance.name = name.trim().to_string();
-        instance.group = group.filter(|g| !g.trim().is_empty()).map(str::to_string);
         if !options.keep_playtime {
             instance.total_time_played = 0;
             instance.last_launch = 0;
@@ -89,9 +107,6 @@ pub fn copy_instance(
         }
         cfg.set("InstanceUUID", uuid::Uuid::new_v4().to_string());
         cfg.save(&root.join("instance.cfg"))?;
-        let mut groups = InstanceGroups::load(&paths.instances_dir());
-        groups.set_group(&instance.id, instance.group.as_deref());
-        groups.save(&paths.instances_dir())?;
         Ok(instance)
     })();
     if result.is_err() {
@@ -155,6 +170,51 @@ fn copy_tree(source: &Path, dest: &Path, relative: &Path, options: &CopyOptions)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn background_copies_do_not_overwrite_group_edits() {
+        let paths = Paths {
+            root: std::env::temp_dir().join(format!("prism-copy-{}", uuid::Uuid::new_v4())),
+        };
+        let source = crate::InstanceList::create(&paths, "Source", "default", "1.21").unwrap();
+        let mut groups = InstanceGroups::default();
+        groups.set_group(&source.id, Some("Original"));
+        groups.save(&paths.instances_dir()).unwrap();
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                copy_instance_files(&paths, &source, "Copy", &CopyOptions::default()).unwrap()
+            });
+            let second = scope.spawn(|| {
+                copy_instance_files(&paths, &source, "Copy", &CopyOptions::default()).unwrap()
+            });
+            groups.set_group(&source.id, Some("Edited while copying"));
+            groups.save(&paths.instances_dir()).unwrap();
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_ne!(first.id, second.id);
+        assert!(first.group.is_none());
+        assert!(second.group.is_none());
+        let saved = InstanceGroups::load(&paths.instances_dir());
+        assert_eq!(
+            saved.group_of(&source.id).as_deref(),
+            Some("Edited while copying")
+        );
+        assert!(saved.group_of(&first.id).is_none());
+        assert!(saved.group_of(&second.id).is_none());
+        for instance in [&first, &second] {
+            groups.set_group(&instance.id, Some("Copies"));
+            groups.save(&paths.instances_dir()).unwrap();
+        }
+        let saved = InstanceGroups::load(&paths.instances_dir());
+        assert_eq!(
+            saved.group_of(&source.id).as_deref(),
+            Some("Edited while copying")
+        );
+        for instance in [&first, &second] {
+            assert_eq!(saved.group_of(&instance.id).as_deref(), Some("Copies"));
+        }
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
     #[test]
     fn nested_world_content_is_not_filtered_as_junk() {
         let paths = Paths {

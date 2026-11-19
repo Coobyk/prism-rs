@@ -729,7 +729,7 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
         let (tx, rx) = tokio::sync::oneshot::channel();
         runtime.handle().spawn_blocking(move || {
             let result = source.ok_or_else(|| "Source instance no longer exists".to_string()).and_then(|source| {
-                prism_core::copy::copy_instance(&paths, &source, &value, Some(&group), &options).map_err(|e| e.to_string())
+                prism_core::copy::copy_instance_files(&paths, &source, &value, &options).map_err(|e| e.to_string())
             });
             let _ = tx.send(result);
         });
@@ -738,6 +738,13 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
                 let _ = app.update(cx, |app, _| {
                     let message = match result {
                         Ok(instance) => {
+                            app.instances.groups.set_group(&instance.id, if group.is_empty() { None } else { Some(&group) });
+                            if let Err(error) = app.instances.groups.save(&app.paths.instances_dir()) {
+                                app.toast = Some((format!("Copied {}, but could not save group: {error}", instance.name), std::time::Instant::now()));
+                                app.reload_instances();
+                                app.selected = Some(instance.id);
+                                return;
+                            }
                             app.reload_instances();
                             app.selected = Some(instance.id);
                             format!("Copied: {}", instance.name)
