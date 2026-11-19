@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+const RUN_SHORTCUT: &str = r#"PRISM_RS_DATA="$1"; export PRISM_RS_DATA; shift; exec "$@""#;
+
 pub fn create(paths: &Paths, instance: &Instance) -> io::Result<PathBuf> {
     let desktop = dirs::desktop_dir()
         .or_else(|| dirs::home_dir().map(|home| home.join("Desktop")))
@@ -30,9 +32,10 @@ fn write_shortcut(
         name.trim()
     };
     let entry = format!(
-        "[Desktop Entry]\nType=Application\nName={}\nExec=/usr/bin/env {} {} launch {}\nIcon=applications-games\nTerminal=false\n",
+        "[Desktop Entry]\nType=Application\nName={}\nExec=/bin/sh -c {} prism-rs {} {} launch {}\nIcon=applications-games\nTerminal=false\n",
         key_value(name),
-        exec_argument(&format!("PRISM_RS_DATA={data}"))?,
+        exec_argument(RUN_SHORTCUT)?,
+        exec_argument(data)?,
         exec_argument(exe)?,
         exec_argument(id)?,
     );
@@ -155,6 +158,26 @@ mod tests {
         );
         let text = fs::read_to_string(path).unwrap();
         assert!(text.contains("Name=../Saves\n"));
-        assert!(text.contains(r#"Exec=/usr/bin/env "PRISM_RS_DATA=/tmp/prism data" "/opt/Prism RS/prism-rs" launch "world-id""#));
+        assert!(text.contains(r#" "/tmp/prism data" "/opt/Prism RS/prism-rs" launch "world-id""#));
+    }
+
+    #[test]
+    fn shortcut_command_accepts_executable_paths_with_equals() {
+        let temp = tempfile::tempdir().unwrap();
+        let exe = temp.path().join("prism=rs");
+        fs::write(
+            &exe,
+            "#!/bin/sh\nprintf '%s\\n' \"$PRISM_RS_DATA\" \"$@\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o700)).unwrap();
+        let output = std::process::Command::new("/bin/sh")
+            .args(["-c", RUN_SHORTCUT, "prism-rs", "/tmp/prism data"])
+            .arg(exe)
+            .args(["launch", "world id"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"/tmp/prism data\nlaunch\nworld id\n");
     }
 }
