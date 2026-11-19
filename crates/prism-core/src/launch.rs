@@ -412,10 +412,11 @@ impl Launcher {
         let mut requests = Vec::new();
         for lib in profile.libraries.iter().chain(profile.natives.iter()) {
             let dest = libraries_dir.join(&lib.path);
-            if dest.exists() || !queued.insert(dest.clone()) {
+            if dest.exists() || queued.contains(&dest) {
                 continue;
             }
             if let Some(url) = &lib.url {
+                queued.insert(dest.clone());
                 let mut req = DownloadRequest::new(url.clone(), dest);
                 if let Some(sha1) = &lib.sha1 {
                     req = req.with_sha1(sha1.clone());
