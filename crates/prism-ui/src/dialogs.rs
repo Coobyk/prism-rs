@@ -2,8 +2,10 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::base::Selectable;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 
 pub struct CreateInstanceState {
@@ -234,6 +236,7 @@ pub struct PromptState {
     pub error: Option<String>,
     pub export_fields: Option<[Entity<InputState>; 3]>,
     pub mrpack: bool,
+    pub export_default_path: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -270,7 +273,32 @@ impl PromptState {
                 None
             },
             mrpack: false,
+            export_default_path: None,
         }
+    }
+
+    pub fn set_export_defaults(&mut self, instance: &prism_core::Instance, window: &mut Window, cx: &mut Context<MainWindow>) {
+        let path = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()))
+            .join(format!("{}.zip", instance.name.replace(['/', '\\'], "_")))
+            .to_string_lossy().into_owned();
+        self.input.update(cx, |state, cx| state.set_value(path.clone(), window, cx));
+        self.export_default_path = Some(path);
+        if let Some(fields) = &self.export_fields {
+            for (field, value) in fields.iter().zip([instance.name.clone(), "1.0.0".into(), String::new()]) {
+                field.update(cx, |state, cx| state.set_value(value, window, cx));
+            }
+        }
+    }
+
+    fn set_export_format(&mut self, mrpack: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
+        if self.export_default_path.as_deref() == Some(self.input.read(cx).value().as_str()) {
+            let mut path = std::path::PathBuf::from(self.export_default_path.as_ref().unwrap());
+            path.set_extension(if mrpack { "mrpack" } else { "zip" });
+            let value = path.to_string_lossy().into_owned();
+            self.input.update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+            self.export_default_path = Some(value);
+        }
+        self.mrpack = mrpack;
     }
 
     pub fn render(&self, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement {
@@ -309,12 +337,7 @@ impl PromptState {
             .flex_col()
             .gap_3()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(title),
-            )
+            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
             .child(Input::new(&input));
 
         if let Some(fields) = &self.export_fields {
@@ -324,28 +347,24 @@ impl PromptState {
                     .gap_2()
                     .child(
                         Button::new("export-zip")
-                            .label(if self.mrpack {
-                                "Prism zip"
-                            } else {
-                                "✓ Prism zip"
-                            })
-                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                            .label("Prism zip")
+                            .selected(!self.mrpack)
+                            .when(!self.mrpack, |button| button.primary())
+                            .on_click(cx.listener(|this: &mut MainWindow, _, window, cx| {
                                 if let Some(prompt) = this.prompt.as_mut() {
-                                    prompt.mrpack = false;
+                                    prompt.set_export_format(false, window, cx);
                                 }
                                 cx.notify();
                             })),
                     )
                     .child(
                         Button::new("export-mrpack")
-                            .label(if self.mrpack {
-                                "✓ Modrinth mrpack"
-                            } else {
-                                "Modrinth mrpack"
-                            })
-                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                            .label("Modrinth mrpack")
+                            .selected(self.mrpack)
+                            .when(self.mrpack, |button| button.primary())
+                            .on_click(cx.listener(|this: &mut MainWindow, _, window, cx| {
                                 if let Some(prompt) = this.prompt.as_mut() {
-                                    prompt.mrpack = true;
+                                    prompt.set_export_format(true, window, cx);
                                 }
                                 cx.notify();
                             })),
@@ -359,12 +378,7 @@ impl PromptState {
         }
 
         if let Some(e) = &self.error {
-            panel = panel.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(rgb(0xff6666))
-                    .child(e.clone()),
-            );
+            panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
         }
 
         panel = panel.child(
@@ -408,13 +422,20 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
             summary: fields[2].read(cx).value().to_string(),
         };
         let mut output = std::path::PathBuf::from(&value);
-        output.set_extension(if mrpack { "mrpack" } else { "zip" });
+        if output.extension().is_none() {
+            output.set_extension(if mrpack { "mrpack" } else { "zip" });
+        }
         if value.is_empty() {
             this.prompt.as_mut().unwrap().error = Some("Choose a destination path".into());
             cx.notify();
             return;
         }
         let instance = this.app.read(cx).instances.get(&target).cloned();
+        if instance.is_none() {
+            this.prompt.as_mut().unwrap().error = Some("Selected instance no longer exists".into());
+            cx.notify();
+            return;
+        }
         if let Some(instance) = instance {
             let app = this.app.clone();
             let runtime = app.read(cx).runtime.clone();

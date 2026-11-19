@@ -60,7 +60,23 @@ fn archive_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-fn writer(instance: &Instance, output: &Path) -> Result<zip::ZipWriter<File>, ExportError> {
+struct IncompleteOutput {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for IncompleteOutput {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn writer(
+    instance: &Instance,
+    output: &Path,
+) -> Result<(IncompleteOutput, zip::ZipWriter<File>), ExportError> {
     let parent = output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -73,15 +89,20 @@ fn writer(instance: &Instance, output: &Path) -> Result<zip::ZipWriter<File>, Ex
             "Choose an output outside the instance directory".into(),
         ));
     }
-    Ok(zip::ZipWriter::new(
-        File::options().write(true).create_new(true).open(output)?,
+    let file = File::options().write(true).create_new(true).open(output)?;
+    Ok((
+        IncompleteOutput {
+            path: output.into(),
+            keep: false,
+        },
+        zip::ZipWriter::new(file),
     ))
 }
 
 pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError> {
     let mut files = Vec::new();
     collect(&instance.root, &instance.game_root(), &mut files)?;
-    let mut zip = writer(instance, output)?;
+    let (mut output, mut zip) = writer(instance, output)?;
     for path in files {
         zip.start_file(
             archive_path(path.strip_prefix(&instance.root).unwrap()),
@@ -90,6 +111,7 @@ pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError>
         std::io::copy(&mut File::open(path)?, &mut zip)?;
     }
     zip.finish()?;
+    output.keep = true;
     Ok(())
 }
 
@@ -181,7 +203,7 @@ where
         files: Vec::new(),
         dependencies,
     };
-    let mut zip = writer(instance, output)?;
+    let (mut output, mut zip) = writer(instance, output)?;
     for path in paths {
         let relative = archive_path(path.strip_prefix(&game).unwrap());
         let data = std::fs::read(&path)?;
@@ -218,6 +240,7 @@ where
     zip.start_file("modrinth.index.json", SimpleFileOptions::default())?;
     zip.write_all(&serde_json::to_vec_pretty(&index)?)?;
     zip.finish()?;
+    output.keep = true;
     Ok(())
 }
 
@@ -249,6 +272,30 @@ mod tests {
             version: "1.0".into(),
             summary: "Example".into(),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_exports_remove_partial_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let f = Fixture::new();
+        let unreadable = f.1.game_root().join("options.txt");
+        std::fs::write(&unreadable, "options").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0)).unwrap();
+        let zip = f.0.root.join("failed.zip");
+        assert!(export_zip(&f.1, &zip).is_err());
+        assert!(!zip.exists());
+        let mrpack = f.0.root.join("failed.mrpack");
+        assert!(
+            export_mrpack_with_lookup(&f.1, &mrpack, metadata(), |_| async { Ok(BTreeMap::new()) })
+                .await
+                .is_err()
+        );
+        assert!(!mrpack.exists());
+        std::fs::write(&zip, "existing").unwrap();
+        assert!(export_zip(&f.1, &zip).is_err());
+        assert_eq!(std::fs::read_to_string(zip).unwrap(), "existing");
     }
 
     #[test]
