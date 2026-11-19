@@ -101,7 +101,18 @@ impl ServerList {
                         tags.push(("acceptTextures".into(), Tag::Byte(0)))
                     }
                 }
-                tags.extend(entry.extra.clone());
+                tags.extend(
+                    entry
+                        .extra
+                        .iter()
+                        .filter(|(key, _)| {
+                            !matches!(key.as_str(), "name" | "ip")
+                                && (key != "icon" || entry.icon.is_none())
+                                && (key != "acceptTextures"
+                                    || entry.accept_textures == ResourcePackPolicy::Prompt)
+                        })
+                        .cloned(),
+                );
                 Tag::Compound(tags)
             })
             .collect();
@@ -153,6 +164,13 @@ mod tests {
         .unwrap();
         let mut list = ServerList::from_bytes(&bytes).unwrap();
         assert_eq!(list.entries[0].extra, extra);
+        let unedited = ServerList::from_bytes(&list.to_bytes().unwrap()).unwrap();
+        assert_eq!(
+            unedited.entries[0].extra,
+            vec![extra[1].clone(), extra[3].clone()]
+        );
+        list.entries[0].name = "Edited name".into();
+        list.entries[0].address = "edited.example.org".into();
         list.entries[0].icon = Some("icon".into());
         list.entries[0].accept_textures = ResourcePackPolicy::Enabled;
         let encoded = list.to_bytes().unwrap();
@@ -172,7 +190,15 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["name", "ip", "icon", "acceptTextures"]
         );
-        assert_eq!(tags[4..], extra);
+        assert_eq!(tags.len(), 4);
+        assert_eq!(
+            tags.iter()
+                .map(|(key, _)| key)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            tags.len()
+        );
+        list.entries[0].extra.clear();
         assert_eq!(ServerList::from_bytes(&encoded).unwrap(), list);
     }
     #[test]
