@@ -22,6 +22,9 @@ use datapacks_page::DataPacksPage;
 #[path = "logs_page.rs"]
 mod logs_page;
 use logs_page::LogsPages;
+#[path = "managed_pack_page.rs"]
+mod managed_pack_page;
+use managed_pack_page::ManagedPackPage;
 #[path = "mod_list_dialog.rs"]
 mod mod_list_dialog;
 #[path = "screenshots_page.rs"]
@@ -39,6 +42,7 @@ pub enum Page {
     Log,
     OtherLogs,
     Version,
+    ManagedPack,
     Mods,
     ModUpdates,
     ResourcePacks,
@@ -62,6 +66,7 @@ impl Page {
             Page::Log => "Minecraft Log",
             Page::OtherLogs => "Other Logs",
             Page::Version => "Version",
+            Page::ManagedPack => "Managed Pack",
             Page::Mods => "Mods",
             Page::ModUpdates => "Mod Updates",
             Page::ResourcePacks => "Resource Packs",
@@ -85,6 +90,7 @@ impl Page {
             Page::Log,
             Page::OtherLogs,
             Page::Version,
+            Page::ManagedPack,
             Page::Mods,
             Page::BrowseMods,
             Page::ResourcePacks,
@@ -250,11 +256,12 @@ pub struct InstanceWindow {
     logs: LogsPages,
     screenshots: ScreenshotsPage,
     worlds: WorldsPage,
+    managed_pack: ManagedPackPage,
     pub(crate) settings_editor: Option<crate::instance_settings_page::SettingsEditor>,
 }
 
 impl InstanceWindow {
-    pub fn new(app: gpui::Entity<App>, instance_id: String) -> Self {
+    pub fn new(app: gpui::Entity<App>, instance_id: String, managed: bool) -> Self {
         InstanceWindow {
             app,
             instance_id,
@@ -272,6 +279,7 @@ impl InstanceWindow {
             logs: LogsPages::default(),
             screenshots: ScreenshotsPage::default(),
             worlds: WorldsPage::default(),
+            managed_pack: ManagedPackPage::new(managed),
             settings_editor: None,
         }
     }
@@ -534,7 +542,9 @@ impl InstanceWindow {
             )
             .child(div().h(px(1.)).bg(rgb(0x1c1c1c)));
 
-        for page in Page::all().into_iter().filter(|page| page.available(inst.is_horizon())) {
+        for page in Page::all().into_iter().filter(|page| {
+            page.available(inst.is_horizon()) && (*page != Page::ManagedPack || self.managed_pack.available)
+        }) {
             let active = self.page.sidebar_page() == page;
             let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
             col = col.child(
@@ -558,6 +568,9 @@ impl InstanceWindow {
                             this.version_editor.on_navigation();
                             if page == Page::Version {
                                 this.refresh_version(cx);
+                            }
+                            if page == Page::ManagedPack && !this.managed_pack.loaded {
+                                this.refresh_managed_pack(cx);
                             }
                         }
                         this.page = page;
@@ -588,6 +601,7 @@ impl InstanceWindow {
         match self.page {
             Page::Log | Page::OtherLogs => self.render_logs_page(cx),
             Page::Version => self.render_version_page(cx),
+            Page::ManagedPack => self.render_managed_pack(cx).into_any_element(),
             Page::Mods => self.render_resources_page(cx, ResourceType::Mod),
             Page::ModUpdates => self.render_mod_updates(cx),
             Page::ResourcePacks => self.render_resources_page(cx, ResourceType::ResourcePack),

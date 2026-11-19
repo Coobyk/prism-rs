@@ -29,6 +29,13 @@ impl Default for CopyOptions {
     }
 }
 
+impl CopyOptions {
+    fn keeps_pack_contents(&self) -> bool {
+        self.saves && self.game_options && self.resource_packs && self.shader_packs
+            && self.servers && self.mods && self.screenshots
+    }
+}
+
 pub fn copy_instance(
     paths: &Paths,
     source: &Instance,
@@ -120,6 +127,9 @@ fn copy_tree(source: &Path, dest: &Path, relative: &Path, options: &CopyOptions)
         let entry = entry?;
         let name = entry.file_name();
         if relative.as_os_str().is_empty() && Instance::is_launch_state_file(&name) {
+            continue;
+        }
+        if relative.as_os_str().is_empty() && name == crate::managed_pack::RECORD && !options.keeps_pack_contents() {
             continue;
         }
         let lower = name.to_string_lossy().to_ascii_lowercase();

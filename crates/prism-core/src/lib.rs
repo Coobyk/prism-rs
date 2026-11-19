@@ -19,6 +19,7 @@ pub mod java;
 pub mod launch;
 pub mod loaders;
 pub mod logs;
+pub mod managed_pack;
 pub mod meta;
 pub mod mod_list;
 pub mod modplatform;
