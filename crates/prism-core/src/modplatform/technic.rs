@@ -1,7 +1,9 @@
 use super::PlatformError;
 use crate::import::{extract_zip, ImportError};
 use crate::loaders::Loader;
+use crate::meta::{self, VersionData};
 use crate::net::{DownloadRequest, Downloader};
+use crate::profile::LaunchProfile;
 use crate::version_components::{version_id, ArchiveKind, Pack};
 use crate::{Instance, InstanceList, Paths};
 use md5::{Digest, Md5};
@@ -15,6 +17,8 @@ use std::{
 };
 
 const PLATFORM: &str = "https://api.technicpack.net/";
+const FORGE_PATCH: &str = "technic-forge.json";
+const BUNDLED_LIBRARIES: &str = "technic-libraries";
 
 #[derive(Debug, Deserialize)]
 pub struct Listing {
@@ -276,6 +280,7 @@ struct Recipe {
     minecraft: String,
     loader: Loader,
     jar_mod: bool,
+    forge_patch: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -332,6 +337,7 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
     let external = game.join("bin/version.json");
     let mut fml = String::new();
     let mut jar_mod = false;
+    let mut forge_patch = None;
     let version = if jar.is_file() {
         let mut zip = zip::ZipArchive::new(fs::File::open(&jar)?)
             .map_err(|error| ImportError::Zip(error.to_string()))?;
@@ -354,10 +360,17 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
         } else {
             &json.inherits_from
         };
-        (
-            checked_minecraft(minecraft)?,
-            loader_from_version(&json, minecraft),
-        )
+        let loader = loader_from_version(&json, minecraft);
+        if jar.is_file()
+            && matches!(loader, Loader::Forge { .. })
+            && json
+                .libraries
+                .iter()
+                .any(|library| bundled_forge(&library.name))
+        {
+            forge_patch = Some(version);
+        }
+        (checked_minecraft(minecraft)?, loader)
     } else {
         (checked_minecraft(fallback)?, Loader::None)
     };
@@ -365,7 +378,186 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
         minecraft,
         loader,
         jar_mod,
+        forge_patch,
     })
+}
+
+fn bundled_forge(spec: &str) -> bool {
+    let (group, artifact, _, classifier) = meta::parse_gradle_specifier(spec);
+    group == "net.minecraftforge"
+        && matches!(artifact.as_str(), "forge" | "minecraftforge")
+        && classifier
+            .as_deref()
+            .is_none_or(|classifier| classifier == "universal")
+}
+
+fn maven_part(part: &str) -> bool {
+    !part.is_empty()
+        && !matches!(part, "." | "..")
+        && part
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._+-".contains(&b))
+}
+
+fn checked_maven_path(spec: &str) -> Result<PathBuf, ImportError> {
+    let (group, artifact, version, classifier) = meta::parse_gradle_specifier(spec);
+    if !group.split('.').all(maven_part)
+        || !maven_part(&artifact)
+        || !maven_part(&version)
+        || classifier
+            .as_deref()
+            .is_some_and(|part| !maven_part(part.trim_start_matches('@')))
+    {
+        return Err(problem(
+            "Invalid Maven coordinate in the Technic Forge profile.",
+        ));
+    }
+    Ok(meta::maven_path(spec))
+}
+
+fn forge_patch(
+    text: &str,
+    minecraft: &str,
+    loader: &Loader,
+) -> Result<Option<VersionData>, ImportError> {
+    let json: serde_json::Value = serde_json::from_str(text)?;
+    let recipe: VersionJson = serde_json::from_value(json.clone())?;
+    if (!recipe.inherits_from.is_empty() && recipe.inherits_from != minecraft)
+        || &loader_from_version(&recipe, minecraft) != loader
+    {
+        return Ok(None);
+    }
+    let mut version = VersionData::from_json(&json)?;
+    if version.main_class.is_empty()
+        || !version.libraries.iter().any(|lib| bundled_forge(&lib.name))
+    {
+        return Err(problem(
+            "The Technic Forge profile is missing its main class or bundled Forge library.",
+        ));
+    }
+    for lib in &mut version.libraries {
+        checked_maven_path(&lib.name)?;
+        if let Some(natives) = &lib.natives {
+            for classifier in natives.values() {
+                checked_maven_path(&format!(
+                    "{}:{}",
+                    lib.name,
+                    classifier.replace("${arch}", "64")
+                ))?;
+            }
+        }
+        if bundled_forge(&lib.name) {
+            lib.url = None;
+            lib.downloads = None;
+            lib.natives = None;
+            continue;
+        }
+        let repository = match lib
+            .url
+            .as_deref()
+            .filter(|url| !url.is_empty())
+            .map(|url| url.trim_end_matches('/'))
+        {
+            Some(
+                "http://files.minecraftforge.net/maven"
+                | "https://files.minecraftforge.net/maven"
+                | "http://maven.minecraftforge.net",
+            ) => "https://maven.minecraftforge.net",
+            Some(url) => url,
+            None => "https://libraries.minecraft.net",
+        };
+        lib.url = Some(web_url(repository)?.to_string());
+        if let Some(downloads) = &mut lib.downloads {
+            if downloads
+                .artifact
+                .as_ref()
+                .is_some_and(|artifact| artifact.url.is_empty())
+            {
+                downloads.artifact = None;
+            }
+            if let Some(artifact) = &mut downloads.artifact {
+                artifact.path = None;
+                web_url(&artifact.url)?;
+            }
+            downloads
+                .classifiers
+                .retain(|_, artifact| !artifact.url.is_empty());
+            for artifact in downloads.classifiers.values() {
+                web_url(&artifact.url)?;
+            }
+        }
+    }
+    Ok(Some(version))
+}
+
+pub fn apply_forge_patch(
+    profile: &mut LaunchProfile,
+    instance: &Path,
+    game: &Path,
+    loader: &Loader,
+) -> Result<bool, ImportError> {
+    if !matches!(loader, Loader::Forge { .. }) {
+        return Ok(false);
+    }
+    let patch = match fs::File::open(instance.join(FORGE_PATCH)) {
+        Ok(file) => metadata_text(file)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let Some(patch) = forge_patch(&patch, &profile.minecraft_version, loader)? else {
+        return Ok(false);
+    };
+    let game = game.canonicalize()?;
+    let bundled_root = instance.canonicalize()?.join(BUNDLED_LIBRARIES);
+    let jar = game.join("bin/modpack.jar");
+    if !jar.is_file() {
+        return Err(problem("The Technic Forge profile needs bin/modpack.jar."));
+    }
+    let library_root = game.join("libraries");
+    let (libraries, natives) = (profile.libraries.len(), profile.natives.len());
+    profile.apply_loader(&patch);
+    for library in profile.libraries[libraries..]
+        .iter_mut()
+        .chain(&mut profile.natives[natives..])
+    {
+        if bundled_forge(&library.spec) {
+            let embedded = bundled_root.join(checked_maven_path(&library.spec)?);
+            library.path = if embedded.is_file() {
+                embedded
+            } else {
+                jar.clone()
+            };
+        } else {
+            library.path = library_root.join(checked_maven_path(&library.spec)?);
+        }
+    }
+    Ok(true)
+}
+
+fn extract_bundled_forge(
+    instance: &Path,
+    game: &Path,
+    patch: &VersionData,
+) -> Result<(), ImportError> {
+    let mut jar = zip::ZipArchive::new(fs::File::open(game.join("bin/modpack.jar"))?)
+        .map_err(|error| ImportError::Zip(error.to_string()))?;
+    for library in patch
+        .libraries
+        .iter()
+        .filter(|lib| bundled_forge(&lib.name))
+    {
+        let path = checked_maven_path(&library.name)?;
+        let entry = format!("maven/{}", path.to_string_lossy().replace('\\', "/"));
+        let mut embedded = match jar.by_name(&entry) {
+            Ok(embedded) => embedded,
+            Err(zip::result::ZipError::FileNotFound) => continue,
+            Err(error) => return Err(ImportError::Zip(error.to_string())),
+        };
+        let target = instance.join(BUNDLED_LIBRARIES).join(path);
+        fs::create_dir_all(target.parent().unwrap())?;
+        io::copy(&mut embedded, &mut fs::File::create(&target)?)?;
+    }
+    Ok(())
 }
 
 fn checked_minecraft(value: &str) -> Result<String, ImportError> {
@@ -460,6 +652,12 @@ fn install_staged(
         Err(error) => return Err(error.into()),
     }
     let profile = Pack::load(&instance.root)?.set_loader(&recipe.loader)?;
+    if let Some(patch) = recipe.forge_patch {
+        if let Some(version) = forge_patch(&patch, &recipe.minecraft, &recipe.loader)? {
+            extract_bundled_forge(&instance.root, &game_root, &version)?;
+        }
+        fs::write(instance.root.join(FORGE_PATCH), patch)?;
+    }
     if recipe.jar_mod {
         profile.add_archive(
             &instance.game_root().join("bin/modpack.jar"),
@@ -506,8 +704,110 @@ mod tests {
                     version: "10.13.4.1614-1.7.10".into()
                 },
                 jar_mod: false,
+                forge_patch: Some(r#"{"inheritsFrom":"1.7.10","libraries":[{"name":"net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10"}]}"#.into()),
             }
         );
+    }
+
+    #[test]
+    fn embedded_forge_patch_uses_pack_jar_and_downloads_other_maven_libraries() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        fixture(
+            &game,
+            &[(
+                "version.json",
+                r#"{
+            "inheritsFrom":"1.12.2", "mainClass":"net.minecraft.launchwrapper.Launch",
+            "minecraftArguments":"--tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker",
+            "libraries":[
+                {"name":"net.minecraftforge:forge:1.12.2-14.23.5.2864","downloads":{"artifact":{"url":""}}},
+                {"name":"net.minecraft:launchwrapper:1.12"},
+                {"name":"org.ow2.asm:asm-debug-all:5.2","url":"http://files.minecraftforge.net/maven/"}
+            ]
+        }"#,
+            )],
+        );
+        let paths = Paths {
+            root: dir.path().join("launcher"),
+        };
+        let installed = install_staged(&paths, "Embedded Forge", &game, "1.12.2").unwrap();
+        let loader = crate::instance::loader_of(&installed);
+        let game = installed.game_root().canonicalize().unwrap();
+        let mut profile = LaunchProfile {
+            minecraft_version: "1.12.2".into(),
+            ..Default::default()
+        };
+        assert!(apply_forge_patch(&mut profile, &installed.root, &game, &loader).unwrap());
+        assert_eq!(profile.main_class, "net.minecraft.launchwrapper.Launch");
+        assert!(profile
+            .legacy_arguments
+            .as_deref()
+            .unwrap()
+            .contains("FMLTweaker"));
+        assert_eq!(profile.libraries[0].path, game.join("bin/modpack.jar"));
+        assert_eq!(profile.libraries[0].url, None);
+        assert_eq!(
+            profile.libraries[1].path,
+            game.join("libraries/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar")
+        );
+        assert_eq!(profile.libraries[1].url.as_deref(), Some("https://libraries.minecraft.net/net/minecraft/launchwrapper/1.12/launchwrapper-1.12.jar"));
+        assert_eq!(profile.libraries[2].url.as_deref(), Some("https://maven.minecraftforge.net/org/ow2/asm/asm-debug-all/5.2/asm-debug-all-5.2.jar"));
+        assert!(!apply_forge_patch(
+            &mut profile,
+            &installed.root,
+            &game,
+            &Loader::Forge {
+                version: "other".into()
+            }
+        )
+        .unwrap());
+        assert!(checked_maven_path("org.example:../outside:1").is_err());
+    }
+
+    #[test]
+    fn embedded_forge_maven_jar_is_extracted_without_an_installer() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        let artifact = "net/minecraftforge/forge/1.12.2-14.23.5.2864/forge-1.12.2-14.23.5.2864.jar";
+        fixture(
+            &game,
+            &[
+                (
+                    "version.json",
+                    r#"{"inheritsFrom":"1.12.2","mainClass":"net.minecraft.launchwrapper.Launch","libraries":[{"name":"net.minecraftforge:forge:1.12.2-14.23.5.2864"}]}"#,
+                ),
+                (&format!("maven/{artifact}"), "bundled Forge jar"),
+            ],
+        );
+        let paths = Paths {
+            root: dir.path().join("launcher"),
+        };
+        let installed = install_staged(&paths, "Embedded Forge", &game, "1.12.2").unwrap();
+        let loader = crate::instance::loader_of(&installed);
+        let mut profile = LaunchProfile {
+            minecraft_version: "1.12.2".into(),
+            ..Default::default()
+        };
+        assert!(apply_forge_patch(
+            &mut profile,
+            &installed.root,
+            &installed.game_root(),
+            &loader
+        )
+        .unwrap());
+        let library = &profile.libraries[0];
+        assert_eq!(
+            library.path,
+            installed
+                .root
+                .canonicalize()
+                .unwrap()
+                .join("technic-libraries")
+                .join(artifact)
+        );
+        assert_eq!(fs::read(&library.path).unwrap(), b"bundled Forge jar");
+        assert_eq!(library.url, None);
     }
 
     #[test]

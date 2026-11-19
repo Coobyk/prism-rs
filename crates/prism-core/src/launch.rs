@@ -758,28 +758,32 @@ impl Launcher {
         if loader != Loader::None {
             progress(format!("Preparing loader: {loader:?}"));
             let version = &settings.mc_version;
-            let overlay = match &loader {
-                Loader::Forge { .. } | Loader::NeoForge { .. } => {
-                    let versions_dir = settings.game_dir.join("versions").join(version);
-                    let destination = versions_dir.join(format!("{version}.jar"));
-                    if !destination.exists() {
-                        let client = self.ensure_client_jar(version).await?;
-                        tokio::fs::create_dir_all(&versions_dir).await?;
-                        tokio::fs::copy(client, destination).await?;
+            if !crate::modplatform::technic::apply_forge_patch(
+                &mut profile, &settings.instance_dir, &settings.game_dir, &loader,
+            ).map_err(|error| LaunchError::Loader { loader: loader.clone(), message: error.to_string() })? {
+                let overlay = match &loader {
+                    Loader::Forge { .. } | Loader::NeoForge { .. } => {
+                        let versions_dir = settings.game_dir.join("versions").join(version);
+                        let destination = versions_dir.join(format!("{version}.jar"));
+                        if !destination.exists() {
+                            let client = self.ensure_client_jar(version).await?;
+                            tokio::fs::create_dir_all(&versions_dir).await?;
+                            tokio::fs::copy(client, destination).await?;
+                        }
+                        loaders::ensure_forge_installed(
+                            &settings.java_path,
+                            &loader,
+                            version,
+                            &settings.game_dir,
+                            &self.downloader,
+                        )
+                        .await
                     }
-                    loaders::ensure_forge_installed(
-                        &settings.java_path,
-                        &loader,
-                        version,
-                        &settings.game_dir,
-                        &self.downloader,
-                    )
-                    .await
+                    _ => loaders::fetch_loader_profile(&self.downloader.client(), &loader, version).await,
                 }
-                _ => loaders::fetch_loader_profile(&self.downloader.client(), &loader, version).await,
+                .map_err(|message| LaunchError::Loader { loader, message })?;
+                profile.apply_loader(&overlay);
             }
-            .map_err(|message| LaunchError::Loader { loader, message })?;
-            profile.apply_loader(&overlay);
         }
 
         progress(format!(

@@ -300,6 +300,10 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             match &loader {
                 prism_core::loaders::Loader::None => {}
                 prism_core::loaders::Loader::Forge { .. }
+                    if prism_core::modplatform::technic::apply_forge_patch(
+                        &mut profile, &settings.instance_dir, &settings.game_dir, &loader,
+                    ).expect("Technic Forge profile could not be read") => {}
+                prism_core::loaders::Loader::Forge { .. }
                 | prism_core::loaders::Loader::NeoForge { .. } => {
                     launcher.prepare_files(&profile, &settings)
                         .await.expect("vanilla prepare failed");
