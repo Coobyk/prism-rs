@@ -256,6 +256,68 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn saving_manual_java_override_replaces_imported_automatic_pick() {
+        let fixture = Fixture::new();
+        for original_path in ["/bin/sh", "/bin/echo"] {
+            let mut imported = IniFile::default();
+            imported.set("AutomaticJava", "true");
+            imported.set("OverrideJavaLocation", "true");
+            imported.set("JavaPath", original_path);
+            let automatic = fixture.resolve(&imported);
+            assert!(!automatic.java_path_explicit);
+
+            let mut raw = InstanceSettings::load(&fixture.instance.root).unwrap();
+            raw.java_path = Some("/bin/echo".into());
+            raw.override_java_location = Some(true);
+            raw.save(&fixture.instance.root).unwrap();
+            let settings = LaunchSettings::for_instance(&fixture.instance, &fixture.paths);
+            assert!(
+                settings.java_path_explicit,
+                "saved manual Java must be explicit"
+            );
+            assert_eq!(settings.java_path, Path::new("/bin/echo"));
+            assert_eq!(fixture.command(&settings).command[0], "/bin/echo");
+            let saved = IniFile::load(&fixture.instance.root.join("instance.cfg")).unwrap();
+            assert_eq!(saved.get("AutomaticJava"), Some("false"));
+
+            raw.override_java_location = Some(false);
+            raw.save(&fixture.instance.root).unwrap();
+            let settings = LaunchSettings::for_instance(&fixture.instance, &fixture.paths);
+            assert!(!settings.java_path_explicit);
+            assert_eq!(
+                InstanceSettings::load(&fixture.instance.root).unwrap().java_path,
+                raw.java_path
+            );
+        }
+    }
+
+    #[test]
+    fn saving_without_manual_java_preserves_automatic_marker() {
+        let fixture = Fixture::new();
+        for marker in [None, Some("true")] {
+            for (flag, path) in [
+                (None, Some("imported-java")),
+                (Some(false), Some("retained-java")),
+                (Some(true), None),
+                (Some(true), Some("")),
+            ] {
+                let mut imported = IniFile::default();
+                if let Some(marker) = marker {
+                    imported.set("AutomaticJava", marker);
+                }
+                fixture.resolve(&imported);
+                let mut raw = InstanceSettings::load(&fixture.instance.root).unwrap();
+                raw.override_java_location = flag;
+                raw.java_path = path.map(str::to_owned);
+                raw.save(&fixture.instance.root).unwrap();
+                let saved = IniFile::load(&fixture.instance.root.join("instance.cfg")).unwrap();
+                assert_eq!(saved.get("AutomaticJava"), marker);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn grouped_java_overrides_preserve_automatic_selection_and_compatibility() {
         let fixture = Fixture::new();
         let mut global = IniFile::default();
@@ -577,6 +639,11 @@ impl InstanceSettings {
             cfg.set("JavaPath", value.to_string());
         } else {
             cfg.remove("JavaPath");
+        }
+        if self.override_java_location == Some(true)
+            && self.java_path.as_deref().is_some_and(|path| !path.trim().is_empty())
+        {
+            cfg.set("AutomaticJava", "false");
         }
         if let Some(value) = &self.legacy_java_path {
             cfg.set("OverrideJavaPath", value.to_string());
