@@ -36,7 +36,12 @@ fn java_candidates() -> Vec<PathBuf> {
 /// `java` executables of the runtimes directly under `dir`.
 fn runtimes_in(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
-    let mut runtimes: Vec<PathBuf> = entries.flatten().filter_map(|entry| runtime_java_binary(&entry.path())).collect();
+    let mut runtimes: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().map_or(true, |ext| ext != "partial"))
+        .filter_map(|path| runtime_java_binary(&path))
+        .collect();
     runtimes.sort();
     runtimes
 }
