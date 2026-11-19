@@ -786,6 +786,7 @@ impl Launcher {
             }
         }
 
+        crate::modplatform::atlauncher::apply_launch(&settings.instance_dir, &mut profile)?;
         progress(format!(
             "Resolved profile: mainClass={}, libraries={}, natives={}",
             profile.main_class,

@@ -95,6 +95,9 @@ impl std::fmt::Display for MissingCurseForgeFile {
 
 /// Detect the pack format of an (extracted) directory.
 pub fn detect_format(dir: &Path) -> &'static str {
+    if dir.join("instance.json").is_file() {
+        return "ftb-app";
+    }
     if dir.join("modrinth.index.json").exists() {
         return "modrinth";
     }
@@ -152,6 +155,23 @@ pub fn import_sync(
     })
 }
 
+/// Shared GUI/headless dispatch for FTB IDs and local import sources.
+pub async fn import_source(
+    paths: &Paths,
+    source: &str,
+    downloader: &Arc<Downloader>,
+) -> Result<ImportOutcome, ImportError> {
+    if let Some(source) = crate::modplatform::ftb::Source::parse(source)? {
+        return crate::modplatform::ftb::FtbApi::new(downloader.clone())
+            .install(paths, source.pack, source.version).await;
+    }
+    let paths = paths.clone();
+    let source = PathBuf::from(source);
+    let downloader = downloader.clone();
+    tokio::task::spawn_blocking(move || import_sync(&paths, &source, Some(&downloader)))
+        .await.map_err(|error| ImportError::Other(error.to_string()))?
+}
+
 fn install_curseforge_manifest_files(
     files: &[FlameManifestFile],
     game_root: &Path,
@@ -204,15 +224,16 @@ fn import_with_curseforge_installer(
     let dir: &Path = if source.is_dir() {
         source
     } else {
-        temp = paths.cache_dir().join("import-tmp");
-        if temp.exists() {
-            let _ = std::fs::remove_dir_all(&temp);
-        }
-        extract_zip(source, &temp)?;
-        &temp
+        std::fs::create_dir_all(paths.cache_dir())?;
+        temp = tempfile::Builder::new()
+            .prefix("import-")
+            .tempdir_in(paths.cache_dir())?;
+        extract_zip(source, temp.path())?;
+        temp.path()
     };
 
     let instance = match detect_format(dir) {
+        "ftb-app" => return crate::import_ftb::import(paths, dir),
         "modrinth" => import_modrinth(paths, dir, downloader),
         "multimc" => import_multimc(paths, dir),
         "curseforge" => return import_curseforge(paths, dir, install_files),
@@ -497,6 +518,66 @@ pub fn download_requests_from_urls(urls: Vec<(String, PathBuf, Option<String>)>)
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn concurrent_archives_keep_their_own_overrides_and_clean_up() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths { root: root.path().into() };
+        let archive = |name: &str| {
+            let source = root.path().join(format!("{name}.zip"));
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("manifest.json", options).unwrap();
+            zip.write_all(serde_json::json!({
+                "manifestType":"minecraftModpack", "name":name,
+                "minecraft":{"version":"1.20.1"}, "files":[], "overrides":"overrides"
+            }).to_string().as_bytes()).unwrap();
+            zip.start_file("overrides/identity.txt", options).unwrap();
+            zip.write_all(name.as_bytes()).unwrap();
+            zip.finish().unwrap();
+            source
+        };
+        let first_source = archive("first");
+        let second_source = archive("second");
+        let (ready, waiting) = std::sync::mpsc::channel();
+        let (release, resume) = std::sync::mpsc::channel();
+        let first_paths = paths.clone();
+        let first = std::thread::spawn(move || {
+            import_with_curseforge_installer(&first_paths, &first_source, None, |_, _| {
+                ready.send(()).unwrap();
+                resume.recv_timeout(std::time::Duration::from_secs(10))
+                    .map_err(|error| ImportError::Other(error.to_string()))?;
+                Ok(CurseForgeFiles::default())
+            })
+        });
+        waiting.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        let second = import_with_curseforge_installer(&paths, &second_source, None, |_, _| {
+            let extracted: std::collections::BTreeSet<_> = std::fs::read_dir(paths.cache_dir()).unwrap()
+                .map(|entry| std::fs::read_to_string(entry.unwrap().path().join("overrides/identity.txt")).unwrap())
+                .collect();
+            assert_eq!(extracted, ["first".into(), "second".into()].into());
+            Ok(CurseForgeFiles::default())
+        });
+        release.send(()).unwrap();
+        let first = first.join().unwrap().unwrap();
+        let second = second.unwrap();
+        for (outcome, expected) in [(first, "first"), (second, "second")] {
+            assert_eq!(std::fs::read_to_string(outcome.instance.game_root().join("identity.txt")).unwrap(), expected);
+        }
+        assert_eq!(std::fs::read_dir(paths.cache_dir()).unwrap().count(), 0);
+
+        let failed = import_with_curseforge_installer(&paths, &second_source, None, |_, _| {
+            Err(ImportError::Other("fixture download failure".into()))
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read_dir(paths.cache_dir()).unwrap().count(), 0);
+        let invalid = root.path().join("invalid.zip");
+        std::fs::write(&invalid, b"invalid archive").unwrap();
+        assert!(import_sync(&paths, &invalid, None).is_err());
+        assert_eq!(std::fs::read_dir(paths.cache_dir()).unwrap().count(), 0);
+        assert!(root.path().join("first.zip").is_file());
+        assert!(second_source.is_file());
+    }
 
     #[test]
     fn detects_formats() {

@@ -1,8 +1,11 @@
 //! prism-rs: PrismLauncher rewritten in Rust with GPUI.
 
 mod accounts_window;
+mod atlauncher_cli;
+mod atlauncher_dialog;
 mod cli_launch;
 mod dialogs;
+mod ftb_page;
 mod instance_lock;
 mod instance_window;
 mod instance_settings_page;
@@ -30,6 +33,9 @@ fn main() {
 
     // Headless CLI: verify/test the launch pipeline without a GUI.
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("atlauncher") {
+        std::process::exit(atlauncher_cli::run(&args[2..]));
+    }
     if args.get(1).map(String::as_str) == Some("launch") {
         let (id, shortcut_token) = match &args[2..] {
             [id] => (id, None),
@@ -189,7 +195,8 @@ fn headless_import(path: &str) -> i32 {
     let paths = prism_core::Paths::new();
     paths.ensure().expect("failed to create data dirs");
     let downloader = std::sync::Arc::new(prism_core::net::Downloader::new());
-    match prism_core::import::import_sync(&paths, std::path::Path::new(path), Some(&downloader)) {
+    let runtime = tokio::runtime::Runtime::new().expect("failed to create import runtime");
+    match runtime.block_on(prism_core::import::import_source(&paths, path, &downloader)) {
         Ok(outcome) => {
             let inst = outcome.instance;
             println!("Imported: {} ({})", inst.name, inst.id);
@@ -350,6 +357,10 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 .expect("loader profile fetch failed");
                 profile.apply_loader(&lvd);
             }
+        }
+        if instance.is_some() {
+            prism_core::modplatform::atlauncher::apply_launch(&settings.instance_dir, &mut profile)
+                .expect("ATLauncher launch metadata failed");
         }
         println!(
             "mainClass: {}\nlibraries: {} (+{} natives)\nassets: {}\njava: {:?}",

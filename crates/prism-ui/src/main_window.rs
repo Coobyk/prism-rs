@@ -25,6 +25,7 @@ pub struct MainWindow {
 
 impl MainWindow {
     pub fn new(app: gpui::Entity<App>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.observe(&app, |_, _, cx| cx.notify()).detach();
         // Kick off the version manifest + news fetches.
         app.update(cx, |app, _| {
             app.start_manifest_fetch();
