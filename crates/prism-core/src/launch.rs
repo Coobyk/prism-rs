@@ -332,9 +332,86 @@ pub struct PreparedLaunch {
     pub command_error: Option<String>,
 }
 
+#[cfg(unix)]
+fn run_hook_command(
+    mut command: std::process::Command,
+    mut output: impl FnMut(&str, &[u8]),
+) -> std::io::Result<std::process::ExitStatus> {
+    use std::io::{ErrorKind, Read};
+    use std::os::{fd::OwnedFd, unix::net::UnixStream};
+
+    let (stdout, stdout_writer) = UnixStream::pair()?;
+    let (stderr, stderr_writer) = UnixStream::pair()?;
+    stdout.set_nonblocking(true)?;
+    stderr.set_nonblocking(true)?;
+    let mut child = command
+        .stdout(OwnedFd::from(stdout_writer))
+        .stderr(OwnedFd::from(stderr_writer))
+        .spawn()?;
+    drop(command);
+
+    let mut streams = [("stdout", stdout, Vec::new()), ("stderr", stderr, Vec::new())];
+    let mut buffer = [0; 8192];
+    loop {
+        let status = child.try_wait()?;
+        let mut had_output = false;
+        for (name, reader, pending) in &mut streams {
+            // Bound each drain so an active background writer cannot hold up return.
+            for _ in 0..if status.is_some() { 128 } else { 1 } {
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        had_output = true;
+                        for part in buffer[..count].split_inclusive(|byte| *byte == b'\n') {
+                            pending.extend_from_slice(part);
+                            if part.ends_with(b"\n") || pending.len() >= buffer.len() {
+                                output(name, pending.strip_suffix(b"\n").unwrap_or(pending));
+                                pending.clear();
+                            }
+                        }
+                    }
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => break,
+                    Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        drop(streams);
+                        let _ = child.wait();
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        if let Some(status) = status {
+            for (name, _, pending) in &streams {
+                if !pending.is_empty() {
+                    output(name, pending);
+                }
+            }
+            return Ok(status);
+        }
+        if !had_output {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn run_hook_command(
+    mut command: std::process::Command,
+    mut output: impl FnMut(&str, &[u8]),
+) -> std::io::Result<std::process::ExitStatus> {
+    let captured = command.output()?;
+    for (name, bytes) in [("stdout", captured.stdout), ("stderr", captured.stderr)] {
+        if !bytes.is_empty() {
+            for line in bytes.strip_suffix(b"\n").unwrap_or(&bytes).split(|byte| *byte == b'\n') {
+                output(name, line);
+            }
+        }
+    }
+    Ok(captured.status)
+}
+
 impl PreparedLaunch {
     fn hook(&self, script: &str, label: &str, output: &mut impl FnMut(String)) -> std::io::Result<()> {
-        use std::io::{BufRead, BufReader, Read};
         use std::process::Stdio;
 
         if script.trim().is_empty() {
@@ -349,25 +426,14 @@ impl PreparedLaunch {
             command.args(["-c", script]);
             command
         };
-        // A background descendant may keep stdout and stderr open after the shell exits.
-        let stdout = tempfile::NamedTempFile::new()?;
-        let stderr = tempfile::NamedTempFile::new()?;
-        let status = command
+        command
             .current_dir(&self.instance_dir)
             .envs(self.env.iter().cloned())
-            .stdin(Stdio::null())
-            .stdout(stdout.reopen()?)
-            .stderr(stderr.reopen()?)
-            .status()?;
-        for (stream, file) in [("stdout", stdout), ("stderr", stderr)] {
-            let reader = file.reopen()?;
-            let len = reader.metadata()?.len();
-            for line in BufReader::new(reader.take(len)).split(b'\n') {
-                let line = line?;
-                let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line));
-                output(format!("{label} ({stream}): {line}"));
-            }
-        }
+            .stdin(Stdio::null());
+        let status = run_hook_command(command, |stream, line| {
+            let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(line));
+            output(format!("{label} ({stream}): {line}"));
+        })?;
         if !status.success() {
             return Err(std::io::Error::other(format!(
                 "Hook command failed ({status}): {script}"
@@ -1036,7 +1102,19 @@ mod tests {
             env: Vec::new(),
             instance_dir: dir.path().into(),
             pre_launch_command: String::new(),
-            post_exit_command: "echo foreground; (i=0; while [ ! -f release ] && [ \"$i\" -lt 100 ]; do sleep 0.05; i=$((i+1)); done; echo background) &".into(),
+            post_exit_command: r#"
+                echo foreground
+                (
+                    i=0
+                    while [ ! -f release ] && [ "$i" -lt 100 ]; do
+                        sleep 0.05
+                        i=$((i+1))
+                    done
+                    trap '' PIPE
+                    if printf 'background\n' 2>/dev/null; then touch output-still-open; fi
+                    touch background-finished
+                ) &
+            "#.into(),
             command_error: None,
         };
         let (tx, rx) = mpsc::channel();
@@ -1049,6 +1127,12 @@ mod tests {
         std::fs::write(dir.path().join("release"), []).unwrap();
         runner.join().unwrap();
         assert_eq!(result.unwrap().unwrap(), ["Post-exit (stdout): foreground"]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !dir.path().join("background-finished").exists() {
+            assert!(std::time::Instant::now() < deadline, "background hook did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!dir.path().join("output-still-open").exists());
     }
 
     #[test]
