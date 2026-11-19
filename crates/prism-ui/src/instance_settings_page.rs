@@ -547,14 +547,28 @@ impl SettingsEditor {
                         .justify_between()
                         .child(div().font_weight(FontWeight::BOLD).child(title))
                         .child(
-                            Checkbox::new(SharedString::from(format!("override-{group}")))
-                                .label("Override global settings")
-                                .checked(enabled)
-                                .on_change(cx.listener(move |this, checked: &bool, window, cx| {
-                                    if let Some(editor) = &mut this.settings_editor {
-                                        editor.toggle(group, *checked, window, cx);
-                                    }
-                                })),
+                            div()
+                                .relative()
+                                .children((!enabled).then(|| {
+                                    div()
+                                        .absolute()
+                                        .left(px(-1.))
+                                        .top(px(1.))
+                                        .size(px(18.))
+                                        .rounded(px(4.))
+                                        .border_1()
+                                        .border_color(rgb(0x888888))
+                                }))
+                                .child(
+                                    Checkbox::new(SharedString::from(format!("override-{group}")))
+                                        .label("Override global settings")
+                                        .checked(enabled)
+                                        .on_change(cx.listener(move |this, checked: &bool, window, cx| {
+                                            if let Some(editor) = &mut this.settings_editor {
+                                                editor.toggle(group, *checked, window, cx);
+                                            }
+                                        })),
+                                ),
                         ),
                 );
             for &i in GROUP_FIELDS[group] {
