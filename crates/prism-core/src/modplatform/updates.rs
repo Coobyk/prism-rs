@@ -633,12 +633,12 @@ impl ModUpdate {
         downloader.download(&req).await?;
         ensure_fresh()?;
         let backup = stage.path().join("original.jar");
-        fs::hard_link(&old, &backup)?;
         if old == new {
+            fs::copy(&old, &backup)?;
             fs::rename(&req.dest, &new)?;
         } else {
             fs::hard_link(&req.dest, &new)?;
-            if let Err(error) = fs::remove_file(&old) {
+            if let Err(error) = fs::rename(&old, &backup) {
                 fs::remove_file(&new)?;
                 return Err(error.into());
             }
