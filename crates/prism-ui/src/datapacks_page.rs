@@ -14,6 +14,7 @@ pub(super) struct DataPacksPage {
     selected: Option<String>,
     revision: u64,
     status: String,
+    packs: Option<(World, Result<Vec<DataPack>, String>)>,
 }
 
 #[derive(Clone)]
@@ -30,6 +31,7 @@ impl DataPacksPage {
         self.selected = Some(name);
         self.revision += 1;
         self.status.clear();
+        self.packs = None;
         true
     }
 
@@ -43,6 +45,18 @@ impl DataPacksPage {
     fn matches(&self, target: &PackTarget) -> bool {
         self.revision == target.revision && self.selected.as_deref() == Some(target.world.name())
     }
+
+    fn load_packs(&mut self, world: World) {
+        let packs = world.packs().map_err(|error| error.to_string());
+        self.packs = Some((world, packs));
+    }
+
+    fn cached_packs(&self, world: &World) -> Option<&Result<Vec<DataPack>, String>> {
+        self.packs
+            .as_ref()
+            .filter(|(cached_world, _)| cached_world == world)
+            .map(|(_, packs)| packs)
+    }
 }
 
 impl InstanceWindow {
@@ -53,6 +67,14 @@ impl InstanceWindow {
         }
         let world = World::open(&instance.game_root(), self.datapacks.selected.as_deref()?).ok()?;
         Some(self.datapacks.target(world))
+    }
+
+    fn refresh_datapacks(&mut self, cx: &Context<Self>) {
+        if let Some(target) = self.datapack_target(cx) {
+            self.datapacks.load_packs(target.world);
+        } else {
+            self.datapacks.packs = None;
+        }
     }
 
     fn edit_datapacks<T>(
@@ -101,6 +123,7 @@ impl InstanceWindow {
                 Ok(()) => String::new(),
                 Err(error) => error.to_string(),
             };
+            self.refresh_datapacks(cx);
             cx.notify();
         }
     }
@@ -225,8 +248,10 @@ impl InstanceWindow {
                         Err("The instance changed during the download".into())
                     } else {
                         result.and_then(|pack| {
-                            this.edit_datapacks(&scope, cx, |world| pack.install(world))
-                                .map_err(|error| error.to_string())
+                            let result =
+                                this.edit_datapacks(&scope, cx, |world| pack.install(world));
+                            this.refresh_datapacks(cx);
+                            result.map_err(|error| error.to_string())
                         })
                     };
                     match result {
@@ -320,6 +345,7 @@ impl InstanceWindow {
                     .child(name.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.datapacks.select(name.clone()) {
+                            this.refresh_datapacks(cx);
                             if let Some(browser) = this.browsers.get_mut(&BROWSER) {
                                 browser.install_status.clear();
                             }
@@ -364,6 +390,13 @@ impl InstanceWindow {
                         .flex()
                         .flex_wrap()
                         .gap_2()
+                        .child(Button::new("refresh-datapacks").label("Refresh").on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.datapacks.status.clear();
+                                this.refresh_datapacks(cx);
+                                cx.notify();
+                            }),
+                        ))
                         .child(
                             Button::new("add-datapack")
                                 .label("Add ZIP…")
@@ -399,15 +432,15 @@ impl InstanceWindow {
                         .child(self.datapacks.status.clone()),
                 );
             }
-            match world.packs() {
-                Ok(packs) if packs.is_empty() => {
+            match self.datapacks.cached_packs(world) {
+                Some(Ok(packs)) if packs.is_empty() => {
                     packs_panel = packs_panel.child(
                         div()
                             .text_color(rgb(0xaaaaaa))
                             .child("No data packs installed in this world."),
                     );
                 }
-                Ok(packs) => {
+                Some(Ok(packs)) => {
                     let mut list = div()
                         .id("datapack-list")
                         .flex_1()
@@ -421,6 +454,7 @@ impl InstanceWindow {
                         let enabled = pack.enabled();
                         let disabled_in_world = pack.disabled_in_world();
                         let toggle = pack.clone();
+                        let remove = pack.clone();
                         let toggle_scope = scope.clone();
                         let remove_scope = scope.clone();
                         list = list.child(
@@ -474,7 +508,7 @@ impl InstanceWindow {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.confirm_datapack_removal(
                                             remove_scope.clone(),
-                                            pack.clone(),
+                                            remove.clone(),
                                             window,
                                             cx,
                                         );
@@ -484,11 +518,18 @@ impl InstanceWindow {
                     }
                     packs_panel = packs_panel.child(list);
                 }
-                Err(error) => {
+                Some(Err(error)) => {
                     packs_panel = packs_panel.child(
                         div()
                             .text_color(rgb(0xff9999))
                             .child(format!("Could not list data packs: {error}")),
+                    );
+                }
+                None => {
+                    packs_panel = packs_panel.child(
+                        div()
+                            .text_color(rgb(0xaaaaaa))
+                            .child("Refresh to load this world's data packs."),
                     );
                 }
             }
@@ -543,5 +584,43 @@ mod tests {
         page.select("Alpha".into());
         assert!(!page.matches(&pending));
         assert!(page.matches(&page.target(world)));
+    }
+
+    #[test]
+    fn cached_packs_refresh_explicitly_and_do_not_follow_another_world() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("saves/Alpha");
+        let b = root.path().join("saves/Beta");
+        fs::create_dir_all(a.join("datapacks")).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("level.dat"), "alpha").unwrap();
+        fs::write(b.join("level.dat"), "beta").unwrap();
+        let alpha = World::open(root.path(), "Alpha").unwrap();
+        let beta = World::open(root.path(), "Beta").unwrap();
+        let mut page = DataPacksPage::default();
+        page.select("Alpha".into());
+        page.load_packs(alpha.clone());
+
+        fs::write(a.join("datapacks/new.zip"), "pack").unwrap();
+        assert!(page
+            .cached_packs(&alpha)
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .is_empty());
+        page.load_packs(alpha.clone());
+        assert_eq!(
+            page.cached_packs(&alpha).unwrap().as_ref().unwrap()[0].name(),
+            "new.zip"
+        );
+        assert!(page.cached_packs(&beta).is_none());
+
+        fs::write(a.join("level.dat"), "updated alpha").unwrap();
+        let updated = World::open(root.path(), "Alpha").unwrap();
+        assert!(page.cached_packs(&updated).is_none());
+
+        page.select("Beta".into());
+        page.select("Alpha".into());
+        assert!(page.cached_packs(&alpha).is_none());
     }
 }
