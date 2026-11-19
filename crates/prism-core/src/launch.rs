@@ -1279,6 +1279,32 @@ mod tests {
             .any(|arg| arg.contains("quickPlay")));
     }
 
+    #[tokio::test]
+    async fn fetch_version_data_accepts_official_ids_with_spaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths { root: temp.path().into() };
+        let cache = paths.metadata_dir().join("net.minecraft");
+        std::fs::create_dir_all(&cache).unwrap();
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        for id in ["3D Shareware v1.34", "1.14.2 Pre-Release 4"] {
+            std::fs::write(
+                cache.join(format!("{id}.json")),
+                serde_json::json!({"id": id}).to_string(),
+            )
+            .unwrap();
+            assert_eq!(launcher.fetch_version_data(id).await.unwrap().id, id);
+        }
+        for id in [
+            "..",
+            "../other version",
+            "..\\other version",
+            "/other version",
+            "C:other version",
+        ] {
+            assert!(version_components::version_id(id).is_err(), "{id:?}");
+        }
+    }
+
     #[test]
     fn patched_client_and_classpath_entries_keep_the_profile_order() {
         let temp = tempfile::tempdir().unwrap();

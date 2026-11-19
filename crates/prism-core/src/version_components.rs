@@ -118,9 +118,9 @@ pub(crate) fn archive_dir(root: &Path) -> io::Result<PathBuf> {
 pub fn version_id(value: &str) -> io::Result<&str> {
     let value = value.trim();
     if !plain_name(value)
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+'))
+        || !value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+' | b' ')
+        })
     {
         return Err(invalid("Enter a valid version ID."));
     }
