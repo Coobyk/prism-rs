@@ -45,7 +45,7 @@ impl AppInstance {
         Ok(instance)
     }
 
-    fn loader(&self) -> Result<Loader, ImportError> {
+    pub fn loader(&self) -> Result<Loader, ImportError> {
         if !self.mod_loader.trim().is_empty() {
             if let Some((kind, version)) = self.mod_loader.split_once('-') {
                 return loader(kind, version);

@@ -42,6 +42,17 @@ pub struct VersionInfo {
     pub name: String,
     #[serde(default)]
     pub updated: u64,
+    #[serde(default, rename = "type")]
+    pub release_type: String,
+    #[serde(default)]
+    pub targets: Vec<Target>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Artwork {
+    pub url: String,
+    #[serde(rename = "type")]
+    pub kind: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -56,6 +67,10 @@ pub struct Pack {
     pub plays: u64,
     #[serde(default)]
     pub installs: u64,
+    #[serde(default)]
+    pub art: Vec<Artwork>,
+    #[serde(default)]
+    pub tags: Vec<Author>,
     pub versions: Vec<VersionInfo>,
 }
 

@@ -54,6 +54,14 @@ fn server(responses: Vec<(String, String, Vec<u8>)>) -> (String, std::thread::Jo
 
 #[test]
 fn parses_catalog_and_filters_sorts() {
+    let metadata: Pack = serde_json::from_value(json!({"id":109,"name":"Fabric fixture","art":[{"type":"square","url":"https://example.com/icon.png"}],"tags":[{"name":"Fabric"}],"versions":[{"id":1,"name":"1.0","type":"beta","targets":[{"type":"game","name":"minecraft","version":"1.20.1"}]}]})).unwrap();
+    assert_eq!(metadata.art[0].kind, "square");
+    assert_eq!(metadata.tags[0].name, "Fabric");
+    assert_eq!(metadata.versions[0].release_type, "beta");
+    assert_eq!(metadata.versions[0].targets[0].version, "1.20.1");
+    assert!(pack().art.is_empty());
+    assert!(pack().tags.is_empty());
+    assert!(pack().versions[0].targets.is_empty());
     let catalog: Catalog = serde_json::from_str(r#"{"packs":[1,2],"status":"success"}"#).unwrap();
     assert_eq!(catalog.packs, [1, 2]);
     let mut other = pack();

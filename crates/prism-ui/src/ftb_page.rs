@@ -2,10 +2,12 @@ use crate::state::App as LauncherApp;
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 use prism_core::import::ImportOutcome;
 use prism_core::import_ftb::AppInstance;
 use prism_core::modplatform::ftb::{filter_catalog, FtbApi, Pack, Sort};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub(crate) fn buttons(cx: &mut Context<crate::main_window::MainWindow>) -> impl IntoElement {
@@ -16,20 +18,37 @@ pub(crate) fn buttons(cx: &mut Context<crate::main_window::MainWindow>) -> impl 
             Button::new("open-ftb")
                 .label("FTB Modpacks")
                 .on_click(cx.listener(|this, _, _, cx| {
+                    this.create_dialog = None;
+                    this.prompt = None;
                     open(this.app.clone(), false, cx);
+                    cx.notify();
                 })),
         )
         .child(
             Button::new("open-ftb-app")
                 .label("FTB App Import")
                 .on_click(cx.listener(|this, _, _, cx| {
+                    this.create_dialog = None;
+                    this.prompt = None;
                     open(this.app.clone(), true, cx);
+                    cx.notify();
                 })),
         )
 }
 
 pub(crate) fn open(app: Entity<LauncherApp>, local: bool, cx: &mut gpui::App) {
     let options = WindowOptions {
+        titlebar: Some(TitlebarOptions {
+            title: Some(
+                if local {
+                    "FTB App Import"
+                } else {
+                    "FTB Modpacks"
+                }
+                .into(),
+            ),
+            ..Default::default()
+        }),
         window_min_size: Some(Size {
             width: px(780.),
             height: px(620.),
@@ -49,6 +68,7 @@ struct FtbPage {
     search: Entity<InputState>,
     root: Entity<InputState>,
     packs: Vec<Pack>,
+    artwork: HashMap<u64, PathBuf>,
     instances: Vec<AppInstance>,
     selected: Option<u64>,
     version: Option<u64>,
@@ -128,6 +148,7 @@ impl FtbPage {
             search,
             root,
             packs: Vec::new(),
+            artwork: HashMap::new(),
             instances: Vec::new(),
             selected: None,
             version: None,
@@ -177,11 +198,14 @@ impl FtbPage {
                     Ok((packs, instances)) => {
                         this.status = if packs.is_empty() && instances.is_empty() {
                             "No instances or packs found.".into()
+                        } else if this.local {
+                            "Select an instance to import.".into()
                         } else {
                             "Select a pack to import.".into()
                         };
                         this.packs = packs;
                         this.instances = instances;
+                        this.load_artwork(cx);
                     }
                     Err(error) => this.status = format!("Could not load FTB: {error}"),
                 }
@@ -190,6 +214,47 @@ impl FtbPage {
         })
         .detach();
         cx.notify();
+    }
+
+    fn load_artwork(&mut self, cx: &mut Context<Self>) {
+        let app = self.app.read(cx);
+        let cache = app.paths.cache_dir().join("ftb-artwork");
+        let images: HashMap<_, _> = self
+            .packs
+            .iter()
+            .filter_map(|pack| {
+                pack.art.iter().find(|art| art.kind == "square").map(|art| {
+                    (
+                        pack.id,
+                        (art.url.clone(), cache.join(format!("{}.png", pack.id))),
+                    )
+                })
+            })
+            .collect();
+        if images.is_empty() {
+            return;
+        }
+        let downloader = app.runtime.downloader.clone();
+        let task = app.runtime.spawn(async move {
+            let requests = images
+                .values()
+                .map(|(url, path)| prism_core::net::DownloadRequest::new(url, path.clone()))
+                .collect();
+            let _ = downloader.download_all(requests, 3, |_| {}).await;
+            images
+                .into_iter()
+                .filter_map(|(id, (_, path))| path.is_file().then_some((id, path)))
+                .collect()
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(images) = task.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.artwork = images;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 
     fn choose_directory(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -297,42 +362,66 @@ impl Render for FtbPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut panel = div()
             .size_full()
-            .p_4()
+            .p_5()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap_4()
             .bg(rgb(0x242424))
             .text_color(rgb(0xeeeeee))
-            .child(div().text_size(px(20.)).child(if self.local {
-                "FTB App Import"
-            } else {
-                "FTB Modpacks"
-            }))
-            .child(Input::new(&self.search));
+            .font_family(cx.theme().font_family.clone())
+            .text_size(px(13.))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_size(px(24.))
+                            .font_weight(FontWeight::BOLD)
+                            .child(if self.local {
+                                "FTB App Import"
+                            } else {
+                                "FTB Modpacks"
+                            }),
+                    )
+                    .child(muted(if self.local {
+                        "Bring your worlds, settings and playtime into Prism."
+                    } else {
+                        "Discover your next adventure. Install a pack directly from Feed The Beast."
+                    })),
+            );
         if self.local {
-            panel =
-                panel.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(Input::new(&self.root))
-                        .child(
-                            Button::new("ftb-directory")
-                                .label("Choose directory…")
-                                .disabled(self.busy)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.choose_directory(window, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("ftb-scan")
-                                .label("Scan")
-                                .disabled(self.busy)
-                                .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
-                        ),
-                );
+            panel = panel.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(muted("FTB APP INSTANCES DIRECTORY"))
+                    .child(
+                        div()
+                            .flex()
+                            .gap_2()
+                            .items_center()
+                            .child(div().flex_1().min_w_0().child(Input::new(&self.root)))
+                            .child(
+                                Button::new("ftb-directory")
+                                    .label("Choose…")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.choose_directory(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("ftb-scan")
+                                    .label("Rescan")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                            ),
+                    ),
+            );
         } else {
-            let mut sorts = div().flex().gap_2().child("Sort:");
+            let mut sorts = div().flex().gap_2().items_center().child(muted("Sort by"));
             for (sort, label, id) in [
                 (Sort::Plays, "Plays", "ftb-plays"),
                 (Sort::Installs, "Installs", "ftb-installs"),
@@ -351,12 +440,27 @@ impl Render for FtbPage {
                     })),
                 );
             }
-            panel = panel.child(sorts).child(
-                Button::new("ftb-retry")
-                    .label("Load catalog")
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+            panel = panel.child(
+                div()
+                    .flex()
+                    .gap_3()
+                    .items_center()
+                    .child(div().flex_1().min_w_0().child(Input::new(&self.search)))
+                    .child(sorts)
+                    .child(
+                        Button::new("ftb-retry")
+                            .label(if self.busy && self.packs.is_empty() {
+                                "Loading…"
+                            } else {
+                                "Refresh"
+                            })
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                    ),
             );
+        }
+        if self.local {
+            panel = panel.child(Input::new(&self.search));
         }
         let query = self.search.read(cx).value().to_lowercase();
         let mut list = div()
@@ -364,9 +468,12 @@ impl Render for FtbPage {
             .flex()
             .flex_col()
             .gap_1()
-            .w(px(290.))
+            .p_2()
+            .w(px(310.))
             .flex_shrink_0()
             .h_full()
+            .rounded_md()
+            .bg(rgb(0x202020))
             .overflow_y_scroll();
         if self.local {
             for (i, instance) in self
@@ -376,21 +483,34 @@ impl Render for FtbPage {
                 .filter(|(_, i)| i.name.to_lowercase().contains(query.trim()))
             {
                 let path = instance.path.clone();
-                let button = Button::new(("ftb-local", i))
-                    .label(format!(
-                        "{} ({})",
-                        plain(&instance.name),
-                        instance.minecraft
-                    ))
-                    .disabled(self.busy);
                 list = list.child(
-                    (if self.selected_local.as_ref() == Some(&path) {
-                        button.primary()
-                    } else {
-                        button
-                    })
+                    row(
+                        ("ftb-local", i),
+                        self.selected_local.as_ref() == Some(&path),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_ellipsis()
+                                    .child(plain(&instance.name)),
+                            )
+                            .child(muted(format!(
+                                "Minecraft {} · {}",
+                                instance.minecraft,
+                                local_loader(instance)
+                            ))),
+                    )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected_local = Some(path.clone());
+                        if !this.busy {
+                            this.selected_local = Some(path.clone());
+                            this.status = "Ready to import into a new instance.".into();
+                        }
                         cx.notify();
                     })),
                 );
@@ -398,25 +518,44 @@ impl Render for FtbPage {
         } else {
             for pack in filter_catalog(&self.packs, &query, self.sort) {
                 let id = pack.id;
-                let button = Button::new(("ftb-pack", id))
-                    .label(plain(&pack.name))
-                    .disabled(self.busy);
+                let icon =
+                    div()
+                        .size(px(42.))
+                        .flex_shrink_0()
+                        .rounded_md()
+                        .overflow_hidden()
+                        .bg(rgb(0x343434))
+                        .children(self.artwork.get(&id).map(|path| {
+                            img(path.clone()).size_full().object_fit(ObjectFit::Cover)
+                        }));
                 list = list.child(
-                    (if self.selected == Some(id) {
-                        button.primary()
-                    } else {
-                        button
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected = Some(id);
-                        this.version = this
-                            .packs
-                            .iter()
-                            .find(|p| p.id == id)
-                            .and_then(|p| p.versions.iter().max_by_key(|v| (v.updated, v.id)))
-                            .map(|v| v.id);
-                        cx.notify();
-                    })),
+                    row(("ftb-pack", id), self.selected == Some(id))
+                        .child(icon)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_ellipsis()
+                                        .child(plain(&pack.name)),
+                                )
+                                .child(muted(format!("{} plays", count(pack.plays)))),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if this.busy {
+                                return;
+                            }
+                            this.selected = Some(id);
+                            this.status =
+                                "Choose a version, then install into a new instance.".into();
+                            this.version = None;
+                            cx.notify();
+                        })),
                 );
             }
         }
@@ -425,94 +564,265 @@ impl Render for FtbPage {
             .flex_1()
             .min_w_0()
             .h_full()
+            .p_4()
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .gap_2();
+            .gap_4();
         if let Some(pack) = self.packs.iter().find(|p| Some(p.id) == self.selected) {
             detail = detail
-                .child(plain(&pack.name))
+                .child(
+                    div()
+                        .text_size(px(24.))
+                        .font_weight(FontWeight::BOLD)
+                        .whitespace_normal()
+                        .child(plain(&pack.name)),
+                )
                 .child(
                     div()
                         .w_full()
                         .whitespace_normal()
                         .child(plain(&pack.synopsis)),
                 )
-                .child(format!(
-                    "Authors: {}",
+                .child(muted(format!(
+                    "By {}",
                     pack.authors
                         .iter()
                         .map(|a| plain(&a.name))
                         .collect::<Vec<_>>()
                         .join(", ")
-                ))
-                .child(format!("{} plays · {} installs", pack.plays, pack.installs))
-                .child("Version:");
+                )))
+                .child(div().text_color(rgb(0xc5d7e8)).child(format!(
+                    "{} plays  ·  {} installs",
+                    count(pack.plays),
+                    count(pack.installs)
+                )));
+            if !pack.tags.is_empty() {
+                detail = detail.child(div().flex().flex_wrap().gap_2().children(
+                    pack.tags.iter().map(|tag| {
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(rgb(0x30363c))
+                            .text_size(px(11.))
+                            .text_color(rgb(0xb4c6d6))
+                            .child(plain(&tag.name))
+                    }),
+                ));
+            }
+            detail = detail.child(
+                div()
+                    .mt_2()
+                    .font_weight(FontWeight::BOLD)
+                    .child("Choose a version"),
+            );
             let mut versions: Vec<_> = pack.versions.iter().collect();
             versions.sort_by_key(|v| std::cmp::Reverse((v.updated, v.id)));
+            let mut picker = div()
+                .id("ftb-versions")
+                .h(px(208.))
+                .flex_shrink_0()
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .p_1()
+                .rounded_md()
+                .bg(rgb(0x202020));
             for version in versions {
                 let id = version.id;
-                let button = Button::new(("ftb-version", id))
-                    .label(plain(&version.name))
-                    .disabled(self.busy);
-                detail = detail.child(
-                    (if self.version == Some(id) {
-                        button.primary()
-                    } else {
-                        button
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.version = Some(id);
-                        cx.notify();
-                    })),
+                picker = picker.child(
+                    row(("ftb-version", id), self.version == Some(id))
+                        .py_2()
+                        .child(
+                            div()
+                                .w(px(80.))
+                                .flex_shrink_0()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child(plain(&version.name)),
+                        )
+                        .child(div().w(px(64.)).flex_shrink_0().child(muted(
+                            if version.release_type.is_empty() {
+                                "Release".into()
+                            } else {
+                                plain(&version.release_type)
+                            },
+                        )))
+                        .child(muted(target_label(&version.targets)))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.busy {
+                                this.version = Some(id);
+                                this.status = "Ready to install into a new instance.".into();
+                            }
+                            cx.notify();
+                        })),
                 );
             }
+            detail = detail.child(picker).child(muted(
+                "A new instance will be created. Your existing instances are not changed.",
+            ));
         }
         if let Some(instance) = self
             .instances
             .iter()
             .find(|i| Some(&i.path) == self.selected_local.as_ref())
         {
-            detail = detail.child(plain(&instance.name)).child(format!("Minecraft {} · {}", instance.minecraft, instance.version))
-                .child(instance.path.display().to_string()).child("Copies this instance, including worlds and settings. The source is not changed.");
+            detail = detail.child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).whitespace_normal().child(plain(&instance.name)))
+                .child(format!("Minecraft {}  ·  Pack version {}", instance.minecraft, instance.version))
+                .child(muted(local_loader(instance)))
+                .child(div().whitespace_normal().child(instance.path.display().to_string()))
+                .child(div().whitespace_normal().child("Copies worlds, mods, settings, JVM arguments and playtime into a new instance. Your FTB App installation stays untouched."));
+        }
+        if self.selected.is_none() && self.selected_local.is_none() {
+            detail = detail
+                .child(
+                    div()
+                        .mt_4()
+                        .text_size(px(18.))
+                        .font_weight(FontWeight::BOLD)
+                        .child(if self.local {
+                            "Select an instance"
+                        } else {
+                            "Find your next modpack"
+                        }),
+                )
+                .child(muted(if self.local {
+                    "Choose an FTB App instance from the list to see its details."
+                } else {
+                    "Search the catalog, then choose a pack and version to install."
+                }));
         }
         panel
             .child(
                 div()
                     .flex()
-                    .gap_4()
+                    .gap_2()
                     .flex_1()
                     .min_h(px(0.))
                     .child(list)
                     .child(detail),
             )
-            .child(self.status.clone())
             .child(
-                Button::new("ftb-install")
-                    .primary()
-                    .label(if self.busy {
-                        "Working…"
-                    } else if self.local {
-                        "Import"
-                    } else {
-                        "Install"
-                    })
-                    .disabled(
-                        self.busy
-                            || if self.local {
-                                self.selected_local.is_none()
-                            } else {
-                                self.selected.is_none() || self.version.is_none()
-                            },
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_4()
+                    .pt_3()
+                    .border_t_1()
+                    .border_color(rgb(0x3a3a3a))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .whitespace_normal()
+                            .text_size(px(12.))
+                            .text_color(rgb(0xa9c7df))
+                            .child(self.status.clone()),
                     )
-                    .on_click(cx.listener(|this, _, _, cx| this.install(cx))),
+                    .child(
+                        Button::new("ftb-install")
+                            .primary()
+                            .label(if self.busy {
+                                "Working…"
+                            } else if self.local {
+                                "Import"
+                            } else {
+                                "Install"
+                            })
+                            .disabled(
+                                self.busy
+                                    || if self.local {
+                                        self.selected_local.is_none()
+                                    } else {
+                                        self.selected.is_none() || self.version.is_none()
+                                    },
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.install(cx))),
+                    ),
             )
     }
 }
 
+fn muted(text: impl Into<SharedString>) -> Div {
+    div()
+        .text_size(px(12.))
+        .text_color(rgb(0xa5a9af))
+        .child(text.into())
+}
+
+fn row(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_3()
+        .px_3()
+        .py_3()
+        .flex_shrink_0()
+        .rounded_md()
+        .cursor_pointer()
+        .bg(rgb(if selected { 0x354453 } else { 0x202020 }))
+        .hover(|style| style.bg(rgb(if selected { 0x3b4c5e } else { 0x2c2f33 })))
+}
+
+fn count(value: u64) -> String {
+    for (unit, suffix) in [(1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")] {
+        if value >= unit {
+            return format!("{:.1}{suffix}", value as f64 / unit as f64);
+        }
+    }
+    value.to_string()
+}
+
+fn local_loader(instance: &AppInstance) -> String {
+    use prism_core::loaders::Loader;
+    match instance.loader() {
+        Ok(Loader::None) => "Vanilla".into(),
+        Ok(loader) => format!(
+            "{} {}",
+            match &loader {
+                Loader::Fabric { .. } => "Fabric",
+                Loader::Quilt { .. } => "Quilt",
+                Loader::Forge { .. } => "Forge",
+                Loader::NeoForge { .. } => "NeoForge",
+                Loader::None => unreachable!(),
+            },
+            loader.version().unwrap_or_default()
+        ),
+        Err(_) => "Loader unavailable".into(),
+    }
+}
+
+fn target_label(targets: &[prism_core::modplatform::ftb::Target]) -> String {
+    targets
+        .iter()
+        .filter_map(|target| match target.kind.as_str() {
+            "game" if target.name == "minecraft" => Some(format!("MC {}", plain(&target.version))),
+            "modloader" => Some(format!(
+                "{} {}",
+                plain(&target.name),
+                plain(&target.version)
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::plain;
+    use super::{count, plain, target_label};
+    #[test]
+    fn formats_counts_and_version_targets() {
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(14_500_000), "14.5M");
+        assert_eq!(count(2_500), "2.5K");
+        assert_eq!(target_label(&[]), "");
+        let targets: Vec<prism_core::modplatform::ftb::Target> = serde_json::from_str(r#"[{"type":"game","name":"minecraft","version":"1.20.1"},{"type":"modloader","name":"fabric","version":"0.14.21"}]"#).unwrap();
+        assert_eq!(target_label(&targets), "MC 1.20.1 · fabric 0.14.21");
+    }
     #[test]
     fn remote_text_never_uses_a_markup_renderer() {
         assert_eq!(plain("<b>FTB</b> <a href='x'>Pack</a>"), "FTB Pack");
