@@ -334,7 +334,7 @@ impl InstanceWindow {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let inst = self.instance(cx);
         let running = self.app.read(cx).is_running(&self.instance_id);
-        let mut col = div().w(px(170.)).flex().flex_col().bg(rgb(0x2b2b2b)).border_r_1().border_color(rgb(0x1c1c1c));
+        let mut col = div().w(px(170.)).flex_shrink_0().flex().flex_col().bg(rgb(0x2b2b2b)).border_r_1().border_color(rgb(0x1c1c1c));
         col = col
             .child(
                 div()
@@ -622,18 +622,19 @@ impl InstanceWindow {
         let mut header = self.page_header(cx, folder.display().to_string());
         if let Some(page) = browser_page {
             header = header.child(
-                Button::new("browse-packs")
+                div().flex_shrink_0().child(Button::new("browse-packs")
                     .label("Browse Modrinth")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.page = page;
                         cx.notify();
-                    })),
+                    }))),
             );
         }
         div()
             .flex_1()
             .flex()
             .flex_col()
+            .min_w_0()
             .min_h_0()
             .child(header)
             .child(
@@ -657,12 +658,12 @@ impl InstanceWindow {
         let installed_page = self.page.sidebar_page();
         if installed_page != self.page {
             header = header.child(
-                Button::new("installed-packs")
+                div().flex_shrink_0().child(Button::new("installed-packs")
                     .label("Back to installed")
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.page = installed_page;
                         cx.notify();
-                    })),
+                    }))),
             );
         }
 
@@ -670,11 +671,12 @@ impl InstanceWindow {
             .flex_1()
             .flex()
             .flex_col()
+            .min_w_0()
             .min_h_0()
             .child(header);
 
         let search_row = div().flex().gap_2().p_2().items_center()
-            .child(div().flex_1().child(Input::new(&browser.input)))
+            .child(div().flex_1().min_w_0().child(Input::new(&browser.input)))
             .child(
                 Button::new("modrinth-search")
                     .label("Search")
@@ -693,6 +695,7 @@ impl InstanceWindow {
                 div()
                     .px_3()
                     .text_size(px(12.))
+                    .text_ellipsis()
                     .text_color(rgb(0x8fb4d9))
                     .child(status.clone()),
             );
@@ -701,6 +704,7 @@ impl InstanceWindow {
         let mut list = div()
             .id("modrinth-list")
             .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
             .flex()
             .flex_col()
@@ -712,6 +716,7 @@ impl InstanceWindow {
             list = list.child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_2()
                     .px_3()
@@ -721,6 +726,7 @@ impl InstanceWindow {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .child(div().text_ellipsis().child(r.title.clone()))
@@ -734,17 +740,18 @@ impl InstanceWindow {
                     )
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(px(10.))
                             .text_color(rgb(0x666666))
                             .child(format!("{} downloads", r.downloads)),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("install-{}", r.project_id)))
+                        div().flex_shrink_0().child(Button::new(SharedString::from(format!("install-{}", r.project_id)))
                             .label(if is_installing { "Installing…" } else { "Install" })
                             .disabled(is_installing)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.install_project(resource_type, project.clone(), cx);
-                            })),
+                            }))),
                     ),
             );
         }
