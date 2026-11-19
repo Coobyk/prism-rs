@@ -78,7 +78,7 @@ Working today:
 - News feed, grouped instance list, persistent config
 
 Not yet at parity (tracked in the issue tracker of your heart): CurseForge/ATL/FTB/Technic pack
-import, instance export (Prism zip / mrpack / CurseForge), servers.dat NBT editing, screenshots
+import, instance export (Prism zip / mrpack / CurseForge), screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options, quick-play singleplayer/multiplayer dialogs.
 
