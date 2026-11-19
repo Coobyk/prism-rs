@@ -52,6 +52,12 @@ Files unavailable for automatic download are listed in
 `curseforge-missing-files.txt` in the new instance folder and can be added
 manually to the appropriate Minecraft folder (`mods`, `resourcepacks`, or `shaderpacks`).
 
+To find packs for a Java instance, open **Resource Packs** or **Shader Packs** and choose
+**Browse Modrinth**. Search by name or leave the field blank to browse, then click
+**Install** to download a compatible file for that instance's Minecraft version.
+**Back to installed** shows the downloaded pack. Select it in Minecraft to use it;
+shader packs still need a shader loader such as Iris.
+
 ### Horizon
 
 Install the [official Horizon launcher](https://playhorizon.dev/download). Put
@@ -113,7 +119,7 @@ Working today:
 - Instance create / rename / group / delete (trash) / copy of directories
 - Version manifest browsing, loader install (Fabric/Quilt from meta APIs, Forge/NeoForge via
   installer)
-- Modrinth: search, install mods, import `.mrpack` modpacks
+- Modrinth: browse and install mods, resource packs, and shader packs; import `.mrpack` modpacks
 - CurseForge: import modpack zips
 - Offline accounts; MSA device-code login implemented end-to-end
 - Global + per-instance settings (memory, Java, window size)

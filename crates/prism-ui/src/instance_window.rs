@@ -7,9 +7,11 @@ use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
+use prism_core::modplatform::modrinth::{ModrinthApi, SearchResult};
 use prism_core::modplatform::{LocalResource, ResourceType};
 use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
 use prism_core::{Instance, InstanceKind};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20,6 +22,8 @@ pub enum Page {
     ResourcePacks,
     ShaderPacks,
     BrowseMods,
+    BrowseResourcePacks,
+    BrowseShaderPacks,
     Notes,
     Settings,
     Worlds,
@@ -36,6 +40,8 @@ impl Page {
             Page::ResourcePacks => "Resource Packs",
             Page::ShaderPacks => "Shader Packs",
             Page::BrowseMods => "Browse Mods (Modrinth)",
+            Page::BrowseResourcePacks => "Browse Resource Packs",
+            Page::BrowseShaderPacks => "Browse Shader Packs",
             Page::Notes => "Notes",
             Page::Settings => "Settings",
             Page::Worlds => "Worlds",
@@ -63,11 +69,28 @@ impl Page {
     fn available(self, horizon: bool) -> bool {
         !horizon || matches!(self, Self::Log | Self::Worlds | Self::Screenshots | Self::Notes)
     }
+
+    fn browse_type(self) -> Option<ResourceType> {
+        match self {
+            Self::BrowseMods => Some(ResourceType::Mod),
+            Self::BrowseResourcePacks => Some(ResourceType::ResourcePack),
+            Self::BrowseShaderPacks => Some(ResourceType::ShaderPack),
+            _ => None,
+        }
+    }
+
+    fn sidebar_page(self) -> Self {
+        match self {
+            Self::BrowseResourcePacks => Self::ResourcePacks,
+            Self::BrowseShaderPacks => Self::ShaderPacks,
+            _ => self,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Page;
+    use super::{Page, ResourceType};
 
     #[test]
     fn resource_pack_editor_is_only_available_for_java() {
@@ -76,18 +99,36 @@ mod tests {
         assert!(Page::Settings.available(false));
         assert!(!Page::Settings.available(true));
     }
+
+    #[test]
+    fn pack_browsers_belong_to_their_java_resource_pages() {
+        for (browser, installed, resource_type) in [
+            (Page::BrowseResourcePacks, Page::ResourcePacks, ResourceType::ResourcePack),
+            (Page::BrowseShaderPacks, Page::ShaderPacks, ResourceType::ShaderPack),
+        ] {
+            assert!(browser.available(false));
+            assert!(!browser.available(true));
+            assert!(!Page::all().contains(&browser));
+            assert_eq!(browser.sidebar_page(), installed);
+            assert_eq!(browser.browse_type(), Some(resource_type));
+        }
+    }
+}
+
+struct ModrinthBrowser {
+    input: Entity<InputState>,
+    results: Vec<SearchResult>,
+    searching: bool,
+    search_status: String,
+    installing: HashSet<String>,
+    install_status: String,
 }
 
 pub struct InstanceWindow {
     pub app: gpui::Entity<App>,
     pub instance_id: String,
     pub page: Page,
-    // Modrinth browse state.
-    search_input: Option<gpui::Entity<gpui_kit::component::input::InputState>>,
-    search_results: Arc<std::sync::Mutex<Vec<prism_core::modplatform::modrinth::SearchResult>>>,
-    search_handle: Option<tokio::task::JoinHandle<Result<Vec<prism_core::modplatform::modrinth::SearchResult>, String>>>,
-    search_status: Arc<std::sync::Mutex<String>>,
-    installing: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+    browsers: HashMap<ResourceType, ModrinthBrowser>,
     // Loader install state.
     loader_options: Arc<std::sync::Mutex<Vec<String>>>,
     loader_handle: Option<tokio::task::JoinHandle<Result<Vec<String>, String>>>,
@@ -106,11 +147,7 @@ impl InstanceWindow {
             app,
             instance_id,
             page: Page::Log,
-            search_input: None,
-            search_results: Arc::new(std::sync::Mutex::new(Vec::new())),
-            search_handle: None,
-            search_status: Arc::new(std::sync::Mutex::new(String::new())),
-            installing: Arc::new(std::sync::Mutex::new(Default::default())),
+            browsers: HashMap::new(),
             loader_options: Arc::new(std::sync::Mutex::new(Vec::new())),
             loader_handle: None,
             servers: None,
@@ -190,122 +227,89 @@ impl InstanceWindow {
         cx.notify();
     }
 
-    fn start_search(&mut self, query: &str, cx: &mut Context<Self>) {
+    fn start_search(&mut self, resource_type: ResourceType, cx: &mut Context<Self>) {
         let app = self.app.read(cx);
-        let runtime = app.runtime.clone();
-        let Some(inst) = app.instances.get(&self.instance_id).cloned() else {
+        let Some(inst) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
             return;
         };
-        drop(app);
-        let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &self.app.read(cx).paths).mc_version;
-        let loader = prism_core::instance::loader_of(&inst);
-        let loader_name = match loader {
-            prism_core::loaders::Loader::Fabric { .. } => Some("fabric"),
-            prism_core::loaders::Loader::Quilt { .. } => Some("quilt"),
-            prism_core::loaders::Loader::Forge { .. } => Some("forge"),
-            prism_core::loaders::Loader::NeoForge { .. } => Some("neoforge"),
-            prism_core::loaders::Loader::None => None,
+        let mc_version = prism_core::launch::LaunchSettings::for_instance(inst, &app.paths).mc_version;
+        let runtime = app.runtime.clone();
+        let client = runtime.downloader.client().clone();
+        let Some(browser) = self.browsers.get_mut(&resource_type) else {
+            return;
         };
-
-        let results = self.search_results.clone();
-        let status = self.search_status.clone();
-        *status.lock().unwrap_or_else(|p| p.into_inner()) = "Searching…".to_string();
-        let query = query.to_string();
-        self.search_handle = Some(runtime.spawn(async move {
-            let api = prism_core::modplatform::modrinth::ModrinthApi::with_client(
-                prism_core::net::Downloader::new().client().clone(),
-            );
-            match api.search(&query, prism_core::modplatform::ResourceType::Mod, Some(&mc_version), 25).await {
-                Ok(resp) => Ok(resp.hits),
-                Err(e) => Err(e.to_string()),
-            }
-            .map_err(|e: String| {
-                status.lock().unwrap_or_else(|p| p.into_inner()).clone();
-                e
-            })
-        }));
-        let _ = loader_name;
+        if browser.searching {
+            return;
+        }
+        let query = browser.input.read(cx).value().trim().to_string();
+        browser.searching = true;
+        browser.results.clear();
+        browser.search_status = "Searching…".into();
+        let task = runtime.spawn(async move {
+            ModrinthApi::with_client(client)
+                .search(&query, resource_type, Some(&mc_version), 25)
+                .await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                if let Some(browser) = this.browsers.get_mut(&resource_type) {
+                    browser.searching = false;
+                    browser.search_status = match result {
+                        Ok(response) if response.hits.is_empty() => "No compatible projects found.".into(),
+                        Ok(response) => {
+                            browser.results = response.hits;
+                            String::new()
+                        }
+                        Err(error) => format!("Search failed: {error}"),
+                    };
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
-    fn poll_search(&mut self, cx: &mut Context<Self>) {
-        if let Some(handle) = &self.search_handle {
-            if handle.is_finished() {
-                let handle = self.search_handle.take().unwrap();
-                let results = self.search_results.clone();
-                let status = self.search_status.clone();
-                match self.app.read(cx).block_on(handle) {
-                    Ok(Ok(hits)) => {
-                        *results.lock().unwrap_or_else(|p| p.into_inner()) = hits;
-                        *status.lock().unwrap_or_else(|p| p.into_inner()) = String::new();
-                    }
-                    Ok(Err(e)) => {
-                        *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Search failed: {e}");
-                    }
-                    Err(e) => {
-                        *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Search failed: {e}");
-                    }
-                }
-                cx.notify();
-            }
-        }
-    }
-
-    fn install_mod(&mut self, project: prism_core::modplatform::modrinth::SearchResult, cx: &mut Context<Self>) {
+    fn install_project(&mut self, resource_type: ResourceType, project: SearchResult, cx: &mut Context<Self>) {
         let app = self.app.read(cx);
-        let runtime = app.runtime.clone();
-        let downloader = app.runtime.downloader.clone();
-        let Some(inst) = app.instances.get(&self.instance_id).cloned() else {
+        let Some(inst) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
             return;
         };
-        let paths = app.paths.clone();
-        drop(app);
-
-        let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &paths).mc_version;
-        let loader = prism_core::instance::loader_of(&inst);
-        let loader_name = match loader {
-            prism_core::loaders::Loader::Fabric { .. } => "fabric",
-            prism_core::loaders::Loader::Quilt { .. } => "quilt",
-            prism_core::loaders::Loader::Forge { .. } => "forge",
-            prism_core::loaders::Loader::NeoForge { .. } => "neoforge",
-            prism_core::loaders::Loader::None => "",
+        let mc_version = prism_core::launch::LaunchSettings::for_instance(inst, &app.paths).mc_version;
+        let loader = prism_core::instance::loader_of(inst);
+        let game_root = inst.game_root();
+        let runtime = app.runtime.clone();
+        let downloader = runtime.downloader.clone();
+        let Some(browser) = self.browsers.get_mut(&resource_type) else {
+            return;
         };
-        let loaders: Vec<&str> = if loader_name.is_empty() { vec![] } else { vec![loader_name] };
-
-        let slug = project.slug.clone();
-        let title = project.title.clone();
-        {
-            let mut installing = self.installing.lock().unwrap_or_else(|p| p.into_inner());
-            if installing.contains(&slug) {
-                return;
-            }
-            installing.insert(slug.clone());
+        let project_id = project.project_id.clone();
+        if !browser.installing.insert(project_id.clone()) {
+            return;
         }
-
-        let status = self.search_status.clone();
-        let installing = self.installing.clone();
-        runtime.spawn(async move {
-            let api = prism_core::modplatform::modrinth::ModrinthApi::with_client(
-                prism_core::net::Downloader::new().client().clone(),
-            );
-            let result = async {
-                let versions = api.versions(&project.project_id, &loaders, &[&mc_version]).await?;
-                let version = versions.first().ok_or_else(|| prism_core::modplatform::PlatformError::Request("no compatible version".into()))?;
-                let file = api.primary_file(version).ok_or_else(|| prism_core::modplatform::PlatformError::Request("no file".into()))?.clone();
-                let game_root = inst.game_root();
-                api.install_file(&downloader, &game_root, &file, prism_core::modplatform::ResourceType::Mod).await?;
-                Ok::<(), prism_core::modplatform::PlatformError>(())
-            }.await;
-            match result {
-                Ok(()) => {
-                    *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Installed {title}");
-                }
-                Err(e) => {
-                    *status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Install failed: {e}");
-                }
-            }
-            installing.lock().unwrap_or_else(|p| p.into_inner()).remove(&slug);
+        browser.install_status.clear();
+        let title = project.title.clone();
+        let task = runtime.spawn(async move {
+            ModrinthApi::with_client(downloader.client().clone())
+                .install_compatible(&downloader, &game_root, &project, resource_type, &mc_version, &loader)
+                .await
         });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                if let Some(browser) = this.browsers.get_mut(&resource_type) {
+                    browser.installing.remove(&project_id);
+                    browser.install_status = match result {
+                        Ok(_) => format!("Installed {title}"),
+                        Err(error) => format!("Could not install {title}: {error}"),
+                    };
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     fn instance(&self, cx: &Context<Self>) -> Instance {
@@ -330,7 +334,7 @@ impl InstanceWindow {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let inst = self.instance(cx);
         let running = self.app.read(cx).is_running(&self.instance_id);
-        let mut col = div().w(px(170.)).flex().flex_col().bg(rgb(0x2b2b2b)).border_r_1().border_color(rgb(0x1c1c1c));
+        let mut col = div().w(px(170.)).flex_shrink_0().flex().flex_col().bg(rgb(0x2b2b2b)).border_r_1().border_color(rgb(0x1c1c1c));
         col = col
             .child(
                 div()
@@ -344,7 +348,7 @@ impl InstanceWindow {
             .child(div().h(px(1.)).bg(rgb(0x1c1c1c)));
 
         for page in Page::all().into_iter().filter(|page| page.available(inst.is_horizon())) {
-            let active = self.page == page;
+            let active = self.page.sidebar_page() == page;
             let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
             col = col.child(
                 div()
@@ -383,24 +387,26 @@ impl InstanceWindow {
         match self.page {
             Page::Log => self.render_log_page(cx),
             Page::Version => self.render_version_page(cx),
-            Page::Mods => self.render_resources_page(cx, ResourceType::Mod, "Mods"),
-            Page::ResourcePacks => self.render_resources_page(cx, ResourceType::ResourcePack, "Resource Packs"),
-            Page::ShaderPacks => self.render_resources_page(cx, ResourceType::ShaderPack, "Shader Packs"),
+            Page::Mods => self.render_resources_page(cx, ResourceType::Mod),
+            Page::ResourcePacks => self.render_resources_page(cx, ResourceType::ResourcePack),
+            Page::ShaderPacks => self.render_resources_page(cx, ResourceType::ShaderPack),
             Page::Notes => self.render_notes_page(cx),
             Page::Settings => self.render_settings_page(cx),
             Page::Worlds => self.render_worlds_page(cx),
             Page::Servers => self.render_servers_page(cx),
             Page::Screenshots => self.render_screenshots_page(cx),
-            Page::BrowseMods => self.render_browse_mods_page(cx),
+            Page::BrowseMods | Page::BrowseResourcePacks | Page::BrowseShaderPacks => self
+                .render_modrinth_browser(cx, self.page.browse_type().expect("Modrinth page")),
         }
     }
 
-    fn page_header(&self, cx: &Context<Self>, subtitle: String) -> impl IntoElement {
+    fn page_header(&self, cx: &Context<Self>, subtitle: String) -> Div {
         let inst = self.instance(cx);
         div()
             .flex()
             .items_center()
             .justify_between()
+            .gap_2()
             .px_3()
             .py_2()
             .border_b_1()
@@ -409,8 +415,9 @@ impl InstanceWindow {
                 div()
                     .flex()
                     .flex_col()
-                    .child(div().text_size(px(15.)).font_weight(FontWeight::BOLD).child(inst.name))
-                    .child(div().text_size(px(11.)).text_color(rgb(0x888888)).child(subtitle)),
+                    .min_w_0()
+                    .child(div().text_ellipsis().text_size(px(15.)).font_weight(FontWeight::BOLD).child(inst.name))
+                    .child(div().text_ellipsis().text_size(px(11.)).text_color(rgb(0x888888)).child(subtitle)),
             )
     }
 
@@ -542,7 +549,7 @@ impl InstanceWindow {
             .into_any_element()
     }
 
-    fn render_resources_page(&self, cx: &mut Context<Self>, rtype: ResourceType, title: &str) -> gpui::AnyElement {
+    fn render_resources_page(&self, cx: &mut Context<Self>, rtype: ResourceType) -> gpui::AnyElement {
         let inst = self.instance(cx);
         let folder = inst.game_root().join(rtype.folder());
         let resources: Vec<LocalResource> = prism_core::resources::scan_folder(&folder, rtype);
@@ -607,12 +614,29 @@ impl InstanceWindow {
             );
         }
 
+        let browser_page = match rtype {
+            ResourceType::ResourcePack => Some(Page::BrowseResourcePacks),
+            ResourceType::ShaderPack => Some(Page::BrowseShaderPacks),
+            _ => None,
+        };
+        let mut header = self.page_header(cx, folder.display().to_string());
+        if let Some(page) = browser_page {
+            header = header.child(
+                div().flex_shrink_0().child(Button::new("browse-packs")
+                    .label("Browse Modrinth")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.page = page;
+                        cx.notify();
+                    }))),
+            );
+        }
         div()
             .flex_1()
             .flex()
             .flex_col()
+            .min_w_0()
             .min_h_0()
-            .child(self.page_header(cx, folder.display().to_string()).into_any_element())
+            .child(header)
             .child(
                 div()
                     .id("resources-scroll")
@@ -623,72 +647,76 @@ impl InstanceWindow {
             .into_any_element()
     }
 
-    fn render_browse_mods_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        self.poll_search(cx);
+    fn render_modrinth_browser(&self, cx: &mut Context<Self>, resource_type: ResourceType) -> gpui::AnyElement {
         let inst = self.instance(cx);
         let mc_version = prism_core::launch::LaunchSettings::for_instance(&inst, &self.app.read(cx).paths).mc_version;
 
-        // Lazily create the search input (needs a window; done in render()).
-        let Some(input) = self.search_input.clone() else {
+        let Some(browser) = self.browsers.get(&resource_type) else {
             return div().into_any_element();
         };
-        let query = input.read(cx).value().to_string();
-
-        let status = self.search_status.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        let results = self.search_results.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        let installing = self.installing.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let mut header = self.page_header(cx, format!("{} · Minecraft {mc_version}", self.page.label()));
+        let installed_page = self.page.sidebar_page();
+        if installed_page != self.page {
+            header = header.child(
+                div().flex_shrink_0().child(Button::new("installed-packs")
+                    .label("Back to installed")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.page = installed_page;
+                        cx.notify();
+                    }))),
+            );
+        }
 
         let mut panel = div()
             .flex_1()
             .flex()
             .flex_col()
+            .min_w_0()
             .min_h_0()
-            .child(self.page_header(cx, format!("Modrinth • Minecraft {mc_version}")).into_any_element());
+            .child(header);
 
-        let mut search_row = div().flex().gap_2().p_2().items_center();
-        search_row = search_row
-            .child(div().flex_1().child(gpui_kit::component::input::Input::new(&input)))
+        let search_row = div().flex().gap_2().p_2().items_center()
+            .child(div().flex_1().min_w_0().child(Input::new(&browser.input)))
             .child(
                 Button::new("modrinth-search")
                     .label("Search")
-                    .on_click(cx.listener(move |this, _ev, _window, cx| {
-                        let q = this
-                            .search_input
-                            .as_ref()
-                            .map(|i| i.read(cx).value().to_string())
-                            .unwrap_or_default();
-                        if !q.trim().is_empty() {
-                            this.start_search(&q, cx);
-                        }
+                    .disabled(browser.searching)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.start_search(resource_type, cx);
                     })),
             );
         panel = panel.child(search_row);
 
-        if !status.is_empty() {
+        for status in [&browser.search_status, &browser.install_status] {
+            if status.is_empty() {
+                continue;
+            }
             panel = panel.child(
                 div()
                     .px_3()
                     .text_size(px(12.))
+                    .text_ellipsis()
                     .text_color(rgb(0x8fb4d9))
-                    .child(status),
+                    .child(status.clone()),
             );
         }
 
         let mut list = div()
             .id("modrinth-list")
             .flex_1()
+            .min_h_0()
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_1()
             .p_2();
-        for r in &results {
-            let slug = r.slug.clone();
-            let is_installing = installing.contains(&slug);
+        for r in &browser.results {
+            let is_installing = browser.installing.contains(&r.project_id);
             let project = r.clone();
             list = list.child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .gap_2()
                     .px_3()
@@ -698,6 +726,7 @@ impl InstanceWindow {
                     .child(
                         div()
                             .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .child(div().text_ellipsis().child(r.title.clone()))
@@ -711,17 +740,18 @@ impl InstanceWindow {
                     )
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(px(10.))
                             .text_color(rgb(0x666666))
                             .child(format!("{} downloads", r.downloads)),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("install-{slug}")))
+                        div().flex_shrink_0().child(Button::new(SharedString::from(format!("install-{}", r.project_id)))
                             .label(if is_installing { "Installing…" } else { "Install" })
                             .disabled(is_installing)
-                            .on_click(cx.listener(move |this, _ev, _window, _cx| {
-                                this.install_mod(project.clone(), _cx);
-                            })),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.install_project(resource_type, project.clone(), cx);
+                            }))),
                     ),
             );
         }
@@ -1126,12 +1156,15 @@ impl Render for InstanceWindow {
                 Err(e) => self.server_status = format!("Load failed: {e}"),
             }
         }
-        if self.search_input.is_none() {
-            self.search_input =
-                Some(cx.new(|cx| {
-                    gpui_kit::component::input::InputState::new(window, cx)
-                        .placeholder("Search Modrinth…")
-                }));
+        if let Some(resource_type) = self.page.browse_type() {
+            self.browsers.entry(resource_type).or_insert_with(|| ModrinthBrowser {
+                input: cx.new(|cx| InputState::new(window, cx).placeholder("Search Modrinth…")),
+                results: Vec::new(),
+                searching: false,
+                search_status: "Search by name or leave blank to browse.".into(),
+                installing: HashSet::new(),
+                install_status: String::new(),
+            });
         }
         if running {
             cx.spawn(async move |this, cx| {

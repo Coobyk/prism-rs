@@ -2,6 +2,7 @@
 //! `.mrpack` modpack import. Mirrors `launcher/modplatform/modrinth/`.
 
 use super::{install_path, PlatformError, ResourceType};
+use crate::loaders::Loader;
 use crate::net::{DownloadRequest, Downloader};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -98,19 +99,21 @@ impl ModrinthApi {
         game_version: Option<&str>,
         limit: u32,
     ) -> Result<SearchResponse, PlatformError> {
-        let mut facets = vec![format!("[\"project_type:{}\"]", project_type.modrinth_project_type())];
+        let mut facets = vec![[format!("project_type:{}", project_type.modrinth_project_type())]];
         if let Some(gv) = game_version {
-            facets.push(format!("[\"versions:{gv}\"]"));
+            facets.push([format!("versions:{gv}")]);
         }
-        let url = format!(
-            "{API_BASE}/search?query={query}&facets=[{}]&limit={limit}",
-            urlencoding_encode(&facets.join(","))
-        );
-        let resp = self.http.get(&url).send().await.map_err(|e| PlatformError::Request(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(PlatformError::Request(format!("search: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
+        let facets = serde_json::to_string(&facets)?;
+        Ok(self
+            .http
+            .get(format!("{API_BASE}/search"))
+            .query(&[("query", query), ("facets", facets.as_str())])
+            .query(&[("limit", limit)])
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?)
     }
 
     /// List versions of a project, optionally filtered.
@@ -120,25 +123,18 @@ impl ModrinthApi {
         loaders: &[&str],
         game_versions: &[&str],
     ) -> Result<Vec<ModVersion>, PlatformError> {
-        let mut url = format!("{API_BASE}/project/{project_id_or_slug}/version");
-        let mut params = Vec::new();
+        let mut url = reqwest::Url::parse(API_BASE).expect("valid Modrinth base URL");
+        url.path_segments_mut()
+            .expect("Modrinth base URL has a path")
+            .extend(["project", project_id_or_slug, "version"]);
+        let mut request = self.http.get(url);
         if !loaders.is_empty() {
-            let inner: Vec<String> = loaders.iter().map(|l| format!("\"{l}\"")).collect();
-            params.push(format!("loaders=[{}]", inner.join(",")));
+            request = request.query(&[("loaders", serde_json::to_string(loaders)?)]);
         }
         if !game_versions.is_empty() {
-            let inner: Vec<String> = game_versions.iter().map(|g| format!("\"{g}\"")).collect();
-            params.push(format!("game_versions=[{}]", inner.join(",")));
+            request = request.query(&[("game_versions", serde_json::to_string(game_versions)?)]);
         }
-        if !params.is_empty() {
-            url.push('?');
-            url.push_str(&params.join("&"));
-        }
-        let resp = self.http.get(&url).send().await.map_err(|e| PlatformError::Request(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(PlatformError::Request(format!("versions: {}", resp.status())));
-        }
-        Ok(resp.json().await?)
+        Ok(request.send().await?.error_for_status()?.json().await?)
     }
 
     /// Pick the primary file of a version.
@@ -154,13 +150,32 @@ impl ModrinthApi {
         file: &ModFile,
         resource_type: ResourceType,
     ) -> Result<std::path::PathBuf, PlatformError> {
-        let dest = install_path(game_root, resource_type, &file.filename);
-        let mut req = DownloadRequest::new(file.url.clone(), &dest);
-        if let Some(sha1) = file.hashes.get("sha1") {
-            req = req.with_sha1(sha1.clone());
+        Ok(downloader
+            .download(&install_request(game_root, file, resource_type)?)
+            .await?)
+    }
+
+    /// Install the first compatible version returned by Modrinth.
+    pub async fn install_compatible(
+        &self,
+        downloader: &Arc<Downloader>,
+        game_root: &Path,
+        project: &SearchResult,
+        resource_type: ResourceType,
+        mc_version: &str,
+        loader: &Loader,
+    ) -> Result<std::path::PathBuf, PlatformError> {
+        if project.project_type != resource_type.modrinth_project_type() {
+            return Err(PlatformError::Request("wrong project type".into()));
         }
-        downloader.download(&req).await?;
-        Ok(dest)
+        let loaders: Vec<_> = modrinth_loader(resource_type, loader).into_iter().collect();
+        let versions = self.versions(&project.project_id, &loaders, &[mc_version]).await?;
+        let version = versions.first().ok_or_else(|| {
+            PlatformError::Request(format!("no compatible version for Minecraft {mc_version}"))
+        })?;
+        let file = self.primary_file(version)
+            .ok_or_else(|| PlatformError::Request("version has no downloadable file".into()))?;
+        self.install_file(downloader, game_root, file, resource_type).await
     }
 }
 
@@ -170,18 +185,37 @@ impl Default for ModrinthApi {
     }
 }
 
-// Minimal url encoding for the characters we generate ourselves.
-fn urlencoding_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b':' | b'"' | b',' => {
-                out.push(b as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
+fn modrinth_loader(resource_type: ResourceType, loader: &Loader) -> Option<&'static str> {
+    if resource_type != ResourceType::Mod {
+        return None;
     }
-    out
+    match loader {
+        Loader::Fabric { .. } => Some("fabric"),
+        Loader::Quilt { .. } => Some("quilt"),
+        Loader::Forge { .. } => Some("forge"),
+        Loader::NeoForge { .. } => Some("neoforge"),
+        Loader::None => None,
+    }
+}
+
+fn install_request(
+    game_root: &Path,
+    file: &ModFile,
+    resource_type: ResourceType,
+) -> Result<DownloadRequest, PlatformError> {
+    let name = file.filename.as_str();
+    if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name)
+        || name.contains(['/', '\\', ':'])
+        || name.chars().any(char::is_control)
+    {
+        return Err(PlatformError::Request("invalid download filename".into()));
+    }
+    let dest = install_path(game_root, resource_type, name);
+    let mut request = DownloadRequest::new(file.url.clone(), dest);
+    if let Some(sha1) = file.hashes.get("sha1") {
+        request = request.with_sha1(sha1.clone());
+    }
+    Ok(request)
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +308,40 @@ impl MrpackIndex {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minecraft_mod_loaders_do_not_filter_pack_versions() {
+        let forge = Loader::Forge { version: "47.4.0".into() };
+        assert_eq!(modrinth_loader(ResourceType::Mod, &forge), Some("forge"));
+        assert_eq!(modrinth_loader(ResourceType::ResourcePack, &forge), None);
+        assert_eq!(modrinth_loader(ResourceType::ShaderPack, &forge), None);
+    }
+
+    #[test]
+    fn pack_downloads_use_their_own_directory_and_checksum() {
+        let file = ModFile {
+            url: "https://cdn.modrinth.com/pack.zip".into(),
+            filename: "Cool Pack.zip".into(),
+            primary: true,
+            size: 123,
+            hashes: [("sha1".into(), "abc".into())].into(),
+        };
+        let root = Path::new("game");
+        for (kind, folder) in [
+            (ResourceType::ResourcePack, "resourcepacks"),
+            (ResourceType::ShaderPack, "shaderpacks"),
+        ] {
+            let request = install_request(root, &file, kind).unwrap();
+            assert_eq!(request.dest, root.join(folder).join("Cool Pack.zip"));
+            assert_eq!(request.sha1.as_deref(), Some("abc"));
+        }
+
+        for name in ["", ".", "..", "/pack.zip", "../pack.zip", "..\\pack.zip", "C:pack.zip", "pack.zip/"] {
+            let mut file = file.clone();
+            file.filename = name.into();
+            assert!(install_request(root, &file, ResourceType::ResourcePack).is_err(), "{name:?}");
+        }
+    }
 
     #[test]
     fn parses_mrpack_index() {
