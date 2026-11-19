@@ -633,33 +633,42 @@ impl ModUpdate {
         downloader.download(&req).await?;
         ensure_fresh()?;
         let backup = stage.path().join("original.jar");
-        if old == new {
-            fs::copy(&old, &backup)?;
-            fs::rename(&req.dest, &new)?;
-        } else {
-            fs::hard_link(&req.dest, &new)?;
-            if let Err(error) = fs::rename(&old, &backup) {
-                fs::remove_file(&new)?;
-                return Err(error.into());
-            }
-        }
-        if let Err(error) = save_index(&self.index_path, &self.new_index, self.old_index.as_deref())
-        {
-            let restore = if old == new {
+        let replacement = tempfile::TempPath::try_from_path(req.dest)?;
+        fs::rename(&old, &backup)?;
+
+        let roll_back = |error: PlatformError, installed: bool| {
+            let restore = (|| -> io::Result<()> {
+                if installed && old != new {
+                    fs::remove_file(&new)?;
+                }
+                if (!installed || old != new) && old.symlink_metadata().is_ok() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "original path is occupied",
+                    ));
+                }
                 fs::rename(&backup, &old)
-            } else {
-                fs::hard_link(&backup, &old).and_then(|()| fs::remove_file(&new))
-            };
+            })();
             return match restore {
-                Ok(()) => Err(problem(format!("could not save mod metadata: {error}"))),
+                Ok(()) => Err(error),
                 Err(restore_error) => {
                     let backup = stage.keep().join("original.jar");
                     Err(problem(format!(
-                        "could not save mod metadata: {error}; could not roll back ({restore_error}); original backed up at {}",
+                        "{error}; could not roll back ({restore_error}); original backed up at {}",
                         backup.display()
                     )))
                 }
             };
+        };
+        if let Err(error) = replacement.persist_noclobber(&new) {
+            return roll_back(error.error.into(), false);
+        }
+        if let Err(error) = save_index(&self.index_path, &self.new_index, self.old_index.as_deref())
+        {
+            return roll_back(
+                problem(format!("could not save mod metadata: {error}")),
+                true,
+            );
         }
         Ok(())
     }
