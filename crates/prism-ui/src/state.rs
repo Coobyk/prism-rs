@@ -211,7 +211,7 @@ impl App {
                         if *current_token != token {
                             return;
                         }
-                        if let Err(error) = instance.save_horizon_home(current_home) {
+                        if let Err(error) = instance.save_horizon_home(&app.paths, current_home) {
                             log_lock(&log).push(format!("Could not save the moved Horizon game folder: {error}"));
                         }
                         cx.notify();
