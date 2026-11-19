@@ -512,6 +512,8 @@ pub struct PromptState {
     pub export_fields: Option<[Entity<InputState>; 3]>,
     pub mrpack: bool,
     pub export_default_path: Option<String>,
+    pub copy_group: Option<Entity<InputState>>,
+    pub copy_flags: [bool; 8],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -520,6 +522,7 @@ pub enum PromptKind {
     ChangeGroup,
     ImportPath,
     Export,
+    Copy,
 }
 
 impl PromptState {
@@ -529,6 +532,7 @@ impl PromptState {
             PromptKind::ChangeGroup => "Group name (empty = none)",
             PromptKind::ImportPath => "Local path to .zip or .mrpack",
             PromptKind::Export => "Destination path (must not already exist)",
+            PromptKind::Copy => "Instance name",
         };
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         input.update(cx, |s, cx| {
@@ -549,6 +553,8 @@ impl PromptState {
             },
             mrpack: false,
             export_default_path: None,
+            copy_group: (kind == PromptKind::Copy).then(|| cx.new(|cx| InputState::new(window, cx).placeholder("Group (empty = none)"))),
+            copy_flags: [true; 8],
         }
     }
 
@@ -582,6 +588,7 @@ impl PromptState {
             PromptKind::ChangeGroup => "Change Group",
             PromptKind::ImportPath => "Import Instance",
             PromptKind::Export => "Export Instance",
+            PromptKind::Copy => "Copy Instance",
         };
         let input = self.input.clone();
 
@@ -614,6 +621,23 @@ impl PromptState {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
             .child(Input::new(&input));
+
+        if let Some(group) = &self.copy_group {
+            panel = panel.child(Input::new(group));
+            for (index, label) in ["Saves", "Game options", "Resource packs", "Shader packs", "Servers", "Mods (including config)", "Screenshots", "Keep playtime"].into_iter().enumerate() {
+                let checked = self.copy_flags[index];
+                panel = panel.child(gpui_kit::component::checkbox::Checkbox::new(("copy-option", index)).label(label).checked(checked).on_click(cx.listener(move |this: &mut MainWindow, checked: &bool, _, cx| {
+                    if let Some(prompt) = this.prompt.as_mut() { prompt.copy_flags[index] = *checked; }
+                    cx.notify();
+                })));
+            }
+            panel = panel.child(div().flex().gap_2().children([(true, "Select all"), (false, "Select none")].map(|(value, label)| {
+                Button::new(label).label(label).on_click(cx.listener(move |this: &mut MainWindow, _, _, cx| {
+                    if let Some(prompt) = this.prompt.as_mut() { prompt.copy_flags.fill(value); }
+                    cx.notify();
+                }))
+            })));
+        }
 
         if let Some(fields) = &self.export_fields {
             panel = panel.child(
@@ -688,6 +712,54 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     let value = prompt.input.read(cx).value().trim().to_string();
     let kind = prompt.kind;
     let target = prompt.target_id.clone();
+    if kind == PromptKind::Copy {
+        if value.is_empty() {
+            this.prompt.as_mut().unwrap().error = Some("Name cannot be empty.".into());
+            cx.notify();
+            return;
+        }
+        let group = prompt.copy_group.as_ref().unwrap().read(cx).value().trim().to_string();
+        let [saves, game_options, resource_packs, shader_packs, servers, mods, screenshots, keep_playtime] = prompt.copy_flags;
+        let options = prism_core::copy::CopyOptions { saves, game_options, resource_packs, shader_packs, servers, mods, screenshots, keep_playtime };
+        let app = this.app.clone();
+        let state = app.read(cx);
+        let source = state.instances.get(&target).cloned();
+        let paths = state.paths.clone();
+        let runtime = state.runtime.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        runtime.handle().spawn_blocking(move || {
+            let result = source.ok_or_else(|| "Source instance no longer exists".to_string()).and_then(|source| {
+                prism_core::copy::copy_instance_files(&paths, &source, &value, &options).map_err(|e| e.to_string())
+            });
+            let _ = tx.send(result);
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(result) = rx.await {
+                let _ = app.update(cx, |app, _| {
+                    let message = match result {
+                        Ok(instance) => {
+                            app.instances.groups.set_group(&instance.id, if group.is_empty() { None } else { Some(&group) });
+                            if let Err(error) = app.instances.groups.save(&app.paths.instances_dir()) {
+                                app.toast = Some((format!("Copied {}, but could not save group: {error}", instance.name), std::time::Instant::now()));
+                                app.reload_instances();
+                                app.selected = Some(instance.id);
+                                return;
+                            }
+                            app.reload_instances();
+                            app.selected = Some(instance.id);
+                            format!("Copied: {}", instance.name)
+                        }
+                        Err(e) => format!("Copy failed: {e}"),
+                    };
+                    app.toast = Some((message, std::time::Instant::now()));
+                });
+                let _ = this.update(cx, |_, cx| cx.notify());
+            }
+        }).detach();
+        this.prompt = None;
+        cx.notify();
+        return;
+    }
     if kind == PromptKind::Export {
         let mrpack = prompt.mrpack;
         let fields = prompt.export_fields.as_ref().unwrap();
@@ -750,7 +822,7 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
 
     this.app.update(cx, |app, _cx| {
         match kind {
-            PromptKind::Export => unreachable!(),
+            PromptKind::Export | PromptKind::Copy => unreachable!(),
             PromptKind::Rename => {
                 if let Some(inst) = app.instances.get_mut(&target) {
                     inst.name = value.clone();

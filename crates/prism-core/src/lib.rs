@@ -6,6 +6,7 @@
 //! - [`paths`]: launcher data directory layout
 
 pub mod auth;
+pub mod copy;
 pub mod export;
 pub mod horizon;
 pub mod import;
