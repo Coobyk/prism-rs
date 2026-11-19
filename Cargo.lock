@@ -4821,6 +4821,7 @@ dependencies = [
  "futures",
  "hex",
  "md-5",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

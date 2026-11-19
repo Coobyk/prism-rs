@@ -69,6 +69,13 @@ mode, and last-played time. Join a world, open its folder, or refresh the list.
 Stop Minecraft before copying, renaming, or deleting a world. Rename changes
 the name shown in Minecraft and gives the save folder a matching, unique name.
 
+Use **Minecraft Log** to find and highlight text in the console, copy the full log,
+or share it on mclo.gs. Upload asks for confirmation and redacts known usernames,
+home paths, and tokens; review the log for other private information before sharing.
+**Other Logs** browses the Java instance's `logs/` folder, including compressed
+`.log.gz` files. Select a file to view, search, copy, or share it. Stop Minecraft
+before deleting logs; deletion requires confirmation.
+
 Open **Data Packs** on a Java instance and select a saved world. Use **Add ZIP…** for
 an archive with `pack.mcmeta` at its root, or use **Browse Modrinth** to install a
 compatible data pack. Enable, disable, or remove installed packs and open that
@@ -126,7 +133,7 @@ crates/prism-core
 
 crates/prism-ui (GPUI)
   main_window.rs      main window: toolbar, grouped instance grid, sidebar, console, news/status
-  instance_window.rs  per-instance pages: Log, Version (loader install), Mods, Browse Mods
+  instance_window.rs  per-instance pages: Log, Other Logs, Version (loader install), Mods, Browse Mods
                       (Modrinth search + install), Resource/Shader packs, Worlds, Screenshots,
                       Notes, Settings
   accounts_window.rs  account list, offline accounts, MSA device-code sign-in
@@ -146,7 +153,8 @@ Working today:
 - CurseForge: import modpack zips
 - Offline accounts; MSA device-code login implemented end-to-end
 - Global + per-instance settings (memory, Java, window size)
-- Live console with log capture; kill running instances
+- Live console with log capture, search, copy, and confirmed mclo.gs sharing; kill running instances
+- Other Logs page: browse and decompress Java logs, search, copy, share, and confirm deletion
 - Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
 - Worlds page: save details, rename, copy, confirmed delete, and folder browsing
 - News feed, grouped instance list, persistent config

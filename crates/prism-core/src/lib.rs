@@ -18,6 +18,7 @@ pub mod instance_settings;
 pub mod java;
 pub mod launch;
 pub mod loaders;
+pub mod logs;
 pub mod meta;
 pub mod modplatform;
 pub mod net;
