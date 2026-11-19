@@ -21,6 +21,7 @@ struct Index {
     filename: String,
     side: Option<String>,
     download: IndexDownload,
+    #[serde(default)]
     update: Providers,
     #[serde(
         rename = "x-prismlauncher-lock-update",
@@ -657,6 +658,33 @@ file-id = 3509043
             read_index(mods)["updated.jar"][0].index.side.as_deref(),
             Some("client")
         );
+    }
+
+    #[tokio::test]
+    async fn locked_metadata_does_not_need_an_update_provider() {
+        let temp = tempfile::tempdir().unwrap();
+        let mods = temp.path().join("mods");
+        let dir = mods.join(".index");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(mods.join("example.jar"), b"locked mod").unwrap();
+        fs::write(
+            dir.join("example.pw.toml"),
+            CURSEFORGE.split("[update.curseforge]").next().unwrap(),
+        )
+        .unwrap();
+
+        let report = check(
+            temp.path(),
+            "1.20.1",
+            &Loader::Fabric {
+                version: "0.16.14".into(),
+            },
+            &Downloader::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(report.locked, 1);
+        assert!(report.updates.is_empty());
     }
 
     #[tokio::test]
