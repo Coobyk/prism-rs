@@ -73,6 +73,8 @@ mod tests {
     fn resource_pack_editor_is_only_available_for_java() {
         assert!(Page::ResourcePacks.available(false));
         assert!(!Page::ResourcePacks.available(true));
+        assert!(Page::Settings.available(false));
+        assert!(!Page::Settings.available(true));
     }
 }
 
@@ -95,6 +97,7 @@ pub struct InstanceWindow {
     server_inputs: Option<(gpui::Entity<InputState>, gpui::Entity<InputState>)>,
     server_status: String,
     servers_was_running: bool,
+    pub(crate) settings_editor: Option<crate::instance_settings_page::SettingsEditor>,
 }
 
 impl InstanceWindow {
@@ -116,6 +119,7 @@ impl InstanceWindow {
             server_inputs: None,
             server_status: String::new(),
             servers_was_running: false,
+            settings_editor: None,
         }
     }
 
@@ -423,6 +427,7 @@ impl InstanceWindow {
 
         div()
             .flex_1()
+            .min_w_0()
             .flex()
             .flex_col()
             .min_h_0()
@@ -437,7 +442,7 @@ impl InstanceWindow {
                     .font_family("monospace")
                     .text_size(px(11.))
                     .text_color(rgb(0xcccccc))
-                    .children(tail.into_iter().map(|l| div().child(l).into_any_element())),
+                    .children(tail.into_iter().map(|l| div().w_full().whitespace_normal().child(l).into_any_element())),
             )
             .into_any_element()
     }
@@ -747,51 +752,10 @@ impl InstanceWindow {
     }
 
     fn render_settings_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let inst = self.instance(cx);
-        let cfg = prism_core::ini::IniFile::load(&inst.root.join("instance.cfg")).unwrap_or_default();
-        let min_mem = cfg.get_or("MinMemAlloc", "512");
-        let max_mem = cfg.get_or("MaxMemAlloc", "4096");
-        let java_path = cfg.get_or("JavaPath", "(auto)");
-        let width = cfg.get_or("MinecraftWinWidth", "854");
-        let height = cfg.get_or("MinecraftWinHeight", "480");
-
-        let rows: Vec<(&str, String)> = vec![
-            ("Minimum memory (MB)", min_mem),
-            ("Maximum memory (MB)", max_mem),
-            ("Java path", java_path),
-            ("Window width", width),
-            ("Window height", height),
-        ];
-
-        let mut list = div().flex().flex_col().gap_1().p_3();
-        for (label, value) in rows {
-            list = list.child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .px_3()
-                    .py_2()
-                    .bg(rgb(0x2b2b2b))
-                    .rounded_md()
-                    .child(div().text_color(rgb(0xaaaaaa)).child(label.to_string()))
-                    .child(div().child(value)),
-            );
+        match &self.settings_editor {
+            Some(editor) => editor.render(cx),
+            None => div().p_4().child("Could not load instance settings. Reopen this window to retry.").into_any_element(),
         }
-        list = list.child(
-            div()
-                .text_size(px(11.))
-                .text_color(rgb(0x777777))
-                .child("Editing is read-only for now; edit instance.cfg directly to change these."),
-        );
-
-        div()
-            .flex_1()
-            .flex()
-            .flex_col()
-            .min_h_0()
-            .child(self.page_header(cx, "Instance settings".to_string()).into_any_element())
-            .child(div().id("settings-scroll").flex_1().overflow_y_scroll().child(list))
-            .into_any_element()
     }
 
     fn render_worlds_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -1133,6 +1097,14 @@ impl Render for InstanceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.page.available(self.instance(cx).is_horizon()) {
             self.page = Page::Log;
+        }
+        if self.page == Page::Settings && self.settings_editor.is_none() {
+            if let Some(instance) = self.app.read(cx).instances.get(&self.instance_id).cloned() {
+                let paths = self.app.read(cx).paths.clone();
+                self.settings_editor = crate::instance_settings_page::SettingsEditor::load(
+                    &instance, &paths, window, cx,
+                ).ok();
+            }
         }
         let running = self.servers_running(cx);
         if self.servers_was_running && !running {

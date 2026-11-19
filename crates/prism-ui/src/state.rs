@@ -201,7 +201,7 @@ impl App {
                     }
                     child
                 });
-                monitor_launch(running, "Horizon", result, lock);
+                monitor_launch(running, "Horizon", result, lock, None);
             });
             cx.spawn(async move |this, cx| {
                 if let Ok(current_home) = rx.await {
@@ -266,10 +266,11 @@ impl App {
                 }
             };
 
-            let session = match match account_id {
+            let session = match account_id {
                 Some(id) => AccountList::session_for_account(&accounts_path, &id).await,
                 None => Ok(None),
-            } {
+            };
+            let session = match session {
                 Ok(session) => session,
                 Err(error) => {
                     log_lock(&log).push(format!("Fatal: {error}"));
@@ -279,8 +280,11 @@ impl App {
             };
             let _ = accounts_tx.send(());
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
-            let child = crate::instance_lock::spawn(&mut prepared.command(), &lock);
-            monitor_launch(running, "Minecraft", child, lock);
+            let result = prepared.spawn_with(
+                |line| log_lock(&log).push(line),
+                |command| crate::instance_lock::spawn(command, &lock),
+            );
+            monitor_launch(running, "Minecraft", result, lock, Some(prepared));
         });
     }
 
@@ -352,6 +356,7 @@ fn monitor_launch(
     game: &str,
     result: Result<std::process::Child, impl std::fmt::Display>,
     lock: std::fs::File,
+    prepared: Option<prism_core::launch::PreparedLaunch>,
 ) {
     let mut child = match result {
         Ok(child) => child,
@@ -373,9 +378,19 @@ fn monitor_launch(
         read_output(pipe, running.log.clone());
     }
     std::thread::spawn(move || {
+        let _lock = lock;
         let status = child.wait();
-        drop(lock);
         *pid_lock(&running.pid) = None;
+        if let Some(prepared) = prepared {
+            if let Err(error) = prepared.run_post_exit_with_output(|line| log_lock(&running.log).push(line))
+            {
+                log_lock(&running.log).push(format!("Post-exit command failed: {error}"));
+                state_lock(&running.state, |state| {
+                    *state = InstanceRunState::Crashed(error.to_string())
+                });
+                return;
+            }
+        }
         match status {
             Ok(code) if code.success() => {
                 log_lock(&running.log).push("Game exited normally".to_string());

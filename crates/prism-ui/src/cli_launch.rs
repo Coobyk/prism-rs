@@ -45,7 +45,7 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
         "Launching instance {:?} (Minecraft {})",
         instance.name, settings.mc_version
     );
-    let child = tokio::runtime::Runtime::new()?.block_on(async {
+    let (child, prepared) = tokio::runtime::Runtime::new()?.block_on(async {
         let launcher = Launcher::new(paths.clone(), Default::default());
         let profile = launcher
             .prepare_instance(
@@ -61,9 +61,15 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
             .session_for_launch(&accounts_path)
             .await?;
         let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
-        Ok::<_, Box<dyn Error>>(crate::instance_lock::spawn(&mut prepared.command(), &lock)?)
+        let child = prepared.spawn_with(
+            |line| println!("{line}"),
+            |command| crate::instance_lock::spawn(command, &lock),
+        )?;
+        Ok::<_, Box<dyn Error>>((child, prepared))
     })?;
-    Ok(wait_for_game(child)?)
+    let status = wait_for_game(child)?;
+    prepared.run_post_exit()?;
+    Ok(status)
 }
 
 fn wait_for_game(mut child: Child) -> io::Result<i32> {

@@ -124,9 +124,14 @@ pub struct LaunchSettings {
     pub min_memory_mb: u32,
     pub max_memory_mb: u32,
     pub extra_jvm_args: Vec<String>,
+    pub raw_jvm_args: String,
     pub window_width: u32,
     pub window_height: u32,
     pub env: Vec<(String, String)>,
+    pub instance_dir: PathBuf,
+    pub pre_launch_command: String,
+    pub wrapper_command: String,
+    pub post_exit_command: String,
 }
 
 impl LaunchSettings {
@@ -145,54 +150,79 @@ impl LaunchSettings {
             min_memory_mb: global.get_int("MinMemAlloc", 512).max(128) as u32,
             max_memory_mb: global.get_int("MaxMemAlloc", 4096).max(256) as u32,
             extra_jvm_args: Vec::new(),
+            raw_jvm_args: String::new(),
             window_width: global.get_int("MinecraftWinWidth", 854).max(320) as u32,
             window_height: global.get_int("MinecraftWinHeight", 480).max(240) as u32,
             env: Vec::new(),
+            instance_dir: inst.root.clone(),
+            pre_launch_command: String::new(),
+            wrapper_command: String::new(),
+            post_exit_command: String::new(),
         }
-        .with_global_java(&global)
-        .with_instance_cfg(inst)
+        .with_instance_cfg(inst, &global)
         .with_paths(paths)
     }
 
-    fn with_global_java(mut self, global: &crate::settings::Settings) -> Self {
-        if let Some(v) = global.get("JavaPath").filter(|v| !v.is_empty()) {
-            self.java_path = PathBuf::from(v);
-            self.java_path_explicit = true;
-        }
-        self
-    }
-
-    fn with_instance_cfg(mut self, inst: &crate::instance::Instance) -> Self {
-        // Per-instance overrides stored in instance.cfg.
+    fn with_instance_cfg(
+        mut self,
+        inst: &crate::instance::Instance,
+        global: &crate::settings::Settings,
+    ) -> Self {
         let cfg = crate::ini::IniFile::load(&inst.root.join("instance.cfg")).unwrap_or_default();
-        if let Some(v) = cfg.get("MinMemAlloc").and_then(|v| v.parse().ok()) {
-            self.min_memory_mb = v;
-        }
-        if let Some(v) = cfg.get("MaxMemAlloc").and_then(|v| v.parse().ok()) {
-            self.max_memory_mb = v;
-        }
-        if let Some(v) = cfg.get("MinecraftWinWidth").and_then(|v| v.parse().ok()) {
-            self.window_width = v;
-        }
-        if let Some(v) = cfg.get("MinecraftWinHeight").and_then(|v| v.parse().ok()) {
-            self.window_height = v;
-        }
-        if let Some(v) = cfg.get("OverrideJavaPath").or_else(|| cfg.get("JavaPath")) {
-            // PrismLauncher records its own automatic pick with AutomaticJava=true;
-            // re-pick those instead of pinning a possibly stale choice.
-            if !v.is_empty() && cfg.get("AutomaticJava") != Some("true") {
-                self.java_path = PathBuf::from(v);
-                self.java_path_explicit = true;
+        let choose = |flag: &str, key: &str, legacy: Option<&str>| -> Option<String> {
+            let local = || cfg.get(key).or_else(|| legacy.and_then(|k| cfg.get(k)));
+            match cfg.get(flag) {
+                Some("true" | "1") => local().map(str::to_owned),
+                Some(_) => global.get(key).map(str::to_owned),
+                None => local().or_else(|| global.get(key)).map(str::to_owned),
             }
+        };
+        let number = |flag: &str, key: &str, default, inherited| {
+            let local = cfg.get(key).and_then(|v| v.parse::<u32>().ok());
+            match cfg.get(flag) {
+                Some("true" | "1") => local.unwrap_or(default),
+                Some(_) => inherited,
+                None => local.unwrap_or(inherited),
+            }
+        };
+        self.min_memory_mb = number("OverrideMemory", "MinMemAlloc", 512, self.min_memory_mb);
+        self.max_memory_mb = number("OverrideMemory", "MaxMemAlloc", 4096, self.max_memory_mb);
+        self.window_width = number("OverrideWindow", "MinecraftWinWidth", 854, self.window_width);
+        self.window_height = number("OverrideWindow", "MinecraftWinHeight", 480, self.window_height);
+        let local_java = if cfg.get("OverrideJavaLocation").is_none() {
+            cfg.get("OverrideJavaPath")
+                .or_else(|| cfg.get("JavaPath"))
+        } else {
+            cfg.get("JavaPath")
+        };
+        // Imported automatic picks must not pin a stale Java installation.
+        let local_java = local_java.filter(|v| !v.is_empty() && cfg.get("AutomaticJava") != Some("true"));
+        let global_java = global.get("JavaPath").filter(|v| !v.is_empty());
+        let java = match cfg.get("OverrideJavaLocation") {
+            Some("true" | "1") => local_java,
+            Some(_) => global_java,
+            None => local_java.or(global_java),
+        };
+        if let Some(java) = java {
+            self.java_path = java.into();
+            self.java_path_explicit = true;
         }
         if let Some(v) = cfg.get("IgnoreJavaCompatibility") {
             self.ignore_java_compatibility = v == "true" || v == "1";
         }
-        if let Some(v) = cfg.get("JvmArgs").or_else(|| cfg.get("jvmArgs")) {
-            if !v.is_empty() {
-                self.extra_jvm_args = v.split_whitespace().map(String::from).collect();
-            }
-        }
+        self.raw_jvm_args = choose("OverrideJavaArgs", "JvmArgs", Some("jvmArgs")).unwrap_or_default();
+        self.extra_jvm_args = split_args(&self.raw_jvm_args).unwrap_or_default();
+        self.pre_launch_command =
+            choose("OverrideCommands", "PreLaunchCommand", None).unwrap_or_default();
+        self.wrapper_command =
+            choose("OverrideCommands", "WrapperCommand", None).unwrap_or_default();
+        self.post_exit_command =
+            choose("OverrideCommands", "PostExitCommand", None).unwrap_or_default();
+        self.env = choose("OverrideEnv", "Env", None)
+            .and_then(|v| serde_json::from_str::<std::collections::BTreeMap<String, String>>(&v).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         self
     }
 
@@ -225,6 +255,41 @@ fn default_version_for(inst: &crate::instance::Instance) -> String {
         }
     }
     "1.20.1".to_string()
+}
+
+/// PrismLauncher splitArgs rules: backslashes are literal outside quotes and
+/// escape only the matching quote or another backslash inside quotes.
+pub fn split_args(input: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if let Some(delimiter) = quote {
+            if ch == '\\' && chars.peek().is_some_and(|next| *next == delimiter || *next == '\\') {
+                current.push(chars.next().unwrap());
+            } else if ch == delimiter {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+        } else if ch == '\'' || ch == '"' {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if let Some(delimiter) = quote {
+        return Err(format!("Unterminated {delimiter} quote"));
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    Ok(args)
 }
 
 fn default_java_path() -> PathBuf {
@@ -261,15 +326,115 @@ pub struct PreparedLaunch {
     pub command: Vec<String>,
     pub working_dir: PathBuf,
     pub env: Vec<(String, String)>,
+    pub instance_dir: PathBuf,
+    pub pre_launch_command: String,
+    pub post_exit_command: String,
+    pub command_error: Option<String>,
 }
 
 impl PreparedLaunch {
-    pub fn spawn(&self) -> std::io::Result<std::process::Child> {
-        self.command().spawn()
+    fn hook(&self, script: &str, label: &str, output: &mut impl FnMut(String)) -> std::io::Result<()> {
+        if script.trim().is_empty() {
+            return Ok(());
+        }
+        let mut command = if cfg!(windows) {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", script]);
+            command
+        } else {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", script]);
+            command
+        };
+        let captured = command
+            .current_dir(&self.instance_dir)
+            .envs(self.env.iter().cloned())
+            .output()?;
+        for (stream, bytes) in [("stdout", &captured.stdout), ("stderr", &captured.stderr)] {
+            for line in String::from_utf8_lossy(bytes).lines() {
+                output(format!("{label} ({stream}): {line}"));
+            }
+        }
+        if !captured.status.success() {
+            return Err(std::io::Error::other(format!(
+                "Hook command failed ({}): {script}",
+                captured.status
+            )));
+        }
+        Ok(())
     }
 
-    pub fn command(&self) -> std::process::Command {
+    /// Call after waiting for the game, including unsuccessful game exits.
+    pub fn run_post_exit(&self) -> std::io::Result<()> {
+        self.run_post_exit_with_output(|line| println!("{line}"))
+    }
+
+    pub fn run_post_exit_with_output(&self, mut output: impl FnMut(String)) -> std::io::Result<()> {
+        self.hook(&self.post_exit_command, "Post-exit", &mut output)
+    }
+
+    /// POSIX script with the same environment, wrapper and hooks as spawn().
+    pub fn shell_script(&self) -> std::io::Result<String> {
+        if let Some(error) = &self.command_error {
+            return Err(std::io::Error::other(error.clone()));
+        }
+        let mut script = String::from("#!/bin/sh\n");
+        script.push_str(&format!(
+            "cd {} || exit $?\n",
+            shell_quote(&self.instance_dir.to_string_lossy())
+        ));
+        // env accepts names that are not shell identifiers.
+        let environment = self
+            .env
+            .iter()
+            .map(|(k, v)| shell_quote(&format!("{k}={v}")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let prefix = format!("env {environment}");
+        if !self.pre_launch_command.trim().is_empty() {
+            script.push_str(&format!(
+                "{prefix} /bin/sh -c {} || exit $?\n",
+                shell_quote(&self.pre_launch_command)
+            ));
+        }
+        script.push_str(&format!(
+            "cd {} || exit $?\n",
+            shell_quote(&self.working_dir.to_string_lossy())
+        ));
+        let command = self.command.iter().map(|v| shell_quote(v)).collect::<Vec<_>>().join(" ");
+        script.push_str(&format!("{prefix} {command}\nstatus=$?\n"));
+        if !self.post_exit_command.trim().is_empty() {
+            script.push_str(&format!(
+                "(cd {} && {prefix} /bin/sh -c {}) || exit $?\n",
+                shell_quote(&self.instance_dir.to_string_lossy()),
+                shell_quote(&self.post_exit_command)
+            ));
+        }
+        script.push_str("exit \"$status\"\n");
+        Ok(script)
+    }
+
+    pub fn spawn(&self) -> std::io::Result<std::process::Child> {
+        self.spawn_with_output(|line| println!("{line}"))
+    }
+
+    pub fn spawn_with_output(
+        &self,
+        output: impl FnMut(String),
+    ) -> std::io::Result<std::process::Child> {
+        self.spawn_with(output, std::process::Command::spawn)
+    }
+
+    pub fn spawn_with(
+        &self,
+        mut output: impl FnMut(String),
+        spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Child>,
+    ) -> std::io::Result<std::process::Child> {
         use std::process::{Command, Stdio};
+        if let Some(error) = &self.command_error {
+            return Err(std::io::Error::other(error.clone()));
+        }
+        self.hook(&self.pre_launch_command, "Pre-launch", &mut output)?;
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..])
             .current_dir(&self.working_dir)
@@ -279,8 +444,12 @@ impl PreparedLaunch {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
-        cmd
+        spawn(&mut cmd)
     }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 pub struct Launcher {
@@ -680,6 +849,7 @@ impl Launcher {
         command.push(format!("-Xmx{max}m"));
         command.push("-Duser.language=en".to_string());
         command.extend(settings.extra_jvm_args.iter().cloned());
+        let java_args = command[1..].join(" ");
 
         // Structured JVM args (1.13+) or plain library path (legacy).
         let mut jvm_done_library_path = false;
@@ -744,6 +914,12 @@ impl Launcher {
             }
         }
 
+        command.extend([
+            "--width".into(),
+            settings.window_width.to_string(),
+            "--height".into(),
+            settings.window_height.to_string(),
+        ]);
         if !profile.supports_quick_play_multiplayer() {
             if let Some(QuickPlayTarget::Multiplayer { host, port }) = &settings.quick_play {
                 command.extend([
@@ -754,13 +930,35 @@ impl Launcher {
                 ]);
             }
         }
-        let mut env = settings.env.clone();
-        env.push(("NO_COLOR".to_string(), "1".to_string()));
+        let mut env = vec![
+            ("INST_NAME".into(), settings.instance_name.clone()),
+            ("INST_ID".into(), settings.instance_id.clone()),
+            ("INST_DIR".into(), settings.instance_dir.to_string_lossy().into_owned()),
+            ("INST_MC_DIR".into(), settings.game_dir.to_string_lossy().into_owned()),
+            ("INST_JAVA".into(), settings.java_path.to_string_lossy().into_owned()),
+            ("INST_JAVA_ARGS".into(), java_args),
+            ("NO_COLOR".into(), "1".into()),
+        ];
+        env.extend(settings.env.iter().cloned());
+        let mut command_error = split_args(&settings.raw_jvm_args)
+            .err()
+            .map(|error| format!("Invalid JVM arguments: {error}"));
+        match split_args(&settings.wrapper_command) {
+            Ok(mut wrapper) => {
+                wrapper.extend(command);
+                command = wrapper;
+            }
+            Err(error) => command_error = Some(format!("Invalid wrapper command: {error}")),
+        }
 
         PreparedLaunch {
             command,
             working_dir: settings.game_dir.clone(),
             env,
+            instance_dir: settings.instance_dir.clone(),
+            pre_launch_command: settings.pre_launch_command.clone(),
+            post_exit_command: settings.post_exit_command.clone(),
+            command_error,
         }
     }
 }

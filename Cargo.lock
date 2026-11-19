@@ -4841,6 +4841,7 @@ dependencies = [
  "gpui-kit",
  "libc",
  "prism-core",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",

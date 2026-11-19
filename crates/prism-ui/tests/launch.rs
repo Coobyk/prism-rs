@@ -122,6 +122,9 @@ fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
     let mut cfg = prism_core::ini::IniFile::load(&config).unwrap();
     cfg.set("JavaPath", java.to_str().unwrap());
     cfg.set("MaxMemAlloc", "2048");
+    cfg.set("OverrideCommands", "true");
+    cfg.set("PreLaunchCommand", "echo pre-launch-ran");
+    cfg.set("PostExitCommand", "echo post-exit-ran");
     cfg.save(&config).unwrap();
     let mut accounts = AccountList::default();
     accounts.add_offline("DemoPlayer");
@@ -143,6 +146,8 @@ fn launch_uses_instance_settings_and_account_and_returns_the_games_exit_code() {
     assert!(stdout.lines().any(|line| line == "-Xmx2048m"));
     assert!(stdout.lines().any(|line| line == "test.Game"));
     assert!(stdout.lines().any(|line| line == "DemoPlayer"));
+    assert!(stdout.contains("Pre-launch (stdout): pre-launch-ran"));
+    assert!(stdout.contains("Post-exit (stdout): post-exit-ran"));
     assert!(stdout
         .lines()
         .any(|line| line == instance.game_root().to_str().unwrap()));
