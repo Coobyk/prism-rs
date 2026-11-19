@@ -101,9 +101,10 @@ impl Downloader {
     /// Download a single file. When the destination exists and matches the
     /// checksum (or no checksum is given), nothing is downloaded.
     pub async fn download(&self, req: &DownloadRequest) -> Result<PathBuf, NetError> {
-        if let Some(parent) = req.dest.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
+        let parent = req.dest.parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        tokio::fs::create_dir_all(parent).await?;
 
         let existing_valid = match tokio::fs::read(&req.dest).await {
             Ok(bytes) => match &req.sha1 {
@@ -131,12 +132,17 @@ impl Downloader {
                 });
             }
         }
-        // Atomic-ish write: write to tmp then rename.
-        let mut tmp = req.dest.clone().into_os_string();
-        tmp.push(".download");
-        let tmp = PathBuf::from(tmp);
-        tokio::fs::write(&tmp, &bytes).await?;
-        tokio::fs::rename(&tmp, &req.dest).await?;
+        let parent = parent.to_owned();
+        let dest = req.dest.clone();
+        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            tmp.write_all(&bytes)?;
+            tmp.persist(dest).map_err(|error| error.error)?;
+            Ok(())
+        })
+        .await
+        .map_err(std::io::Error::other)??;
         Ok(req.dest.clone())
     }
 
@@ -247,5 +253,54 @@ impl CoreRuntime {
 impl Default for CoreRuntime {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn concurrent_cache_misses_publish_complete_downloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("shared.jar");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/shared.jar", listener.local_addr().unwrap());
+        let payload = vec![b'x'; 8_000_000];
+        let checksum = sha1_hex(&payload);
+        let server = std::thread::spawn(move || {
+            let mut connections = Vec::new();
+            for _ in 0..2 {
+                let (connection, _) = listener.accept().unwrap();
+                connection.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut reader = BufReader::new(connection);
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap() != 0 && line != "\r\n" {
+                    line.clear();
+                }
+                connections.push(reader.into_inner());
+            }
+            std::thread::scope(|scope| {
+                for mut connection in connections {
+                    let payload = &payload;
+                    scope.spawn(move || {
+                        write!(connection, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", payload.len()).unwrap();
+                        connection.write_all(payload).unwrap();
+                    });
+                }
+            });
+        });
+
+        let downloader = Downloader { client: Client::builder().no_proxy().build().unwrap() };
+        let req = DownloadRequest::new(url, &dest);
+        let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(downloader.download(&req), downloader.download(&req))
+        }).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(first.unwrap(), dest);
+        assert_eq!(second.unwrap(), dest);
+        Downloader::verify_sha1(&dest, &checksum).unwrap();
     }
 }
