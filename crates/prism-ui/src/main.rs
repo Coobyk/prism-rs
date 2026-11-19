@@ -247,7 +247,14 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
         println!("Downloading game files…");
         launcher.prepare_files(&profile, &settings).await.expect("prepare failed");
 
-        let session = prism_core::launch::AuthSession::offline("Player");
+        let mut accounts = prism_core::AccountList::load(&paths.accounts_file());
+        let session = match accounts.session_for_launch(&paths.accounts_file()).await {
+            Ok(session) => session.unwrap_or_else(|| prism_core::launch::AuthSession::offline("Player")),
+            Err(error) => {
+                eprintln!("Launch preparation failed: {error}");
+                return 1;
+            }
+        };
         let prepared = launcher.build_command(&settings, Some(&session), &profile);
         println!("\nCommand line:");
         for arg in &prepared.command {
@@ -268,6 +275,6 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
         let script_path = paths.root.join("launch-headless.sh");
         std::fs::write(&script_path, script).unwrap();
         println!("\nLaunch script written to {}", script_path.display());
-    });
-    0
+        0
+    })
 }

@@ -22,11 +22,17 @@ pub struct MinecraftAccount {
     pub access_token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
-    /// Unix seconds when access_token expires (0 = never).
+    /// Unix seconds when access_token expires (0 = unknown for MSA, never for offline).
     #[serde(default)]
     pub expires_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skin_url: Option<String>,
+}
+
+impl MinecraftAccount {
+    pub fn needs_refresh(&self, now: u64) -> bool {
+        self.account_type == AccountType::Msa && self.expires_at <= now.saturating_add(300)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -38,6 +44,43 @@ pub struct AccountList {
 }
 
 impl AccountList {
+    pub async fn session_for_launch(
+        &mut self,
+        path: &Path,
+    ) -> Result<Option<crate::launch::AuthSession>, AuthError> {
+        self.session_for_launch_with(path, now_unix(), |account| async move {
+            MsaClient::new().refresh(&account).await
+        })
+        .await
+    }
+
+    async fn session_for_launch_with<F, Fut>(
+        &mut self,
+        path: &Path,
+        now: u64,
+        refresh: F,
+    ) -> Result<Option<crate::launch::AuthSession>, AuthError>
+    where
+        F: FnOnce(MinecraftAccount) -> Fut,
+        Fut: std::future::Future<Output = Result<MinecraftAccount, AuthError>>,
+    {
+        let Some(account) = self.active_account().cloned() else {
+            return Ok(None);
+        };
+        if !account.needs_refresh(now) {
+            return Ok(Some(self.to_session(&account)));
+        }
+        let refreshed = refresh(account.clone())
+            .await
+            .map_err(|_| AuthError::SignInAgain)?;
+        let mut updated = self.clone();
+        let index = updated.accounts.iter().position(|a| a.id == account.id).unwrap();
+        updated.accounts[index] = refreshed.clone();
+        updated.save(path)?;
+        *self = updated;
+        Ok(Some(self.to_session(&refreshed)))
+    }
+
     pub fn load(path: &Path) -> AccountList {
         std::fs::read_to_string(path)
             .ok()
@@ -126,6 +169,8 @@ fn default_interval() -> u64 {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    #[error("Microsoft account refresh failed. Please sign in again before launching.")]
+    SignInAgain,
     #[error("network: {0}")]
     Net(#[from] crate::net::NetError),
     #[error("request failed: {0}")]
@@ -216,7 +261,7 @@ impl MsaClient {
         &self,
         msa_token: &str,
         refresh_token: String,
-        expires_in: u64,
+        _expires_in: u64,
     ) -> Result<MinecraftAccount, AuthError> {
         // XBL
         let xbl: serde_json::Value = self
@@ -322,7 +367,7 @@ impl MsaClient {
             profile_id,
             access_token: mc_token,
             refresh_token: Some(refresh_token),
-            expires_at: now_unix() + expires_in,
+            expires_at: now_unix().saturating_add(mc_login["expires_in"].as_u64().unwrap_or(0)),
             skin_url,
         })
     }
@@ -385,6 +430,89 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn expired_launch_refreshes_and_persists() {
+        let path = std::env::temp_dir().join(format!("prism-auth-{}.json", uuid::Uuid::new_v4()));
+        let mut list = AccountList::default();
+        list.add_offline("Notch");
+        list.accounts[0].account_type = AccountType::Msa;
+        list.accounts[0].expires_at = 100;
+        list.accounts[0].refresh_token = Some("old-refresh".into());
+        list.save(&path).unwrap();
+        let session = list.session_for_launch_with(&path, 101, |mut account| async move {
+            account.access_token = "new-access".into();
+            account.refresh_token = Some("new-refresh".into());
+            account.expires_at = 5000;
+            Ok(account)
+        }).await.unwrap().unwrap();
+        assert_eq!(session.access_token, "new-access");
+        let saved = AccountList::load(&path);
+        assert_eq!(saved.accounts[0].access_token, "new-access");
+        assert_eq!(saved.accounts[0].refresh_token.as_deref(), Some("new-refresh"));
+        assert_eq!(saved.accounts[0].expires_at, 5000);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn refresh_margin_and_account_types() {
+        let mut list = AccountList::default();
+        list.add_offline("Player");
+        let account = &mut list.accounts[0];
+        assert!(!account.needs_refresh(1000));
+        account.account_type = AccountType::Msa;
+        for expiry in [0, 999, 1000, 1299, 1300] {
+            account.expires_at = expiry;
+            assert!(account.needs_refresh(1000));
+        }
+        account.expires_at = 1301;
+        assert!(!account.needs_refresh(1000));
+    }
+
+    #[tokio::test]
+    async fn empty_offline_and_valid_accounts_skip_refresh() {
+        let path = std::env::temp_dir().join(format!("prism-auth-{}.json", uuid::Uuid::new_v4()));
+        let mut list = AccountList::default();
+        assert!(list.session_for_launch_with(&path, 1000, |_| async {
+            panic!("empty list must not refresh")
+        }).await.unwrap().is_none());
+        list.add_offline("Player");
+        for msa in [false, true] {
+            if msa {
+                list.accounts[0].account_type = AccountType::Msa;
+                list.accounts[0].expires_at = 2000;
+            }
+            let session = list.session_for_launch_with(&path, 1000, |_| async {
+                panic!("valid or offline account must not refresh")
+            }).await.unwrap().unwrap();
+            assert_eq!(session.access_token, "0");
+        }
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn refresh_and_persistence_failures_block_launch() {
+        let path = std::env::temp_dir().join(format!("prism-auth-{}.json", uuid::Uuid::new_v4()));
+        let mut list = AccountList::default();
+        list.add_offline("Player");
+        list.accounts[0].account_type = AccountType::Msa;
+        list.save(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = list.session_for_launch_with(&path, 1000, |_| async {
+            Err(AuthError::Request("revoked".into()))
+        }).await.unwrap_err();
+        assert!(error.to_string().contains("sign in again"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let error = list.session_for_launch_with(&path.join("impossible"), 1000, |mut account| async move {
+            account.access_token = "refreshed".into();
+            Ok(account)
+        }).await.unwrap_err();
+        assert!(matches!(error, AuthError::Io(_)));
+        assert_eq!(list.accounts[0].access_token, "0");
+        let error = list.session_for_launch(&path).await.unwrap_err();
+        assert!(error.to_string().contains("sign in again"));
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn account_list_offline() {
