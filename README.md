@@ -31,6 +31,7 @@ Headless CLI (used to verify the launch pipeline without a GUI):
 ```sh
 prism-rs prepare 1.20.1          # fetch metadata, download game files, print the java command
 prism-rs import pack.mrpack      # import a Modrinth modpack / MultiMC instance zip
+prism-rs export my-instance out.zip # export Prism zip (or out.mrpack for Modrinth)
 ```
 
 ## Architecture
@@ -51,6 +52,7 @@ crates/prism-core
   modplatform/    Modrinth (search/versions/install/.mrpack) and CurseForge (Flame)
   resources.rs    local mod/pack scanning (fabric.mod.json, mods.toml, mcmod.info, quilt)
   import.rs       instance import: .mrpack, CurseForge manifest (partial), MultiMC zips
+  export.rs       Prism zip and Modrinth mrpack export (hash resolution + overrides)
   news.rs         Atom/RSS news feed
 
 crates/prism-ui (GPUI)
@@ -77,9 +79,10 @@ Working today:
 - Live console with log capture; kill running instances
 - Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
 - News feed, grouped instance list, persistent config
+- Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
 
 Not yet at parity (tracked in the issue tracker of your heart): CurseForge/ATL/FTB/Technic pack
-import, instance export (Prism zip / mrpack / CurseForge), servers.dat NBT editing, screenshots
+import, CurseForge export, screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options.
 

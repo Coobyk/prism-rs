@@ -2,9 +2,10 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
+use gpui_kit::base::{Disableable, Selectable};
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use prism_core::launch::QuickPlayTarget;
 
@@ -443,6 +444,9 @@ pub struct PromptState {
     pub target_id: String,
     pub input: Entity<InputState>,
     pub error: Option<String>,
+    pub export_fields: Option<[Entity<InputState>; 3]>,
+    pub mrpack: bool,
+    pub export_default_path: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -450,6 +454,7 @@ pub enum PromptKind {
     Rename,
     ChangeGroup,
     ImportPath,
+    Export,
 }
 
 impl PromptState {
@@ -458,6 +463,7 @@ impl PromptState {
             PromptKind::Rename => "Instance name",
             PromptKind::ChangeGroup => "Group name (empty = none)",
             PromptKind::ImportPath => "Path or URL to .zip/.mrpack",
+            PromptKind::Export => "Destination path (must not already exist)",
         };
         let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         input.update(cx, |s, cx| {
@@ -468,7 +474,41 @@ impl PromptState {
             target_id,
             input,
             error: None,
+            export_fields: if kind == PromptKind::Export {
+                Some(
+                    ["Pack name", "Version (e.g. 1.0.0)", "Summary"]
+                        .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(label))),
+                )
+            } else {
+                None
+            },
+            mrpack: false,
+            export_default_path: None,
         }
+    }
+
+    pub fn set_export_defaults(&mut self, instance: &prism_core::Instance, window: &mut Window, cx: &mut Context<MainWindow>) {
+        let path = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()))
+            .join(format!("{}.zip", instance.name.replace(['/', '\\'], "_")))
+            .to_string_lossy().into_owned();
+        self.input.update(cx, |state, cx| state.set_value(path.clone(), window, cx));
+        self.export_default_path = Some(path);
+        if let Some(fields) = &self.export_fields {
+            for (field, value) in fields.iter().zip([instance.name.clone(), "1.0.0".into(), String::new()]) {
+                field.update(cx, |state, cx| state.set_value(value, window, cx));
+            }
+        }
+    }
+
+    fn set_export_format(&mut self, mrpack: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
+        if self.export_default_path.as_deref() == Some(self.input.read(cx).value().as_str()) {
+            let mut path = std::path::PathBuf::from(self.export_default_path.as_ref().unwrap());
+            path.set_extension(if mrpack { "mrpack" } else { "zip" });
+            let value = path.to_string_lossy().into_owned();
+            self.input.update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+            self.export_default_path = Some(value);
+        }
+        self.mrpack = mrpack;
     }
 
     pub fn render(&self, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement {
@@ -476,6 +516,7 @@ impl PromptState {
             PromptKind::Rename => "Rename Instance",
             PromptKind::ChangeGroup => "Change Group",
             PromptKind::ImportPath => "Import Instance",
+            PromptKind::Export => "Export Instance",
         };
         let input = self.input.clone();
 
@@ -508,6 +549,43 @@ impl PromptState {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
             .child(Input::new(&input));
+
+        if let Some(fields) = &self.export_fields {
+            panel = panel.child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("export-zip")
+                            .label("Prism zip")
+                            .selected(!self.mrpack)
+                            .when(!self.mrpack, |button| button.primary())
+                            .on_click(cx.listener(|this: &mut MainWindow, _, window, cx| {
+                                if let Some(prompt) = this.prompt.as_mut() {
+                                    prompt.set_export_format(false, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("export-mrpack")
+                            .label("Modrinth mrpack")
+                            .selected(self.mrpack)
+                            .when(self.mrpack, |button| button.primary())
+                            .on_click(cx.listener(|this: &mut MainWindow, _, window, cx| {
+                                if let Some(prompt) = this.prompt.as_mut() {
+                                    prompt.set_export_format(true, window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    ),
+            );
+            if self.mrpack {
+                for field in fields {
+                    panel = panel.child(Input::new(field));
+                }
+            }
+        }
 
         if let Some(e) = &self.error {
             panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
@@ -545,6 +623,59 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     let value = prompt.input.read(cx).value().trim().to_string();
     let kind = prompt.kind;
     let target = prompt.target_id.clone();
+    if kind == PromptKind::Export {
+        let mrpack = prompt.mrpack;
+        let fields = prompt.export_fields.as_ref().unwrap();
+        let metadata = prism_core::export::MrpackMetadata {
+            name: fields[0].read(cx).value().to_string(),
+            version: fields[1].read(cx).value().to_string(),
+            summary: fields[2].read(cx).value().to_string(),
+        };
+        let mut output = std::path::PathBuf::from(&value);
+        if output.extension().is_none() {
+            output.set_extension(if mrpack { "mrpack" } else { "zip" });
+        }
+        if value.is_empty() {
+            this.prompt.as_mut().unwrap().error = Some("Choose a destination path".into());
+            cx.notify();
+            return;
+        }
+        let instance = this.app.read(cx).instances.get(&target).cloned();
+        if instance.is_none() {
+            this.prompt.as_mut().unwrap().error = Some("Selected instance no longer exists".into());
+            cx.notify();
+            return;
+        }
+        if let Some(instance) = instance {
+            let app = this.app.clone();
+            let runtime = app.read(cx).runtime.clone();
+            let (tx, rx) = tokio::sync::oneshot::channel();
+            runtime.handle().spawn(async move {
+                let result = if mrpack {
+                    prism_core::export::export_mrpack(&instance, &output, metadata).await
+                } else {
+                    prism_core::export::export_zip(&instance, &output)
+                };
+                let message = match result {
+                    Ok(()) => format!("Exported: {}", output.display()),
+                    Err(e) => format!("Export failed: {e}"),
+                };
+                let _ = tx.send(message);
+            });
+            cx.spawn(async move |this, cx| {
+                if let Ok(message) = rx.await {
+                    let _ = app.update(cx, |app, _| {
+                        app.toast = Some((message, std::time::Instant::now()))
+                    });
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                }
+            })
+            .detach();
+        }
+        this.prompt = None;
+        cx.notify();
+        return;
+    }
 
     if kind == PromptKind::Rename && value.is_empty() {
         this.prompt.as_mut().unwrap().error = Some("Name cannot be empty.".to_string());
@@ -554,6 +685,7 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
 
     this.app.update(cx, |app, _cx| {
         match kind {
+            PromptKind::Export => unreachable!(),
             PromptKind::Rename => {
                 if let Some(inst) = app.instances.get_mut(&target) {
                     inst.name = value.clone();

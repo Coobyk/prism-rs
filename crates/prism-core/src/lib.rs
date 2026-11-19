@@ -6,6 +6,7 @@
 //! - [`paths`]: launcher data directory layout
 
 pub mod auth;
+pub mod export;
 pub mod import;
 pub mod ini;
 pub mod instance;
@@ -16,10 +17,12 @@ pub mod meta;
 pub mod modplatform;
 pub mod net;
 pub mod news;
+pub mod nbt;
 pub mod paths;
 pub mod profile;
 pub mod resources;
 pub mod settings;
+pub mod servers;
 
 pub use auth::AccountList;
 pub use instance::{Instance, InstanceGroups, InstanceList};
