@@ -32,9 +32,6 @@ impl IconPickerDialog {
             error: None,
         };
         dialog.reload(dir);
-        if !dialog.icons.iter().any(|icon| icon.key == dialog.selected) {
-            dialog.selected = "default".into();
-        }
         dialog
     }
 
@@ -1142,4 +1139,47 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     });
     this.prompt = None;
     cx.notify();
+}
+
+#[cfg(test)]
+mod icon_picker_tests {
+    use super::IconPickerDialog;
+
+    #[test]
+    fn preserves_initial_icon_key_with_missing_or_unreadable_catalog() {
+        let root = std::env::temp_dir().join(format!(
+            "prism-icon-picker-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("instance.cfg"), "[General]\niconKey=grass\n").unwrap();
+        let mut instance = prism_core::Instance::load(&root).unwrap();
+        let icons = root.join("icons");
+
+        let dialog = IconPickerDialog::new(&instance, &icons);
+        assert_eq!(dialog.selected, "grass");
+        assert!(dialog.icons.is_empty());
+        instance.icon_key = dialog.selected;
+        instance.save().unwrap();
+        assert_eq!(prism_core::Instance::load(&root).unwrap().icon_key, "grass");
+
+        std::fs::create_dir(&icons).unwrap();
+        std::fs::write(icons.join("grass.png"), b"icon").unwrap();
+        let dialog = IconPickerDialog::new(&instance, &icons);
+        assert_eq!(dialog.selected, "grass");
+        assert_eq!(dialog.icons.len(), 1);
+
+        instance.icon_key = "default".into();
+        assert_eq!(IconPickerDialog::new(&instance, &icons).selected, "default");
+
+        instance.icon_key = "upstream".into();
+        let dialog = IconPickerDialog::new(&instance, &root.join("instance.cfg"));
+        assert_eq!(dialog.selected, "upstream");
+        assert!(dialog.error.is_some());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }
