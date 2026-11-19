@@ -173,6 +173,7 @@ fn unescape_value(s: &str) -> String {
                 Some('n') => Some('\n'),
                 Some('t') => Some('\t'),
                 Some('\\') => Some('\\'),
+                Some('"') => Some('"'),
                 _ => None,
             }
         } else {
@@ -204,7 +205,7 @@ fn escape_value(s: &str) -> String {
         || s.contains('#')
         || s.contains('=')
         || s.contains('\n');
-    let escaped = s.replace('\\', "\\\\").replace('\n', "\\n").replace('\t', "\\t");
+    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\t', "\\t");
     if needs_quotes {
         format!("\"{escaped}\"")
     } else {
