@@ -8,7 +8,7 @@ use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use prism_core::modplatform::{LocalResource, ResourceType};
 use prism_core::Instance;
-use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList};
+use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use std::sync::Arc;
 
@@ -75,6 +75,7 @@ pub struct InstanceWindow {
     loader_options: Arc<std::sync::Mutex<Vec<String>>>,
     loader_handle: Option<tokio::task::JoinHandle<Result<Vec<String>, String>>>,
     servers: Option<ServerList>,
+    servers_snapshot: Option<ServerListSnapshot>,
     server_selected: Option<usize>,
     server_inputs: Option<(gpui::Entity<InputState>, gpui::Entity<InputState>)>,
     server_status: String,
@@ -95,6 +96,7 @@ impl InstanceWindow {
             loader_options: Arc::new(std::sync::Mutex::new(Vec::new())),
             loader_handle: None,
             servers: None,
+            servers_snapshot: None,
             server_selected: None,
             server_inputs: None,
             server_status: String::new(),
@@ -818,7 +820,7 @@ impl InstanceWindow {
         )
     }
 
-    fn save_servers(&mut self, cx: &mut Context<Self>) {
+    fn save_servers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.servers_running(cx) {
             return;
         }
@@ -828,11 +830,16 @@ impl InstanceWindow {
             return;
         };
         let game_root = instance.game_root();
-        if let Some(list) = &self.servers {
-            self.server_status = match list.save(&game_root) {
-                Ok(()) => String::new(),
-                Err(e) => format!("Save failed: {e}"),
-            };
+        if let (Some(list), Some(snapshot)) = (&mut self.servers, &mut self.servers_snapshot) {
+            match snapshot.save_or_reload(&game_root, list) {
+                Ok(true) => {
+                    let selected = (!list.entries.is_empty()).then_some(0);
+                    self.select_server(selected, window, cx);
+                    self.server_status = "servers.dat changed on disk; reloaded".into();
+                }
+                Ok(false) => self.server_status.clear(),
+                Err(e) => self.server_status = format!("Save failed: {e}"),
+            }
         }
         cx.notify();
     }
@@ -852,7 +859,7 @@ impl InstanceWindow {
                 cx.subscribe_in(
                     input,
                     window,
-                    move |this, input, event: &InputEvent, _, cx| {
+                    move |this, input, event: &InputEvent, window, cx| {
                         if !matches!(event, InputEvent::Change) || this.servers_running(cx) {
                             return;
                         }
@@ -872,7 +879,7 @@ impl InstanceWindow {
                             } else {
                                 entry.address = value;
                             }
-                            this.save_servers(cx);
+                            this.save_servers(window, cx);
                         }
                     },
                 )
@@ -953,7 +960,7 @@ impl InstanceWindow {
                         });
                         let index = list.entries.len() - 1;
                         this.select_server(Some(index), window, cx);
-                        this.save_servers(cx);
+                        this.save_servers(window, cx);
                     }
                 })),
         );
@@ -973,7 +980,7 @@ impl InstanceWindow {
                             Some(i.min(list.entries.len() - 1))
                         };
                         this.select_server(next, window, cx);
-                        this.save_servers(cx);
+                        this.save_servers(window, cx);
                     }
                 })),
         );
@@ -997,7 +1004,7 @@ impl InstanceWindow {
                             if let Some(next) = next {
                                 list.entries.swap(i, next);
                                 this.select_server(Some(next), window, cx);
-                                this.save_servers(cx);
+                                this.save_servers(window, cx);
                             }
                         }
                     })),
@@ -1033,7 +1040,7 @@ impl InstanceWindow {
                         } else {
                             label.into()
                         })
-                        .on_click(cx.listener(move |this, _, _, cx| {
+                        .on_click(cx.listener(move |this, _, window, cx| {
                             if this.servers_running(cx) {
                                 return;
                             }
@@ -1042,7 +1049,7 @@ impl InstanceWindow {
                                 .and_then(|i| this.servers.as_mut()?.entries.get_mut(i))
                             {
                                 entry.accept_textures = value;
-                                this.save_servers(cx);
+                                this.save_servers(window, cx);
                             }
                         })),
                 );
@@ -1091,16 +1098,18 @@ impl Render for InstanceWindow {
         let running = self.servers_running(cx);
         if self.servers_was_running && !running {
             self.servers = None;
+            self.servers_snapshot = None;
             self.server_selected = None;
             self.server_inputs = None;
             self.server_status.clear();
         }
         self.servers_was_running = running;
         if self.page == Page::Servers && self.servers.is_none() && self.server_status.is_empty() {
-            match ServerList::load(&self.instance(cx).game_root()) {
-                Ok(list) => {
+            match ServerListSnapshot::load(&self.instance(cx).game_root()) {
+                Ok((list, snapshot)) => {
                     let selected = (!list.entries.is_empty()).then_some(0);
                     self.servers = Some(list);
+                    self.servers_snapshot = Some(snapshot);
                     self.select_server(selected, window, cx);
                 }
                 Err(e) => self.server_status = format!("Load failed: {e}"),

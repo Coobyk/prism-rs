@@ -29,6 +29,49 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
+#[derive(Debug)]
+pub struct ServerListSnapshot {
+    contents: Option<Vec<u8>>,
+}
+
+impl ServerListSnapshot {
+    fn read(game_root: &Path) -> io::Result<Option<Vec<u8>>> {
+        match fs::read(game_root.join("servers.dat")) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn load(game_root: &Path) -> io::Result<(ServerList, Self)> {
+        let contents = Self::read(game_root)?;
+        let list = Self::parse(&contents)?;
+        Ok((list, Self { contents }))
+    }
+
+    fn parse(contents: &Option<Vec<u8>>) -> io::Result<ServerList> {
+        contents
+            .as_deref()
+            .map(ServerList::from_bytes)
+            .transpose()
+            .map(Option::unwrap_or_default)
+    }
+
+    /// Returns true when an external change was reloaded instead of saving.
+    pub fn save_or_reload(&mut self, game_root: &Path, list: &mut ServerList) -> io::Result<bool> {
+        let contents = Self::read(game_root)?;
+        if contents != self.contents {
+            *list = Self::parse(&contents)?;
+            self.contents = contents;
+            return Ok(true);
+        }
+        let contents = list.to_bytes()?;
+        list.save(game_root)?;
+        self.contents = Some(contents);
+        Ok(false)
+    }
+}
+
 impl ServerList {
     pub fn load(game_root: &Path) -> io::Result<Self> {
         match fs::read(game_root.join("servers.dat")) {
@@ -146,6 +189,42 @@ impl ServerList {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn snapshot_saves_and_reloads_external_changes() {
+        let root =
+            std::env::temp_dir().join(format!("prism-servers-snapshot-{}", uuid::Uuid::new_v4()));
+        let (mut list, mut snapshot) = ServerListSnapshot::load(&root).unwrap();
+        assert_eq!(list, ServerList::default());
+        list.entries.push(ServerEntry {
+            name: "First".into(),
+            ..Default::default()
+        });
+        assert!(!snapshot.save_or_reload(&root, &mut list).unwrap());
+        assert_eq!(ServerList::load(&root).unwrap(), list);
+        let (mut other, mut other_snapshot) = ServerListSnapshot::load(&root).unwrap();
+        list.entries[0].address = "first.example.org".into();
+        assert!(!snapshot.save_or_reload(&root, &mut list).unwrap());
+        other.entries[0].name = "Stale edit".into();
+        assert!(other_snapshot.save_or_reload(&root, &mut other).unwrap());
+        assert_eq!(other, list);
+        assert_eq!(ServerList::load(&root).unwrap(), list);
+        other.entries[0].name = "Fresh edit".into();
+        assert!(!other_snapshot.save_or_reload(&root, &mut other).unwrap());
+        fs::remove_file(root.join("servers.dat")).unwrap();
+        assert!(other_snapshot.save_or_reload(&root, &mut other).unwrap());
+        assert_eq!(other, ServerList::default());
+        assert!(!root.join("servers.dat").exists());
+        assert!(!other_snapshot.save_or_reload(&root, &mut other).unwrap());
+        fs::write(root.join("servers.dat"), b"invalid").unwrap();
+        assert!(other_snapshot.save_or_reload(&root, &mut other).is_err());
+        assert_eq!(fs::read(root.join("servers.dat")).unwrap(), b"invalid");
+        assert_eq!(other, ServerList::default());
+        assert!(ServerListSnapshot::load(&root).is_err());
+        fs::remove_file(root.join("servers.dat")).unwrap();
+        fs::create_dir(root.join("servers.dat")).unwrap();
+        assert!(other_snapshot.save_or_reload(&root, &mut other).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn unexpected_fields_preserved_after_known_fields() {
         let extra = vec![
