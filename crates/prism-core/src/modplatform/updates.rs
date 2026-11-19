@@ -530,7 +530,7 @@ impl ModUpdate {
         &self.old_name
     }
 
-    pub async fn apply(&self, downloader: &Downloader) -> Result<Option<String>, PlatformError> {
+    pub async fn apply(&self, downloader: &Downloader) -> Result<(), PlatformError> {
         let mods = self
             .index_path
             .parent()
@@ -572,6 +572,8 @@ impl ModUpdate {
             .with_sha1(&self.new_index.download.hash);
         downloader.download(&req).await?;
         ensure_fresh()?;
+        let backup = stage.path().join("original.jar");
+        fs::hard_link(&old, &backup)?;
         if old == new {
             fs::rename(&req.dest, &new)?;
         } else {
@@ -581,11 +583,25 @@ impl ModUpdate {
                 return Err(error.into());
             }
         }
-        Ok(
-            save_index(&self.index_path, &self.new_index, self.old_index.as_deref())
-                .err()
-                .map(|error| format!("could not save mod metadata: {error}")),
-        )
+        if let Err(error) = save_index(&self.index_path, &self.new_index, self.old_index.as_deref())
+        {
+            let restore = if old == new {
+                fs::rename(&backup, &old)
+            } else {
+                fs::hard_link(&backup, &old).and_then(|()| fs::remove_file(&new))
+            };
+            return match restore {
+                Ok(()) => Err(problem(format!("could not save mod metadata: {error}"))),
+                Err(restore_error) => {
+                    let backup = stage.keep().join("original.jar");
+                    Err(problem(format!(
+                        "could not save mod metadata: {error}; could not roll back ({restore_error}); original backed up at {}",
+                        backup.display()
+                    )))
+                }
+            };
+        }
+        Ok(())
     }
 }
 
@@ -719,11 +735,45 @@ file-id = 3509043
         assert_eq!(fs::read(&new).unwrap(), b"user file");
         fs::remove_file(&new).unwrap();
         let done = serve(listener, vec![(&["GET /file "], bytes.to_vec())]);
-        assert!(update.apply(&downloader).await.unwrap().is_none());
+        update.apply(&downloader).await.unwrap();
         done.join().unwrap();
         assert!(!old.exists());
         assert_eq!(fs::read(new).unwrap(), bytes);
         assert!(read_index(mods).contains_key("new.jar"));
+    }
+
+    #[tokio::test]
+    async fn restores_the_old_jar_if_the_metadata_cannot_be_saved() {
+        for new_name in ["example.jar", "new.jar"] {
+            let temp = tempfile::tempdir().unwrap();
+            let mods = temp.path();
+            let old = mods.join("example.jar");
+            fs::write(&old, b"original file").unwrap();
+            fs::write(mods.join(".index"), b"not a directory").unwrap();
+            let bytes = b"replacement file";
+            let mut index: Index = toml::from_str(CURSEFORGE).unwrap();
+            index.filename = new_name.into();
+            index.download.hash = hex::encode(Sha1::digest(bytes));
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let update = ModUpdate {
+                title: index.name.clone(),
+                current_version: "Old".into(),
+                new_version: "New".into(),
+                provider: "CurseForge",
+                old_name: "example.jar".into(),
+                old_sha1: sha1(&old).unwrap(),
+                index_path: index_path(mods, &index),
+                new_index: index,
+                old_index: None,
+                url: format!("http://{}/file", listener.local_addr().unwrap()),
+            };
+            let done = serve(listener, vec![(&["GET /file "], bytes.to_vec())]);
+            let error = update.apply(&Downloader::new()).await.unwrap_err();
+            done.join().unwrap();
+            assert!(error.to_string().contains("could not save mod metadata"));
+            assert_eq!(fs::read(old).unwrap(), b"original file");
+            assert!(!mods.join("new.jar").exists());
+        }
     }
 
     #[tokio::test]

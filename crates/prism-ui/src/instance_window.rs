@@ -416,9 +416,9 @@ impl InstanceWindow {
                 let state = &mut this.mod_updates;
                 state.busy = false;
                 state.status = match result {
-                    Ok(warning) => {
+                    Ok(()) => {
                         state.report.updates.retain(|row| row.installed_filename() != filename);
-                        warning.map_or_else(|| format!("Updated {title}."), |warning| format!("Updated {title}, but {warning}"))
+                        format!("Updated {title}.")
                     }
                     Err(error) => format!("Could not update {title}: {error}"),
                 };
