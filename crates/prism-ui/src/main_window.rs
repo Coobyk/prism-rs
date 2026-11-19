@@ -523,7 +523,13 @@ impl MainWindow {
             .app
             .read(cx)
             .selected_instance()
-            .map(|i| if i.is_horizon() { i.game_root() } else { i.root.clone() });
+            .and_then(|instance| {
+                if instance.is_horizon() {
+                    prism_core::Instance::load(&instance.root).map(|current| current.game_root())
+                } else {
+                    Some(instance.root.clone())
+                }
+            });
         if let Some(dir) = dir {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
