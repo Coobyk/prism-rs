@@ -211,7 +211,11 @@ impl World {
         let saves = self.game_root.join("saves");
         require_directory(&saves)?;
         let world = saves.join(&self.name);
-        if level_stamp(&world)? != self.level_stamp {
+        let stamp = match level_stamp(&world) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            stamp => Some(stamp?),
+        };
+        if stamp.as_ref() != Some(&self.level_stamp) {
             return Err(io::Error::other(
                 "The selected world changed. Refresh and try again.",
             ));

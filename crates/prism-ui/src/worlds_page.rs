@@ -266,11 +266,8 @@ impl InstanceWindow {
         };
         let answer = window.prompt(
             gpui::PromptLevel::Warning,
-            &format!("Delete world {:?}?", entry.display_name()),
-            Some(&format!(
-                "The folder saves/{} and everything in it will be permanently deleted.",
-                entry.folder
-            )),
+            &format!("Permanently delete {:?}?", entry.display_name()),
+            Some("This cannot be undone."),
             &[
                 gpui::PromptButton::cancel("Cancel"),
                 gpui::PromptButton::new("Delete"),
@@ -427,6 +424,7 @@ impl InstanceWindow {
                         .text_color(rgb(0x777777))
                         .child("Select a world to manage it."),
                 )
+                .child(self.render_world_status())
                 .into_any_element();
         };
         let field = |label: &str, value: String| {
@@ -561,14 +559,13 @@ impl InstanceWindow {
                             ),
                     );
         }
-        if !self.worlds.status.is_empty() {
-            panel = panel.child(
-                div()
-                    .text_color(rgb(0xaaaaaa))
-                    .child(self.worlds.status.clone()),
-            );
-        }
-        panel.into_any_element()
+        panel.child(self.render_world_status()).into_any_element()
+    }
+
+    fn render_world_status(&self) -> Div {
+        div()
+            .text_color(rgb(0xaaaaaa))
+            .child(self.worlds.status.clone())
     }
 }
 
