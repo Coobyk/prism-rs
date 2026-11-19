@@ -487,6 +487,7 @@ impl QuickPlayState {
 }
 
 pub struct CreateInstanceState {
+    pub(crate) atlauncher: Option<crate::atlauncher_dialog::AtLauncherDialog>,
     pub name_input: Entity<InputState>,
     pub group_input: Entity<InputState>,
     pub version_filter: Entity<InputState>,
@@ -502,6 +503,7 @@ impl CreateInstanceState {
         let group_input = cx.new(|cx| InputState::new(window, cx).placeholder("Group (optional)"));
         let version_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter versions…"));
         CreateInstanceState {
+            atlauncher: None,
             name_input,
             group_input,
             version_filter,
@@ -518,6 +520,9 @@ impl CreateInstanceState {
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement {
+        if self.atlauncher.is_some() {
+            return crate::atlauncher_dialog::render(self, window, cx);
+        }
         let manifest = app.read(cx).manifest.clone();
         let filter = self.version_filter.read(cx).value().to_lowercase();
         let selected = self.selected_version.clone();
@@ -594,7 +599,7 @@ impl CreateInstanceState {
                     })),
             );
         }
-        panel = panel.child(types);
+        panel = panel.child(types.child(Button::new("type-atlauncher").label("ATLauncher").on_click(cx.listener(crate::atlauncher_dialog::open))));
 
         if self.horizon {
             panel = panel.child(
@@ -690,7 +695,7 @@ impl CreateInstanceState {
                 ),
         );
 
-        backdrop.child(panel)
+        backdrop.child(panel).into_any_element()
     }
 }
 
@@ -742,7 +747,7 @@ fn confirm_create(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     finish_create(this, &group, result, cx);
 }
 
-fn finish_create(
+pub(crate) fn finish_create(
     this: &mut MainWindow,
     group: &str,
     result: Result<prism_core::Instance, String>,
