@@ -113,6 +113,13 @@ pub struct LaunchSettings {
     pub game_dir: PathBuf,
     pub mc_version: String,
     pub java_path: PathBuf,
+    /// `java_path` came from the user's settings, so launch verifies it
+    /// instead of picking a Java automatically.
+    pub java_path_explicit: bool,
+    /// Download Mojang's Java runtime when no compatible install is found.
+    pub auto_java_download: bool,
+    /// Launch with an explicit Java even when its major version is wrong.
+    pub ignore_java_compatibility: bool,
     pub min_memory_mb: u32,
     pub max_memory_mb: u32,
     pub extra_jvm_args: Vec<String>,
@@ -136,6 +143,9 @@ impl LaunchSettings {
             game_dir: inst.game_root(),
             mc_version: default_version_for(inst),
             java_path: default_java_path(),
+            java_path_explicit: false,
+            auto_java_download: global.get_bool("AutomaticJavaDownload", true),
+            ignore_java_compatibility: global.get_bool("IgnoreJavaCompatibility", false),
             min_memory_mb: global.get_int("MinMemAlloc", 512).max(128) as u32,
             max_memory_mb: global.get_int("MaxMemAlloc", 4096).max(256) as u32,
             extra_jvm_args: Vec::new(),
@@ -178,15 +188,26 @@ impl LaunchSettings {
         self.max_memory_mb = number("OverrideMemory", "MaxMemAlloc", 4096, self.max_memory_mb);
         self.window_width = number("OverrideWindow", "MinecraftWinWidth", 854, self.window_width);
         self.window_height = number("OverrideWindow", "MinecraftWinHeight", 480, self.window_height);
-        let java = if cfg.get("OverrideJavaLocation").is_none() {
+        let local_java = if cfg.get("OverrideJavaLocation").is_none() {
             cfg.get("OverrideJavaPath")
-                .map(str::to_owned)
-                .or_else(|| choose("OverrideJavaLocation", "JavaPath", None))
+                .or_else(|| cfg.get("JavaPath"))
         } else {
-            choose("OverrideJavaLocation", "JavaPath", None)
+            cfg.get("JavaPath")
         };
-        if let Some(java) = java.filter(|v| !v.is_empty()) {
+        // Imported automatic picks must not pin a stale Java installation.
+        let local_java = local_java.filter(|v| !v.is_empty() && cfg.get("AutomaticJava") != Some("true"));
+        let global_java = global.get("JavaPath").filter(|v| !v.is_empty());
+        let java = match cfg.get("OverrideJavaLocation") {
+            Some("true" | "1") => local_java,
+            Some(_) => global_java,
+            None => local_java.or(global_java),
+        };
+        if let Some(java) = java {
             self.java_path = java.into();
+            self.java_path_explicit = true;
+        }
+        if let Some(v) = cfg.get("IgnoreJavaCompatibility") {
+            self.ignore_java_compatibility = v == "true" || v == "1";
         }
         self.raw_jvm_args = choose("OverrideJavaArgs", "JvmArgs", Some("jvmArgs")).unwrap_or_default();
         self.extra_jvm_args = split_args(&self.raw_jvm_args).unwrap_or_default();
@@ -206,6 +227,7 @@ impl LaunchSettings {
 
     fn with_paths(mut self, paths: &Paths) -> Self {
         if !self.java_path.exists() {
+            self.java_path_explicit = false;
             if let Some(java) = crate::java::find_java() {
                 self.java_path = java;
             }
@@ -285,6 +307,14 @@ pub enum LaunchError {
     Zip(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Minecraft {mc} needs Java {}, but {} is Java {found}", join_majors(required), path.display())]
+    IncompatibleJava { mc: String, path: PathBuf, found: u32, required: Vec<u32> },
+    #[error("java download: {0}")]
+    JavaDownload(#[from] crate::java::JavaDownloadError),
+}
+
+fn join_majors(majors: &[u32]) -> String {
+    majors.iter().map(u32::to_string).collect::<Vec<_>>().join(" or ")
 }
 
 /// A fully prepared launch: resolved command line, ready to spawn.
@@ -456,6 +486,70 @@ impl Launcher {
     }
 
     /// Download everything the profile needs, then extract natives.
+    /// Point `settings.java_path` at a Java that can run `profile` and return
+    /// a log line saying which. A Java the user configured is only verified;
+    /// otherwise a launcher-managed runtime, then any detected install with
+    /// a compatible major, then a fresh download of Mojang's runtime is used.
+    /// Mirrors `AutoInstallJava` + `VerifyJavaInstall`.
+    pub async fn resolve_java(&self, settings: &mut LaunchSettings, profile: &LaunchProfile) -> Result<String, LaunchError> {
+        let majors = profile.compatible_java_majors();
+        if majors.is_empty() {
+            return Ok(format!("Using Java at {} (the version names no required Java)", settings.java_path.display()));
+        }
+        let mut downloaded = None;
+        if !settings.java_path_explicit {
+            let java_dir = self.paths.java_dir();
+            let managed = profile
+                .java_component
+                .as_deref()
+                .and_then(|component| crate::java::runtime_java_binary(&java_dir.join(component)));
+            let java = match managed {
+                Some(java) => Some(java),
+                None => {
+                    let majors = majors.clone();
+                    let java_dir = java_dir.clone();
+                    tokio::task::spawn_blocking(move || {
+                        let installs = crate::java::detect_installs(&[java_dir]);
+                        crate::java::compatible_install(&installs, &majors).map(|java| java.path.clone())
+                    })
+                    .await
+                    .ok()
+                    .flatten()
+                }
+            };
+            if let Some(java) = java {
+                settings.java_path = java;
+            } else if let (true, Some(component)) = (settings.auto_java_download, profile.java_component.as_deref()) {
+                settings.java_path =
+                    crate::java::install_mojang_runtime(&self.downloader, &java_dir, component).await?;
+                downloaded = Some(component);
+            }
+        }
+
+        let java_path = settings.java_path.clone();
+        let found = tokio::task::spawn_blocking(move || crate::java::check_java(&java_path)).await.ok().flatten();
+        let path = settings.java_path.display();
+        match found {
+            Some(version) if majors.contains(&version.major) => Ok(match downloaded {
+                Some(component) => format!("Downloaded Mojang's {component} runtime (Java {}) to {path}", version.raw),
+                None => format!("Using Java {} at {path}", version.raw),
+            }),
+            Some(version) if settings.ignore_java_compatibility => Ok(format!(
+                "Warning: Minecraft {} needs Java {}, but {path} is Java {}; launching anyway because the compatibility check is off",
+                profile.minecraft_version,
+                join_majors(&majors),
+                version.major
+            )),
+            Some(version) => Err(LaunchError::IncompatibleJava {
+                mc: profile.minecraft_version.clone(),
+                path: settings.java_path.clone(),
+                found: version.major,
+                required: majors,
+            }),
+            None => Ok(format!("Warning: could not read the Java version of {path}; launching anyway")),
+        }
+    }
+
     pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
         let libraries_dir = self.paths.libraries_dir();
 
@@ -477,13 +571,17 @@ impl Launcher {
         }
 
         // Libraries.
+        // Old versions list some artifacts twice (once plain, once with
+        // natives); downloading one path twice at once races on the rename.
+        let mut queued = std::collections::HashSet::new();
         let mut requests = Vec::new();
         for lib in profile.libraries.iter().chain(profile.natives.iter()) {
             let dest = libraries_dir.join(&lib.path);
-            if dest.exists() {
+            if dest.exists() || queued.contains(&dest) {
                 continue;
             }
             if let Some(url) = &lib.url {
+                queued.insert(dest.clone());
                 let mut req = DownloadRequest::new(url.clone(), dest);
                 if let Some(sha1) = &lib.sha1 {
                     req = req.with_sha1(sha1.clone());
@@ -526,7 +624,7 @@ impl Launcher {
                         .join("objects")
                         .join(&hash[..2])
                         .join(&hash);
-                    if dest.exists() {
+                    if dest.exists() || !queued.insert(dest.clone()) {
                         continue;
                     }
                     asset_requests.push(DownloadRequest::new(
@@ -963,6 +1061,88 @@ mod tests {
             .command
             .iter()
             .any(|arg| arg.contains("quickPlay")));
+    }
+
+    #[cfg(unix)]
+    fn fake_java(home: &Path, version: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let java = bin.join("java");
+        std::fs::write(&java, format!("#!/bin/sh\necho 'openjdk version \"{version}\"' >&2\n")).unwrap();
+        std::fs::set_permissions(&java, std::fs::Permissions::from_mode(0o755)).unwrap();
+        java
+    }
+
+    #[cfg(unix)]
+    fn java_test_setup(name: &str) -> (Paths, LaunchSettings, Launcher) {
+        let root = std::env::temp_dir().join(format!("prism-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let paths = Paths { root };
+        let inst = crate::instance::Instance {
+            kind: crate::instance::InstanceKind::Java,
+            id: "test".into(),
+            root: paths.instances_dir().join("test"),
+            name: "Test".into(),
+            icon_key: "default".into(),
+            notes: String::new(),
+            total_time_played: 0,
+            last_launch: 0,
+            group: None,
+        };
+        let mut settings = LaunchSettings::for_instance(&inst, &paths);
+        settings.auto_java_download = false;
+        let launcher = Launcher::new(paths.clone(), Arc::new(Downloader::new()));
+        (paths, settings, launcher)
+    }
+
+    #[cfg(unix)]
+    fn java_profile(component: &str, major: i64) -> LaunchProfile {
+        LaunchProfile {
+            minecraft_version: "test".into(),
+            java_component: Some(component.into()),
+            java_major: Some(major),
+            ..LaunchProfile::default()
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_picks_java_matching_minecraft_version() {
+        let (paths, mut settings, launcher) = java_test_setup("java-pick");
+        let java8 = fake_java(&paths.java_dir().join("jre-legacy"), "1.8.0_392");
+        let java21 = fake_java(&paths.java_dir().join("java-runtime-delta"), "21.0.3");
+
+        for (component, major, expected) in [("jre-legacy", 8, &java8), ("java-runtime-delta", 21, &java21)] {
+            launcher.resolve_java(&mut settings, &java_profile(component, major)).await.unwrap();
+            assert_eq!(&settings.java_path, expected, "Java {major}");
+        }
+
+        // No runtime under the requested component name: any detected
+        // install with the right major is used.
+        launcher.resolve_java(&mut settings, &java_profile("java-runtime-gamma", 8)).await.unwrap();
+        assert_eq!(crate::java::check_java(&settings.java_path).unwrap().major, 8);
+        let _ = std::fs::remove_dir_all(&paths.root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn launch_rejects_incompatible_explicit_java() {
+        let (paths, mut settings, launcher) = java_test_setup("java-verify");
+        let java8 = fake_java(&paths.root.join("jdk8"), "1.8.0_392");
+        fake_java(&paths.java_dir().join("java-runtime-delta"), "21.0.3");
+        settings.java_path = java8.clone();
+        settings.java_path_explicit = true;
+        let profile = java_profile("java-runtime-delta", 21);
+
+        assert!(matches!(
+            launcher.resolve_java(&mut settings, &profile).await,
+            Err(LaunchError::IncompatibleJava { found: 8, .. })
+        ));
+        settings.ignore_java_compatibility = true;
+        launcher.resolve_java(&mut settings, &profile).await.unwrap();
+        assert_eq!(settings.java_path, java8);
+        let _ = std::fs::remove_dir_all(&paths.root);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Application state shared across the UI.
 
 use prism_core::horizon::HorizonLauncher;
-use prism_core::launch::{AuthSession, LaunchSettings};
+use prism_core::launch::LaunchSettings;
 use prism_core::meta::VersionManifest;
 use prism_core::net::CoreRuntime;
 use prism_core::{AccountList, InstanceKind, InstanceList, Paths};
@@ -213,10 +213,18 @@ impl App {
 
         let mut settings = LaunchSettings::for_instance(&inst, &self.paths);
         settings.quick_play = quick_play;
-        let session: Option<AuthSession> = self
-            .accounts
-            .active_account()
-            .map(|acc| self.accounts.to_session(acc));
+        let accounts_path = self.paths.accounts_file();
+        let mut accounts = AccountList::load(&accounts_path);
+        let (accounts_tx, accounts_rx) = tokio::sync::oneshot::channel();
+        cx.spawn(async move |this, cx| {
+            if let Ok(accounts) = accounts_rx.await {
+                let _ = this.update(cx, |app, cx| {
+                    app.accounts = accounts;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         let launcher = prism_core::launch::Launcher::new(self.paths.clone(), self.runtime.downloader.clone());
         let downloader = self.runtime.downloader.clone();
         let log = running.log.clone();
@@ -248,6 +256,14 @@ impl App {
                 }
             };
             let mut profile = prism_core::profile::LaunchProfile::from_mojang(&version_data);
+            match launcher.resolve_java(&mut settings, &profile).await {
+                Ok(message) => log_lock(&log).push(message),
+                Err(e) => {
+                    log_lock(&log).push(format!("Fatal: {e}"));
+                    state_lock(&state, |s| *s = InstanceRunState::Crashed(e.to_string()));
+                    return;
+                }
+            }
 
             // 1b. Loader component overlay.
             let loader = prism_core::instance::loader_of(&inst);
@@ -322,6 +338,15 @@ impl App {
             log_lock(&log).push("Downloads complete".to_string());
 
             // 3. Command + spawn.
+            let session = match accounts.session_for_launch(&accounts_path).await {
+                Ok(session) => session,
+                Err(error) => {
+                    log_lock(&log).push(format!("Fatal: {error}"));
+                    state_lock(&state, |s| *s = InstanceRunState::Crashed(error.to_string()));
+                    return;
+                }
+            };
+            let _ = accounts_tx.send(accounts);
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
             log_lock(&log).push(format!("Command: {}", prepared.command.join(" ")));
             let result = prepared.spawn_with_output(|line| log_lock(&log).push(line));

@@ -255,6 +255,53 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn grouped_java_overrides_preserve_automatic_selection_and_compatibility() {
+        let fixture = Fixture::new();
+        let mut global = IniFile::default();
+        global.set("JavaPath", "/bin/sh");
+        global.set("AutomaticJavaDownload", "false");
+        global.set("IgnoreJavaCompatibility", "true");
+        global.save(&fixture.paths.global_config()).unwrap();
+        let mut local = IniFile::default();
+        local.set("JavaPath", "/bin/echo");
+        local.set("IgnoreJavaCompatibility", "false");
+        for flag in [None, Some("true"), Some("false")] {
+            if let Some(flag) = flag {
+                local.set("OverrideJavaLocation", flag);
+            } else {
+                local.remove("OverrideJavaLocation");
+            }
+            local.remove("AutomaticJava");
+            let settings = fixture.resolve(&local);
+            assert_eq!(settings.java_path, Path::new(if flag == Some("false") {
+                "/bin/sh"
+            } else {
+                "/bin/echo"
+            }));
+            assert!(settings.java_path_explicit);
+            assert!(!settings.auto_java_download);
+            assert!(!settings.ignore_java_compatibility);
+
+            local.set("AutomaticJava", "true");
+            let settings = fixture.resolve(&local);
+            if flag == Some("true") {
+                assert!(!settings.java_path_explicit);
+            } else {
+                assert_eq!(settings.java_path, Path::new("/bin/sh"));
+                assert!(settings.java_path_explicit);
+            }
+        }
+        local.remove("OverrideJavaLocation");
+        local.remove("IgnoreJavaCompatibility");
+        global.remove("JavaPath");
+        global.save(&fixture.paths.global_config()).unwrap();
+        let settings = fixture.resolve(&local);
+        assert!(!settings.java_path_explicit);
+        assert!(settings.ignore_java_compatibility);
+    }
+
+    #[test]
     fn argument_splitting_preserves_quotes_and_windows_paths() {
         use crate::launch::split_args;
         let cases = [
