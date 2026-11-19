@@ -52,6 +52,13 @@ Files unavailable for automatic download are listed in
 `curseforge-missing-files.txt` in the new instance folder and can be added
 manually to the appropriate Minecraft folder (`mods`, `resourcepacks`, or `shaderpacks`).
 
+To export a CurseForge modpack, select a Java instance and choose **Export →
+CurseForge zip**. Choose a destination, pack name, version, and optional author.
+The launcher looks up fingerprints with the key from **Settings → API Keys** or
+`PRISM_RS_CURSEFORGE_API_KEY`. Available exact matches are listed in
+`manifest.json`; unmatched files, disabled mods, and other game files are bundled
+under `overrides/`. If lookup is needed but fails, no archive is written.
+
 With that same key, open a Java instance with a mod loader and go to **Mods → Browse
 CurseForge**. Search by name or leave the field blank to browse. **Install** downloads
 the newest compatible, downloadable release for that project (falling back to beta
@@ -133,7 +140,7 @@ crates/prism-core
   modplatform/    Modrinth (search/versions/install/.mrpack) and CurseForge (Flame)
   resources.rs    local mod/pack scanning (fabric.mod.json, mods.toml, mcmod.info, quilt)
   import.rs       instance import: .mrpack, CurseForge modpacks, MultiMC zips
-  export.rs       Prism zip and Modrinth mrpack export (hash resolution + overrides)
+  export.rs       Prism zip, Modrinth mrpack and CurseForge modpack export
   news.rs         Atom/RSS news feed
 
 crates/prism-ui (GPUI)
@@ -166,12 +173,12 @@ Working today:
 - Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
 - Worlds page: save details, rename, copy, confirmed delete, and folder browsing
 - News feed, grouped instance list, persistent config
-- Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
+- Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar), CurseForge zip (instance toolbar)
 - Direct instance launch from the CLI and Linux desktop shortcuts
 - Version page: change Minecraft, loader, and LWJGL versions; manage ordered jar mods and extra classpath JARs shared by GUI and CLI launch
 
 Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
-import, CurseForge export, themes/translations, updater, generic component JSON editing and import,
+import, themes/translations, updater, generic component JSON editing and import,
 custom client-JAR replacement, Java agents, profiling tools, and per-instance console window options.
 
 ## License
