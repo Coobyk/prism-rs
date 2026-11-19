@@ -2,7 +2,9 @@
 
 use crate::modplatform::flame::{FlameApi, FlameManifestFile};
 use crate::modplatform::modrinth::{ModVersion, ModrinthApi, MrpackFile, MrpackIndex};
+use crate::modplatform::{PlatformError, ResourceType};
 use crate::Instance;
+use futures::{stream, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
 use sha2::Sha512;
 use std::collections::{BTreeMap, BTreeSet};
@@ -341,7 +343,19 @@ pub async fn export_curseforge(
         for batch in fingerprints.chunks(1000) {
             files.extend(api.match_fingerprints(batch).await?);
         }
-        Ok(files)
+        let projects: BTreeSet<_> = files.values().map(|file| file.projectID).collect();
+        let api = &api;
+        let resource_types: BTreeMap<_, _> = stream::iter(projects)
+            .map(|project| async move {
+                Ok::<_, PlatformError>((project, api.project_resource_type(project).await?))
+            })
+            .buffer_unordered(6)
+            .try_collect()
+            .await?;
+        Ok(files
+            .into_iter()
+            .map(|(fingerprint, file)| (fingerprint, (resource_types[&file.projectID], file)))
+            .collect())
     }).await
 }
 
@@ -353,7 +367,7 @@ async fn export_curseforge_with_lookup<F, Fut>(
 ) -> Result<(), ExportError>
 where
     F: FnOnce(Vec<u32>) -> Fut,
-    Fut: std::future::Future<Output = Result<BTreeMap<u32, FlameManifestFile>, ExportError>>,
+    Fut: std::future::Future<Output = Result<BTreeMap<u32, (ResourceType, FlameManifestFile)>, ExportError>>,
 {
     if instance.is_horizon() {
         return Err(ExportError::HorizonInstance);
@@ -382,8 +396,8 @@ where
         let parent = relative.parent().and_then(Path::to_str);
         let extension = path.extension().and_then(|ext| ext.to_str());
         if matches!((parent, extension),
-            (Some("mods" | "coremods"), Some("jar" | "zip" | "litemod"))
-            | (Some("resourcepacks" | "texturepacks" | "shaderpacks"), Some("zip")))
+            (Some("mods"), Some("jar" | "zip" | "litemod"))
+            | (Some("resourcepacks" | "shaderpacks"), Some("zip")))
         {
             let data = std::fs::read(path)?;
             hashes.insert(path, (curseforge_fingerprint(&data), Sha1::digest(&data)));
@@ -398,20 +412,23 @@ where
     let (mut output, mut zip) = writer(instance, output)?;
     let mut files = Vec::new();
     for path in &paths {
-        let relative = archive_path(path.strip_prefix(&game).unwrap());
+        let relative = path.strip_prefix(&game).unwrap();
+        let override_path = || format!("overrides/{}", archive_path(relative));
         if let Some((fingerprint, hash)) = hashes.get(path) {
-            if let Some(file) = matches.get(fingerprint) {
+            if let Some((_, file)) = matches.get(fingerprint).filter(|(resource_type, _)| {
+                relative.parent() == Some(Path::new(resource_type.folder()))
+            }) {
                 let data = std::fs::read(path)?;
                 if Sha1::digest(&data) == *hash {
                     files.push(file.clone());
                 } else {
-                    zip.start_file(format!("overrides/{relative}"), SimpleFileOptions::default())?;
+                    zip.start_file(override_path(), SimpleFileOptions::default())?;
                     zip.write_all(&data)?;
                 }
                 continue;
             }
         }
-        zip.start_file(format!("overrides/{relative}"), SimpleFileOptions::default())?;
+        zip.start_file(override_path(), SimpleFileOptions::default())?;
         std::io::copy(&mut File::open(path)?, &mut zip)?;
     }
     let manifest = serde_json::json!({
@@ -501,8 +518,8 @@ mod tests {
                 ]));
                 std::fs::write(game.join("mods/changed.jar"), b"new contents").unwrap();
                 Ok(BTreeMap::from([
-                    (matched_fingerprint, FlameManifestFile { projectID: 101, fileID: 202, required: true }),
-                    (changed_fingerprint, FlameManifestFile { projectID: 303, fileID: 404, required: true }),
+                    (matched_fingerprint, (ResourceType::Mod, FlameManifestFile { projectID: 101, fileID: 202, required: true })),
+                    (changed_fingerprint, (ResourceType::Mod, FlameManifestFile { projectID: 303, fileID: 404, required: true })),
                 ]))
             },
         ).await.unwrap();
@@ -528,6 +545,55 @@ mod tests {
             assert_eq!(data, bytes);
         }
         assert_eq!(zip.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn curseforge_export_preserves_legacy_resource_folders() {
+        let fixture = Fixture::new();
+        let game = fixture.1.game_root();
+        let legacy_paths = ["coremods/legacy.jar", "texturepacks/legacy.zip"];
+        let wrong_folder = "mods/misplaced-resource.zip";
+        let resource_pack = "resourcepacks/pack.zip";
+        let shader_pack = "shaderpacks/shader.zip";
+        for path in legacy_paths.into_iter().chain([wrong_folder, resource_pack, shader_pack]) {
+            std::fs::create_dir_all(game.join(path).parent().unwrap()).unwrap();
+            std::fs::write(game.join(path), path).unwrap();
+        }
+        let output = fixture.0.root.join("legacy.zip");
+        export_curseforge_with_lookup(
+            &fixture.1,
+            &output,
+            CurseForgeMetadata { name: "Legacy".into(), version: "1.0".into(), author: String::new() },
+            |fingerprints| async move {
+                let mut matches = BTreeMap::new();
+                for (path, resource_type, project_id, file_id) in [
+                    (wrong_folder, ResourceType::ResourcePack, 101, 201),
+                    (resource_pack, ResourceType::ResourcePack, 101, 202),
+                    (shader_pack, ResourceType::ShaderPack, 102, 303),
+                ] {
+                    matches.insert(curseforge_fingerprint(path.as_bytes()), (
+                        resource_type, FlameManifestFile { projectID: project_id, fileID: file_id, required: true },
+                    ));
+                }
+                assert_eq!(fingerprints, matches.keys().copied().collect::<Vec<_>>());
+                Ok(matches)
+            },
+        ).await.unwrap();
+
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_reader(zip.by_name("manifest.json").unwrap()).unwrap();
+        assert_eq!(manifest["files"], serde_json::json!([
+            { "projectID": 101, "fileID": 202, "required": true },
+            { "projectID": 102, "fileID": 303, "required": true }
+        ]));
+        use std::io::Read;
+        for path in legacy_paths.into_iter().chain([wrong_folder]) {
+            let mut data = String::new();
+            zip.by_name(&format!("overrides/{path}")).unwrap().read_to_string(&mut data).unwrap();
+            assert_eq!(data, path);
+        }
+        assert_eq!(zip.len(), 4);
     }
 
     #[tokio::test]
