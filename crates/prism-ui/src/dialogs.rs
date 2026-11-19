@@ -2,12 +2,286 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::base::{Disableable, Selectable};
+use gpui_kit::base::{Disableable, InteractiveElementExt, Selectable};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use prism_core::launch::QuickPlayTarget;
+
+pub struct IconPickerDialog {
+    target: String,
+    initial: String,
+    selected: String,
+    icons: Vec<prism_core::icons::Icon>,
+    error: Option<String>,
+}
+
+impl IconPickerDialog {
+    pub fn new(inst: &prism_core::Instance, dir: &std::path::Path) -> Self {
+        let mut dialog = Self {
+            target: inst.id.clone(),
+            initial: inst
+                .name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string())
+                .unwrap_or_else(|| "?".into()),
+            selected: inst.icon_key.clone(),
+            icons: Vec::new(),
+            error: None,
+        };
+        dialog.reload(dir);
+        if !dialog.icons.iter().any(|icon| icon.key == dialog.selected) {
+            dialog.selected = "default".into();
+        }
+        dialog
+    }
+
+    fn reload(&mut self, dir: &std::path::Path) {
+        match prism_core::icons::scan(dir) {
+            Ok(mut icons) => {
+                icons.retain(|icon| icon.key != "default");
+                icons.sort_by_key(|icon| {
+                    let ext = icon.path.extension().and_then(|ext| ext.to_str());
+                    (
+                        icon.key.clone(),
+                        prism_core::icons::EXTENSIONS
+                            .iter()
+                            .position(|candidate| Some(*candidate) == ext),
+                    )
+                });
+                icons.dedup_by(|a, b| a.key == b.key);
+                self.icons = icons;
+            }
+            Err(e) => self.error = Some(e.to_string()),
+        }
+    }
+
+    fn confirm(this: &mut MainWindow, cx: &mut Context<MainWindow>) {
+        let Some(dialog) = &this.icon_picker else {
+            return;
+        };
+        let target = dialog.target.clone();
+        let key = dialog.selected.clone();
+        let result = this.app.update(cx, |app, cx| {
+            let inst = app
+                .instances
+                .get_mut(&target)
+                .filter(|inst| inst.root.join("instance.cfg").is_file())
+                .ok_or_else(|| "Instance no longer exists".to_string())?;
+            let mut updated = inst.clone();
+            updated.icon_key = key;
+            updated.save().map_err(|e| e.to_string())?;
+            *inst = updated;
+            cx.notify();
+            Ok::<_, String>(())
+        });
+        match result {
+            Ok(()) => this.icon_picker = None,
+            Err(e) => this.icon_picker.as_mut().unwrap().error = Some(e),
+        }
+        cx.notify();
+    }
+
+    pub fn render(&self, cx: &mut Context<MainWindow>) -> impl IntoElement {
+        let mut grid = div()
+            .id("icon-grid")
+            .flex()
+            .flex_wrap()
+            .gap_2()
+            .max_h(px(300.))
+            .overflow_y_scroll();
+        let tiles = std::iter::once(("default".to_string(), None)).chain(
+            self.icons
+                .iter()
+                .map(|icon| (icon.key.clone(), Some(icon.path.clone()))),
+        );
+        for (key, path) in tiles {
+            let selected = self.selected == key;
+            let double_key = key.clone();
+            let mut tile = div()
+                .id(SharedString::from(format!("icon-{key}")))
+                .w(px(96.))
+                .p_2()
+                .rounded_md()
+                .bg(if selected {
+                    rgb(0x3d5a80)
+                } else {
+                    rgb(0x353535)
+                })
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_1();
+            tile = match path {
+                Some(path) => tile.child(img(path).size(px(64.))),
+                None => tile.child(
+                    div()
+                        .size(px(64.))
+                        .rounded_md()
+                        .bg(rgb(0x1e4d2b))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(28.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0x9fdcb8))
+                        .child(self.initial.clone()),
+                ),
+            };
+            grid = grid.child(
+                tile.child(div().text_size(px(12.)).text_ellipsis().child(key.clone()))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.icon_picker {
+                            dialog.selected = key.clone();
+                        }
+                        cx.notify();
+                    }))
+                    .on_double_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(dialog) = &mut this.icon_picker {
+                            dialog.selected = double_key.clone();
+                        }
+                        Self::confirm(this, cx);
+                    })),
+            );
+        }
+        let panel = div()
+            .id("icon-picker-panel")
+            .w(px(560.))
+            .p_4()
+            .rounded_lg()
+            .bg(rgb(0x2b2b2b))
+            .border_1()
+            .border_color(rgb(0x444444))
+            .flex()
+            .flex_col()
+            .gap_3()
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(div().text_size(px(18.)).child("Change Icon"))
+            .child(grid)
+            .children(
+                self.error
+                    .as_ref()
+                    .map(|error| div().text_color(rgb(0xff8888)).child(error.clone())),
+            )
+            .child(
+                div()
+                    .flex()
+                    .gap_2()
+                    .child(
+                        Button::new("add-icon")
+                            .label("Add Icon…")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let target = this
+                                    .icon_picker
+                                    .as_ref()
+                                    .map(|dialog| dialog.target.clone());
+                                let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
+                                    files: true,
+                                    directories: false,
+                                    multiple: false,
+                                    prompt: Some("Add Icon".into()),
+                                });
+                                cx.spawn(async move |this, cx| {
+                                    let result = paths.await;
+                                    let _ = this.update(cx, |this, cx| {
+                                        let dir = this.app.read(cx).paths.icons_dir();
+                                        let Some(dialog) = &mut this.icon_picker else {
+                                            return;
+                                        };
+                                        if Some(dialog.target.clone()) != target {
+                                            return;
+                                        }
+                                        match result {
+                                            Ok(Ok(Some(paths))) => {
+                                                if let Some(path) = paths.first() {
+                                                    match prism_core::icons::add_icon(&dir, path) {
+                                                        Ok(key) => {
+                                                            dialog.selected = key;
+                                                            dialog.error = None;
+                                                            dialog.reload(&dir);
+                                                        }
+                                                        Err(e) => {
+                                                            dialog.error = Some(e.to_string())
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            Ok(Ok(None)) => {}
+                                            Ok(Err(e)) => dialog.error = Some(e.to_string()),
+                                            Err(e) => dialog.error = Some(e.to_string()),
+                                        }
+                                        cx.notify();
+                                    });
+                                })
+                                .detach();
+                            })),
+                    )
+                    .child(
+                        Button::new("remove-icon")
+                            .label("Remove Icon")
+                            .disabled(self.selected == "default")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let dir = this.app.read(cx).paths.icons_dir();
+                                if let Some(dialog) = &mut this.icon_picker {
+                                    if dialog.selected != "default" {
+                                        match prism_core::icons::remove_icon(&dir, &dialog.selected)
+                                        {
+                                            Ok(()) => {
+                                                dialog.selected = "default".into();
+                                                dialog.error = None;
+                                                dialog.reload(&dir);
+                                            }
+                                            Err(e) => dialog.error = Some(e.to_string()),
+                                        }
+                                    }
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("icons-folder")
+                            .label("Open Folder")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                let dir = this.app.read(cx).paths.icons_dir();
+                                let _ = std::fs::create_dir_all(&dir);
+                                let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("cancel-icon")
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.icon_picker = None;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("confirm-icon")
+                            .label("OK")
+                            .primary()
+                            .on_click(cx.listener(|this, _, _, cx| Self::confirm(this, cx))),
+                    ),
+            );
+        div()
+            .absolute()
+            .size_full()
+            .top_0()
+            .left_0()
+            .bg(gpui_kit::black().opacity(0.5))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(panel)
+    }
+}
 
 pub struct QuickPlayState {
     target_id: String,

@@ -10,6 +10,7 @@ pub mod copy;
 pub mod export;
 pub mod horizon;
 pub mod import;
+pub mod icons;
 pub mod ini;
 pub mod instance;
 pub mod java;

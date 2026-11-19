@@ -147,7 +147,10 @@ impl App {
 
     pub fn instance_icon_path(&self, inst: &prism_core::Instance) -> Option<PathBuf> {
         let dir = self.paths.icons_dir();
-        for ext in ["png", "svg", "jpg", "jpeg", "webp", "ico"] {
+        if inst.icon_key == "default" {
+            return None;
+        }
+        for ext in prism_core::icons::EXTENSIONS {
             let p = dir.join(format!("{}.{ext}", inst.icon_key));
             if p.exists() {
                 return Some(p);
