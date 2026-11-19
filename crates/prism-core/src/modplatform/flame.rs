@@ -11,6 +11,22 @@ use std::sync::Arc;
 pub const API_BASE: &str = "https://api.curseforge.com/v1";
 pub const API_KEY_ENV: &str = "PRISM_RS_CURSEFORGE_API_KEY";
 
+#[derive(Deserialize)]
+struct FlameProject {
+    #[serde(rename = "classId")]
+    class_id: i64,
+}
+
+impl FlameProject {
+    fn resource_type(&self) -> ResourceType {
+        match self.class_id {
+            12 => ResourceType::ResourcePack,
+            6552 => ResourceType::ShaderPack,
+            _ => ResourceType::Mod,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlameSearchHit {
     pub id: i64,
@@ -128,6 +144,22 @@ impl FlameApi {
         Ok(resp.json::<Response>().await?.data)
     }
 
+    pub async fn project_resource_type(&self, project_id: i64) -> Result<ResourceType, PlatformError> {
+        #[derive(Deserialize)]
+        struct Response {
+            data: FlameProject,
+        }
+
+        let resp = self.get(&format!("/mods/{project_id}"))?.send().await?;
+        if !resp.status().is_success() {
+            return Err(PlatformError::Request(format!(
+                "CurseForge project {project_id}: {}",
+                resp.status()
+            )));
+        }
+        Ok(resp.json::<Response>().await?.data.resource_type())
+    }
+
     /// Download a file into the instance's resource folder.
     pub async fn install_file(
         &self,
@@ -227,6 +259,15 @@ impl FlameManifest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_classes_route_files_to_the_right_game_folders() {
+        for (class_id, folder) in [(6, "mods"), (12, "resourcepacks"), (6552, "shaderpacks")] {
+            let project: FlameProject =
+                serde_json::from_value(serde_json::json!({ "classId": class_id })).unwrap();
+            assert_eq!(project.resource_type().folder(), folder);
+        }
+    }
 
     #[test]
     fn parses_manifest() {

@@ -113,8 +113,17 @@ pub fn import_sync(
             .enable_all()
             .build()?;
         let api = FlameApi::new();
+        let api = &api;
         runtime.block_on(install_curseforge_files(
-            files, game_root, downloader, &api, |project, file| api.file(project, file),
+            files, game_root, downloader, api, |project, file| async move {
+                let file = api.file(project, file).await?;
+                let resource_type = if has_curseforge_download(&file) {
+                    api.project_resource_type(project).await?
+                } else {
+                    ResourceType::Mod
+                };
+                Ok((file, resource_type))
+            },
         ))
     })
 }
@@ -246,6 +255,10 @@ fn curseforge_overrides(dir: &Path, overrides: &str) -> Result<Option<PathBuf>, 
     Ok(Some(path))
 }
 
+fn has_curseforge_download(file: &FlameFile) -> bool {
+    file.downloadUrl.as_deref().is_some_and(|url| !url.is_empty())
+}
+
 async fn install_curseforge_files<F>(
     files: &[FlameManifestFile],
     game_root: &Path,
@@ -254,14 +267,14 @@ async fn install_curseforge_files<F>(
     resolve: impl Fn(i64, i64) -> F,
 ) -> Result<Vec<MissingCurseForgeFile>, ImportError>
 where
-    F: std::future::Future<Output = Result<FlameFile, PlatformError>>,
+    F: std::future::Future<Output = Result<(FlameFile, ResourceType), PlatformError>>,
 {
     let mut missing = Vec::new();
     for entry in files {
-        let file = resolve(entry.projectID, entry.fileID).await?;
-        if file.downloadUrl.as_deref().is_some_and(|url| !url.is_empty()) {
+        let (file, resource_type) = resolve(entry.projectID, entry.fileID).await?;
+        if has_curseforge_download(&file) {
             match api
-                .install_file(downloader, game_root, &file, ResourceType::Mod)
+                .install_file(downloader, game_root, &file, resource_type)
                 .await
             {
                 Ok(_) => continue,
@@ -457,9 +470,9 @@ mod tests {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
             runtime.block_on(install_curseforge_files(files, game_root, &downloader, &api, |project, file| {
                 assert_eq!((project, file), (42, 73));
-                std::future::ready(Ok(serde_json::from_str::<FlameFile>(
+                std::future::ready(Ok((serde_json::from_str::<FlameFile>(
                     r#"{"id":73,"fileName":"blocked.jar","downloadUrl":null}"#,
-                ).unwrap()))
+                ).unwrap(), ResourceType::Mod)))
             }))
         }).unwrap();
         let instance = outcome.instance;

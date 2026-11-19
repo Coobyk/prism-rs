@@ -38,7 +38,7 @@ For CurseForge packs that list downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
 your own CurseForge API key before running the CLI or opening the launcher.
 Files unavailable for automatic download are listed in
 `curseforge-missing-files.txt` in the new instance folder and can be added
-manually to its Minecraft `mods` folder.
+manually to the appropriate Minecraft folder (`mods`, `resourcepacks`, or `shaderpacks`).
 
 ## Architecture
 
