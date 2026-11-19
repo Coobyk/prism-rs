@@ -238,13 +238,25 @@ fn curseforge_index(project: i64, file: &FlameFile) -> Option<Index> {
 }
 
 fn record(game_root: &Path, index: Option<Index>) {
-    if let Some(index) = index.filter(|index| is_jar(&index.filename)) {
-        let mods = game_root.join("mods");
-        if !read_index(&mods).contains_key(&index.filename) {
-            if let Err(error) = save_index(&index_path(&mods, &index), &index, None) {
-                tracing::warn!("could not save mod index: {error}");
-            }
+    let Some(mut index) = index.filter(|index| is_jar(&index.filename)) else {
+        return;
+    };
+    let mods = game_root.join("mods");
+    let indexes = read_index(&mods);
+    let result = match indexes.get(&index.filename).map(Vec::as_slice) {
+        Some([previous]) => {
+            index.side = previous.index.side.clone();
+            index.locked = previous.index.locked;
+            save_index(&previous.path, &index, Some(&previous.original))
         }
+        Some(_) => Err(problem(format!(
+            "{}: conflicting .index entries",
+            index.filename
+        ))),
+        None => save_index(&index_path(&mods, &index), &index, None),
+    };
+    if let Err(error) = result {
+        tracing::warn!("could not save mod index: {error}");
     }
 }
 
@@ -701,6 +713,27 @@ file-id = 3509043
         .unwrap();
         assert_eq!(report.locked, 1);
         assert!(report.updates.is_empty());
+    }
+
+    #[test]
+    fn recording_a_same_name_install_refreshes_the_file_id_and_preserves_the_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let mods = temp.path().join("mods");
+        let mut index: Index = toml::from_str(CURSEFORGE).unwrap();
+        record(temp.path(), Some(index.clone()));
+        index.update.curseforge.as_mut().unwrap().file = 5;
+        index.download.hash = "replacement".into();
+        index.locked = false;
+        index.side = Some("both".into());
+        record(temp.path(), Some(index));
+        let records = read_index(&mods);
+        let [recorded] = records["example.jar"].as_slice() else {
+            panic!("duplicate sidecars")
+        };
+        assert_eq!(recorded.index.update.curseforge.as_ref().unwrap().file, 5);
+        assert_eq!(recorded.index.download.hash, "replacement");
+        assert!(recorded.index.locked);
+        assert_eq!(recorded.index.side.as_deref(), Some("client"));
     }
 
     #[tokio::test]
