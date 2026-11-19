@@ -3,7 +3,7 @@
 
 use crate::launch::MSA_CLIENT_ID;
 use serde::{Deserialize, Serialize};
-use std::{io::{self, Write}, path::Path};
+use std::{io::{self, Write}, path::{Path, PathBuf}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -85,13 +85,14 @@ impl AccountList {
         let refreshed = refresh(account.clone())
             .await
             .map_err(|_| AuthError::SignInAgain)?;
-        *self = Self::edit_inner(path, false, |updated| {
+        let (updated, _) = Self::edit_inner(path, false, |updated| {
             for stored in &mut updated.accounts {
                 if stored.id == account.id && stored.refresh_token == account.refresh_token {
                     *stored = refreshed.clone();
                 }
             }
         })?;
+        *self = updated;
         Ok(Some(self.to_session(&refreshed)))
     }
 
@@ -102,7 +103,8 @@ impl AccountList {
             .unwrap_or_default()
     }
 
-    pub fn edit(path: &Path, edit: impl FnOnce(&mut Self)) -> io::Result<Self> {
+    /// Edit the latest account list, returning any backup of malformed data.
+    pub fn edit(path: &Path, edit: impl FnOnce(&mut Self)) -> io::Result<(Self, Option<PathBuf>)> {
         Self::edit_inner(path, true, edit)
     }
 
@@ -110,7 +112,7 @@ impl AccountList {
         path: &Path,
         recover_invalid: bool,
         edit: impl FnOnce(&mut Self),
-    ) -> io::Result<Self> {
+    ) -> io::Result<(Self, Option<PathBuf>)> {
         let parent = account_dir(path);
         std::fs::create_dir_all(parent)?;
         let lock = std::fs::File::options()
@@ -119,6 +121,7 @@ impl AccountList {
             .truncate(false)
             .open(path.with_extension("lock"))?;
         fs2::FileExt::lock_exclusive(&lock)?;
+        let mut recovered_backup = None;
         let mut accounts = match std::fs::read(path) {
             Ok(json) => match serde_json::from_slice(&json) {
                 Ok(accounts) => accounts,
@@ -127,7 +130,8 @@ impl AccountList {
                         .prefix("accounts.json.corrupt-")
                         .tempfile_in(parent)?;
                     backup.write_all(&json)?;
-                    backup.keep().map_err(|error| error.error)?;
+                    let (_, backup_path) = backup.keep().map_err(|error| error.error)?;
+                    recovered_backup = Some(backup_path);
                     Self::default()
                 }
                 Err(error) => return Err(error.into()),
@@ -137,7 +141,7 @@ impl AccountList {
         };
         edit(&mut accounts);
         accounts.save(path)?;
-        Ok(accounts)
+        Ok((accounts, recovered_backup))
     }
 
     pub fn save(&self, path: &Path) -> io::Result<()> {
@@ -512,14 +516,10 @@ mod tests {
         let path = dir.path().join("accounts.json");
         let malformed = b"{not valid JSON";
         std::fs::write(&path, malformed).unwrap();
-        AccountList::edit(&path, |accounts| {
+        let (_, backup) = AccountList::edit(&path, |accounts| {
             accounts.add_offline("Player");
         }).unwrap();
-        let backup = std::fs::read_dir(dir.path()).unwrap()
-            .map(|entry| entry.unwrap())
-            .find(|entry| entry.file_name().to_string_lossy().starts_with("accounts.json.corrupt-"))
-            .unwrap();
-        assert_eq!(std::fs::read(backup.path()).unwrap(), malformed);
+        assert_eq!(std::fs::read(backup.unwrap()).unwrap(), malformed);
         assert_eq!(AccountList::load(&path).accounts[0].player_name, "Player");
     }
 

@@ -35,12 +35,9 @@ impl AccountsWindow {
             cx.notify();
             return;
         }
-        self.app.update(cx, |app, _cx| {
-            app.edit_accounts(|accounts| {
-                accounts.active = Some(accounts.add_offline(&name).id.clone());
-            });
+        self.edit_accounts(cx, format!("Added offline account: {name}"), |accounts| {
+            accounts.active = Some(accounts.add_offline(&name).id.clone());
         });
-        *self.status.lock().unwrap_or_else(|p| p.into_inner()) = format!("Added offline account: {name}");
         cx.notify();
     }
 
@@ -102,15 +99,11 @@ impl AccountsWindow {
         let result = self.app.read(cx).block_on(handle);
         match result {
             Ok(Ok(account)) => {
-                self.app.update(cx, |app, _cx| {
-                    app.edit_accounts(|accounts| {
-                        accounts.accounts.retain(|a| a.id != account.id);
-                        accounts.accounts.push(account.clone());
-                        accounts.active = Some(account.id.clone());
-                    });
+                self.edit_accounts(cx, format!("Signed in as {}", account.player_name), |accounts| {
+                    accounts.accounts.retain(|a| a.id != account.id);
+                    accounts.active = Some(account.id.clone());
+                    accounts.accounts.push(account);
                 });
-                *self.status.lock().unwrap_or_else(|p| p.into_inner()) =
-                    format!("Signed in as {}", account.player_name);
                 *self.device_flow.lock().unwrap_or_else(|p| p.into_inner()) = None;
             }
             Ok(Err(e)) => {
@@ -124,26 +117,36 @@ impl AccountsWindow {
     }
 
     fn set_active(&mut self, id: String, cx: &mut Context<Self>) {
-        self.app.update(cx, |app, _cx| {
-            app.edit_accounts(|accounts| {
-                if accounts.accounts.iter().any(|account| account.id == id) {
-                    accounts.active = Some(id);
-                }
-            });
+        self.edit_accounts(cx, String::new(), |accounts| {
+            if accounts.accounts.iter().any(|account| account.id == id) {
+                accounts.active = Some(id);
+            }
         });
         cx.notify();
     }
 
     fn remove_account(&mut self, id: String, cx: &mut Context<Self>) {
-        self.app.update(cx, |app, _cx| {
-            app.edit_accounts(|accounts| {
-                accounts.accounts.retain(|a| a.id != id);
-                if accounts.active.as_deref() == Some(id.as_str()) {
-                    accounts.active = accounts.accounts.first().map(|a| a.id.clone());
-                }
-            });
+        self.edit_accounts(cx, String::new(), |accounts| {
+            accounts.accounts.retain(|a| a.id != id);
+            if accounts.active.as_deref() == Some(id.as_str()) {
+                accounts.active = accounts.accounts.first().map(|a| a.id.clone());
+            }
         });
         cx.notify();
+    }
+
+    fn edit_accounts(
+        &self,
+        cx: &mut Context<Self>,
+        success: String,
+        edit: impl FnOnce(&mut prism_core::AccountList),
+    ) {
+        let notice = self.app.update(cx, |app, cx| {
+            let notice = app.edit_accounts(edit);
+            cx.notify();
+            notice
+        });
+        *self.status.lock().unwrap_or_else(|p| p.into_inner()) = notice.unwrap_or(success);
     }
 }
 

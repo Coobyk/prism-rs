@@ -143,7 +143,7 @@ impl MainWindow {
 
     fn on_cycle_account(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _cx| {
-            app.edit_accounts(|accounts| {
+            let notice = app.edit_accounts(|accounts| {
                 if accounts.accounts.is_empty() {
                     accounts.add_offline("Player");
                 } else {
@@ -156,6 +156,9 @@ impl MainWindow {
                     accounts.active = Some(accounts.accounts[idx].id.clone());
                 }
             });
+            if let Some(notice) = notice {
+                app.toast = Some((notice, std::time::Instant::now()));
+            }
         });
         cx.notify();
     }

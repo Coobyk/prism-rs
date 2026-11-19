@@ -106,10 +106,13 @@ impl App {
         });
     }
 
-    pub fn edit_accounts(&mut self, edit: impl FnOnce(&mut AccountList)) {
+    pub fn edit_accounts(&mut self, edit: impl FnOnce(&mut AccountList)) -> Option<String> {
         match AccountList::edit(&self.paths.accounts_file(), edit) {
-            Ok(accounts) => self.accounts = accounts,
-            Err(error) => self.toast = Some((format!("Could not save accounts: {error}"), std::time::Instant::now())),
+            Ok((accounts, backup)) => {
+                self.accounts = accounts;
+                backup.map(|path| format!("The account list could not be read and was reset. Backup: {}", path.display()))
+            }
+            Err(error) => Some(format!("Could not save accounts: {error}")),
         }
     }
 
