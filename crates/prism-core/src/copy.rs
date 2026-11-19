@@ -106,16 +106,17 @@ fn copy_tree(source: &Path, dest: &Path, relative: &Path, options: &CopyOptions)
         let name = entry.file_name();
         let lower = name.to_string_lossy().to_ascii_lowercase();
         let game = relative == Path::new("minecraft") || relative == Path::new(".minecraft");
-        if matches!(
-            lower.as_str(),
-            "logs"
-                | "crash-reports"
-                | "session.lock"
-                | "instance.lock"
-                | "prismlauncher.log"
-                | "mmc-launcher.jar"
-        ) || lower.ends_with(".log")
-            || lower.starts_with("hs_err_pid")
+        if (relative.as_os_str().is_empty() || game)
+            && (matches!(
+                lower.as_str(),
+                "logs"
+                    | "crash-reports"
+                    | "session.lock"
+                    | "instance.lock"
+                    | "prismlauncher.log"
+                    | "mmc-launcher.jar"
+            ) || lower.ends_with(".log")
+                || lower.starts_with("hs_err_pid"))
         {
             continue;
         }
@@ -154,6 +155,40 @@ fn copy_tree(source: &Path, dest: &Path, relative: &Path, options: &CopyOptions)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn nested_world_content_is_not_filtered_as_junk() {
+        let paths = Paths {
+            root: std::env::temp_dir().join(format!("prism-copy-{}", uuid::Uuid::new_v4())),
+        };
+        let source = crate::InstanceList::create(&paths, "Source", "default", "1.21").unwrap();
+        for world in ["Logs", "x.log"] {
+            let dir = source.game_root().join("saves").join(world);
+            fs::create_dir_all(&dir).unwrap();
+            for file in ["level.dat", "session.lock", "hs_err_pid123.log"] {
+                fs::write(dir.join(file), "world content").unwrap();
+            }
+        }
+        for root in [&source.root, &source.game_root()] {
+            fs::write(root.join("launcher.log"), "junk").unwrap();
+            fs::create_dir(root.join("logs")).unwrap();
+        }
+        let copied = copy_instance(&paths, &source, "Copy", None, &CopyOptions::default()).unwrap();
+        for world in ["Logs", "x.log"] {
+            for file in ["level.dat", "session.lock", "hs_err_pid123.log"] {
+                assert_eq!(
+                    fs::read_to_string(copied.game_root().join("saves").join(world).join(file))
+                        .unwrap(),
+                    "world content"
+                );
+            }
+        }
+        for root in [&copied.root, &copied.game_root()] {
+            assert!(!root.join("launcher.log").exists());
+            assert!(!root.join("logs").exists());
+        }
+        fs::remove_dir_all(paths.root).unwrap();
+    }
+
     #[test]
     fn copy_options_identity_and_errors() {
         let paths = Paths {
