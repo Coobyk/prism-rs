@@ -2,7 +2,7 @@ use super::{Browser, BrowserTarget, InstanceWindow, Page};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::button::Button;
 use gpui_kit::*;
-use prism_core::datapacks::World;
+use prism_core::datapacks::{DataPack, World};
 use prism_core::modplatform::modrinth::{ModrinthApi, SearchResult};
 use prism_core::modplatform::ResourceType;
 use std::io;
@@ -130,6 +130,37 @@ impl InstanceWindow {
                 }
                 cx.notify();
             });
+        })
+        .detach();
+    }
+
+    fn confirm_datapack_removal(
+        &mut self,
+        target: PackTarget,
+        pack: DataPack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let answer = window.prompt(
+            gpui::PromptLevel::Warning,
+            &format!(
+                "Remove {:?} from world {:?}?",
+                pack.name(),
+                target.world.name()
+            ),
+            Some("This cannot be undone."),
+            &[
+                gpui::PromptButton::cancel("Cancel"),
+                gpui::PromptButton::new("Remove"),
+            ],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(1) {
+                let _ = this.update(cx, |this, cx| {
+                    this.datapack_action(&target, cx, |world| world.remove(&pack));
+                });
+            }
         })
         .detach();
     }
@@ -421,7 +452,7 @@ impl InstanceWindow {
                                 )
                                 .child(
                                     Button::new(SharedString::from(format!(
-                                        "toggle-datapack-{name}"
+                                        "toggle-datapack-{enabled}-{name}"
                                     )))
                                     .label(if enabled { "Disable" } else { "Enable" })
                                     .disabled(running)
@@ -433,14 +464,17 @@ impl InstanceWindow {
                                 )
                                 .child(
                                     Button::new(SharedString::from(format!(
-                                        "remove-datapack-{name}"
+                                        "remove-datapack-{enabled}-{name}"
                                     )))
                                     .label("Remove")
                                     .disabled(running)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.datapack_action(&remove_scope, cx, |world| {
-                                            world.remove(&pack)
-                                        });
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.confirm_datapack_removal(
+                                            remove_scope.clone(),
+                                            pack.clone(),
+                                            window,
+                                            cx,
+                                        );
                                     })),
                                 ),
                         );
