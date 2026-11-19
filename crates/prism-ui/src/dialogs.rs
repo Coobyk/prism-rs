@@ -777,11 +777,27 @@ pub struct PromptState {
     pub target_id: String,
     pub input: Entity<InputState>,
     pub error: Option<String>,
-    pub export_fields: Option<[Entity<InputState>; 3]>,
-    pub mrpack: bool,
+    pub export_fields: Option<[Entity<InputState>; 4]>,
+    export_format: ExportFormat,
     pub export_default_path: Option<String>,
     pub copy_group: Option<Entity<InputState>>,
     pub copy_flags: [bool; 8],
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ExportFormat {
+    Prism,
+    Modrinth,
+    CurseForge,
+}
+
+impl ExportFormat {
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Modrinth => "mrpack",
+            Self::Prism | Self::CurseForge => "zip",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -813,13 +829,13 @@ impl PromptState {
             error: None,
             export_fields: if kind == PromptKind::Export {
                 Some(
-                    ["Pack name", "Version (e.g. 1.0.0)", "Summary"]
+                    ["Pack name", "Version (e.g. 1.0.0)", "Summary", "Author (optional)"]
                         .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(label))),
                 )
             } else {
                 None
             },
-            mrpack: false,
+            export_format: ExportFormat::Prism,
             export_default_path: None,
             copy_group: (kind == PromptKind::Copy).then(|| cx.new(|cx| InputState::new(window, cx).placeholder("Group (empty = none)"))),
             copy_flags: [true; 8],
@@ -839,15 +855,15 @@ impl PromptState {
         }
     }
 
-    fn set_export_format(&mut self, mrpack: bool, window: &mut Window, cx: &mut Context<MainWindow>) {
+    fn set_export_format(&mut self, format: ExportFormat, window: &mut Window, cx: &mut Context<MainWindow>) {
         if self.export_default_path.as_deref() == Some(self.input.read(cx).value().as_str()) {
             let mut path = std::path::PathBuf::from(self.export_default_path.as_ref().unwrap());
-            path.set_extension(if mrpack { "mrpack" } else { "zip" });
+            path.set_extension(format.extension());
             let value = path.to_string_lossy().into_owned();
             self.input.update(cx, |state, cx| state.set_value(value.clone(), window, cx));
             self.export_default_path = Some(value);
         }
-        self.mrpack = mrpack;
+        self.export_format = format;
     }
 
     pub fn render(&self, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement {
@@ -877,7 +893,7 @@ impl PromptState {
 
         let mut panel = div()
             .id("prompt-dialog")
-            .w(px(380.))
+            .w(px(if self.kind == PromptKind::Export { 440. } else { 380. }))
             .bg(rgb(0x2b2b2b))
             .rounded_lg()
             .border_1()
@@ -908,37 +924,30 @@ impl PromptState {
         }
 
         if let Some(fields) = &self.export_fields {
-            panel = panel.child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("export-zip")
-                            .label("Prism zip")
-                            .selected(!self.mrpack)
-                            .when(!self.mrpack, |button| button.primary())
-                            .on_click(cx.listener(|this: &mut MainWindow, _, window, cx| {
-                                if let Some(prompt) = this.prompt.as_mut() {
-                                    prompt.set_export_format(false, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("export-mrpack")
-                            .label("Modrinth mrpack")
-                            .selected(self.mrpack)
-                            .when(self.mrpack, |button| button.primary())
-                            .on_click(cx.listener(|this: &mut MainWindow, _, window, cx| {
-                                if let Some(prompt) = this.prompt.as_mut() {
-                                    prompt.set_export_format(true, window, cx);
-                                }
-                                cx.notify();
-                            })),
-                    ),
-            );
-            if self.mrpack {
-                for field in fields {
+            let mut formats = div().flex().flex_wrap().gap_2();
+            for (format, id, label) in [
+                (ExportFormat::Prism, "export-zip", "Prism zip"),
+                (ExportFormat::Modrinth, "export-mrpack", "Modrinth mrpack"),
+                (ExportFormat::CurseForge, "export-curseforge", "CurseForge zip"),
+            ] {
+                let selected = self.export_format == format;
+                formats = formats.child(
+                    Button::new(id)
+                        .label(label)
+                        .selected(selected)
+                        .when(selected, |button| button.primary())
+                        .on_click(cx.listener(move |this: &mut MainWindow, _, window, cx| {
+                            if let Some(prompt) = this.prompt.as_mut() {
+                                prompt.set_export_format(format, window, cx);
+                            }
+                            cx.notify();
+                        })),
+                );
+            }
+            panel = panel.child(formats);
+            if self.export_format != ExportFormat::Prism {
+                let detail = if self.export_format == ExportFormat::Modrinth { 2 } else { 3 };
+                for field in [&fields[0], &fields[1], &fields[detail]] {
                     panel = panel.child(Input::new(field));
                 }
             }
@@ -1029,16 +1038,17 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
         return;
     }
     if kind == PromptKind::Export {
-        let mrpack = prompt.mrpack;
+        let format = prompt.export_format;
         let fields = prompt.export_fields.as_ref().unwrap();
         let metadata = prism_core::export::MrpackMetadata {
             name: fields[0].read(cx).value().to_string(),
             version: fields[1].read(cx).value().to_string(),
             summary: fields[2].read(cx).value().to_string(),
         };
+        let author = fields[3].read(cx).value().to_string();
         let mut output = std::path::PathBuf::from(&value);
         if output.extension().is_none() {
-            output.set_extension(if mrpack { "mrpack" } else { "zip" });
+            output.set_extension(format.extension());
         }
         if value.is_empty() {
             this.prompt.as_mut().unwrap().error = Some("Choose a destination path".into());
@@ -1056,10 +1066,18 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
             let runtime = app.read(cx).runtime.clone();
             let (tx, rx) = tokio::sync::oneshot::channel();
             runtime.handle().spawn(async move {
-                let result = if mrpack {
-                    prism_core::export::export_mrpack(&instance, &output, metadata).await
-                } else {
-                    prism_core::export::export_zip(&instance, &output)
+                let result = match format {
+                    ExportFormat::Prism => prism_core::export::export_zip(&instance, &output),
+                    ExportFormat::Modrinth => prism_core::export::export_mrpack(&instance, &output, metadata).await,
+                    ExportFormat::CurseForge => prism_core::export::export_curseforge(
+                        &instance,
+                        &output,
+                        prism_core::export::CurseForgeMetadata {
+                            name: metadata.name,
+                            version: metadata.version,
+                            author,
+                        },
+                    ).await,
                 };
                 let message = match result {
                     Ok(()) => format!("Exported: {}", output.display()),

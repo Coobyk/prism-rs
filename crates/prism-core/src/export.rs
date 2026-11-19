@@ -1,7 +1,10 @@
-//! Prism instance archives and Modrinth modpacks.
+//! Prism instance archives and Modrinth and CurseForge modpacks.
 
+use crate::modplatform::flame::{FlameApi, FlameManifestFile};
 use crate::modplatform::modrinth::{ModVersion, ModrinthApi, MrpackFile, MrpackIndex};
+use crate::modplatform::{PlatformError, ResourceType};
 use crate::Instance;
+use futures::{stream, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
 use sha2::Sha512;
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,6 +33,12 @@ pub struct MrpackMetadata {
     pub name: String,
     pub version: String,
     pub summary: String,
+}
+
+pub struct CurseForgeMetadata {
+    pub name: String,
+    pub version: String,
+    pub author: String,
 }
 
 fn collect(root: &Path, game: &Path, out: &mut Vec<PathBuf>) -> Result<(), ExportError> {
@@ -189,25 +198,7 @@ where
             "Pack name and version are required".into(),
         ));
     }
-    let pack: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(instance.root.join("mmc-pack.json"))?)?;
-    let mut dependencies = BTreeMap::new();
-    for component in pack["components"].as_array().into_iter().flatten() {
-        let key = match component["uid"].as_str().unwrap_or_default() {
-            "net.minecraft" => "minecraft",
-            "net.fabricmc.fabric-loader" => "fabric-loader",
-            "org.quiltmc.quilt-loader" => "quilt-loader",
-            "net.minecraftforge" => "forge",
-            "net.neoforged" => "neoforge",
-            _ => continue,
-        };
-        if let Some(version) = component["version"].as_str() {
-            dependencies.insert(key.into(), version.into());
-        }
-    }
-    if !dependencies.contains_key("minecraft") {
-        return Err(ExportError::Invalid("Missing Minecraft version".into()));
-    }
+    let dependencies = pack_dependencies(instance)?;
     let game = instance.game_root();
     let mut paths = Vec::new();
     collect(&game, &game, &mut paths)?;
@@ -296,6 +287,167 @@ where
     Ok(())
 }
 
+fn pack_dependencies(instance: &Instance) -> Result<BTreeMap<String, String>, ExportError> {
+    let pack: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(instance.root.join("mmc-pack.json"))?)?;
+    let mut dependencies = BTreeMap::new();
+    for component in pack["components"].as_array().into_iter().flatten() {
+        let key = match component["uid"].as_str().unwrap_or_default() {
+            "net.minecraft" => "minecraft",
+            "net.fabricmc.fabric-loader" => "fabric-loader",
+            "org.quiltmc.quilt-loader" => "quilt-loader",
+            "net.minecraftforge" => "forge",
+            "net.neoforged" => "neoforge",
+            _ => continue,
+        };
+        if let Some(version) = component["version"].as_str() {
+            dependencies.insert(key.into(), version.into());
+        }
+    }
+    if !dependencies.contains_key("minecraft") {
+        return Err(ExportError::Invalid("Missing Minecraft version".into()));
+    }
+    Ok(dependencies)
+}
+
+fn curseforge_fingerprint(bytes: &[u8]) -> u32 {
+    const M: u32 = 0x5bd1e995;
+    let normalized: Vec<_> = bytes.iter().copied()
+        .filter(|byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+        .collect();
+    let mut hash = 1 ^ normalized.len() as u32;
+    let chunks = normalized.chunks_exact(4);
+    let tail = chunks.remainder();
+    for chunk in chunks {
+        let key = u32::from_le_bytes(chunk.try_into().unwrap()).wrapping_mul(M);
+        hash = hash.wrapping_mul(M) ^ (key ^ (key >> 24)).wrapping_mul(M);
+    }
+    if !tail.is_empty() {
+        for (i, byte) in tail.iter().enumerate() {
+            hash ^= u32::from(*byte) << (8 * i);
+        }
+        hash = hash.wrapping_mul(M);
+    }
+    hash = (hash ^ (hash >> 13)).wrapping_mul(M);
+    hash ^ (hash >> 15)
+}
+
+pub async fn export_curseforge(
+    instance: &Instance,
+    output: &Path,
+    metadata: CurseForgeMetadata,
+) -> Result<(), ExportError> {
+    export_curseforge_with_lookup(instance, output, metadata, |fingerprints| async move {
+        let api = FlameApi::new();
+        let mut files = BTreeMap::new();
+        for batch in fingerprints.chunks(1000) {
+            files.extend(api.match_fingerprints(batch).await?);
+        }
+        let projects: BTreeSet<_> = files.values().map(|file| file.projectID).collect();
+        let api = &api;
+        let resource_types: BTreeMap<_, _> = stream::iter(projects)
+            .map(|project| async move {
+                Ok::<_, PlatformError>((project, api.project_resource_type(project).await?))
+            })
+            .buffer_unordered(6)
+            .try_collect()
+            .await?;
+        Ok(files
+            .into_iter()
+            .map(|(fingerprint, file)| (fingerprint, (resource_types[&file.projectID], file)))
+            .collect())
+    }).await
+}
+
+async fn export_curseforge_with_lookup<F, Fut>(
+    instance: &Instance,
+    output: &Path,
+    metadata: CurseForgeMetadata,
+    lookup: F,
+) -> Result<(), ExportError>
+where
+    F: FnOnce(Vec<u32>) -> Fut,
+    Fut: std::future::Future<Output = Result<BTreeMap<u32, (ResourceType, FlameManifestFile)>, ExportError>>,
+{
+    if instance.is_horizon() {
+        return Err(ExportError::HorizonInstance);
+    }
+    if metadata.name.trim().is_empty() || metadata.version.trim().is_empty() {
+        return Err(ExportError::Invalid("Pack name and version are required".into()));
+    }
+    let deps = pack_dependencies(instance)?;
+    let minecraft = &deps["minecraft"];
+    let loaders = [("quilt-loader", "quilt"), ("fabric-loader", "fabric"), ("forge", "forge"), ("neoforge", "neoforge")]
+        .into_iter()
+        .find_map(|(component, kind)| deps.get(component).map(|version| {
+            let prefix = if kind == "neoforge" && minecraft == "1.20.1" { "1.20.1-" } else { "" };
+            serde_json::json!({ "id": format!("{kind}-{prefix}{version}"), "primary": true })
+        }))
+        .into_iter()
+        .collect::<Vec<_>>();
+
+    let game = instance.game_root();
+    let mut paths = Vec::new();
+    collect(&game, &game, &mut paths)?;
+    paths.retain(|path| !path.is_dir() && !path.starts_with(game.join("mods/.index")));
+    let mut hashes = BTreeMap::new();
+    for path in &paths {
+        let relative = path.strip_prefix(&game).unwrap();
+        let parent = relative.parent().and_then(Path::to_str);
+        let extension = path.extension().and_then(|ext| ext.to_str());
+        if matches!((parent, extension),
+            (Some("mods"), Some("jar" | "zip" | "litemod"))
+            | (Some("resourcepacks" | "shaderpacks"), Some("zip")))
+        {
+            let data = std::fs::read(path)?;
+            hashes.insert(path, (curseforge_fingerprint(&data), Sha1::digest(&data)));
+        }
+    }
+    let fingerprints = hashes.values().map(|(fingerprint, _)| *fingerprint).collect::<BTreeSet<_>>();
+    let matches = if fingerprints.is_empty() {
+        BTreeMap::new()
+    } else {
+        lookup(fingerprints.into_iter().collect()).await?
+    };
+    let (mut output, mut zip) = writer(instance, output)?;
+    let mut files = Vec::new();
+    for path in &paths {
+        let relative = path.strip_prefix(&game).unwrap();
+        let override_path = || format!("overrides/{}", archive_path(relative));
+        if let Some((fingerprint, hash)) = hashes.get(path) {
+            if let Some((_, file)) = matches.get(fingerprint).filter(|(resource_type, _)| {
+                relative.parent() == Some(Path::new(resource_type.folder()))
+            }) {
+                let data = std::fs::read(path)?;
+                if Sha1::digest(&data) == *hash {
+                    files.push(file.clone());
+                } else {
+                    zip.start_file(override_path(), SimpleFileOptions::default())?;
+                    zip.write_all(&data)?;
+                }
+                continue;
+            }
+        }
+        zip.start_file(override_path(), SimpleFileOptions::default())?;
+        std::io::copy(&mut File::open(path)?, &mut zip)?;
+    }
+    let manifest = serde_json::json!({
+        "manifestType": "minecraftModpack",
+        "manifestVersion": 1,
+        "minecraft": { "version": minecraft, "modLoaders": loaders },
+        "name": metadata.name,
+        "version": metadata.version,
+        "author": metadata.author,
+        "files": files,
+        "overrides": "overrides",
+    });
+    zip.start_file("manifest.json", SimpleFileOptions::default())?;
+    zip.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
+    zip.finish()?;
+    output.keep = true;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,6 +476,124 @@ mod tests {
             version: "1.0".into(),
             summary: "Example".into(),
         }
+    }
+
+    #[test]
+    fn curseforge_fingerprint_matches_murmur2_vector() {
+        assert_eq!(curseforge_fingerprint(b"CurseForge fixture mod"), 2_655_924_453);
+        assert_eq!(curseforge_fingerprint(b"\tCurseForge fixture\r\n mod "), 2_655_924_453);
+    }
+
+    #[tokio::test]
+    async fn curseforge_export_references_unchanged_matches_and_bundles_overrides() {
+        let fixture = Fixture::new();
+        crate::instance::set_loader(&fixture.1, &crate::loaders::Loader::NeoForge {
+            version: "47.1.106".into(),
+        }).unwrap();
+        let game = fixture.1.game_root();
+        let matched = b"CurseForge fixture mod";
+        let changed = b"changing mod";
+        std::fs::create_dir_all(game.join("config")).unwrap();
+        std::fs::create_dir_all(game.join("mods/.index")).unwrap();
+        for (relative, bytes) in [
+            ("mods/hosted.jar", matched.as_slice()),
+            ("mods/unmatched.jar", b"unmatched mod"),
+            ("mods/disabled.jar.disabled", matched),
+            ("mods/changed.jar", changed),
+            ("mods/.index/metadata.toml", b"launcher state"),
+            ("config/demo.cfg", b"some setting"),
+        ] {
+            std::fs::write(game.join(relative), bytes).unwrap();
+        }
+        let matched_fingerprint = curseforge_fingerprint(matched);
+        let changed_fingerprint = curseforge_fingerprint(changed);
+        let output = fixture.0.root.join("cf.zip");
+        export_curseforge_with_lookup(
+            &fixture.1,
+            &output,
+            CurseForgeMetadata { name: "Testing".into(), version: "2.0".into(), author: "QA".into() },
+            |fingerprints| async {
+                assert_eq!(fingerprints.into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([
+                    matched_fingerprint, changed_fingerprint, curseforge_fingerprint(b"unmatched mod"),
+                ]));
+                std::fs::write(game.join("mods/changed.jar"), b"new contents").unwrap();
+                Ok(BTreeMap::from([
+                    (matched_fingerprint, (ResourceType::Mod, FlameManifestFile { projectID: 101, fileID: 202, required: true })),
+                    (changed_fingerprint, (ResourceType::Mod, FlameManifestFile { projectID: 303, fileID: 404, required: true })),
+                ]))
+            },
+        ).await.unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_reader(zip.by_name("manifest.json").unwrap()).unwrap();
+        assert_eq!(manifest, serde_json::json!({
+            "manifestType": "minecraftModpack", "manifestVersion": 1,
+            "minecraft": { "version": "1.20.1", "modLoaders": [{ "id": "neoforge-1.20.1-47.1.106", "primary": true }] },
+            "name": "Testing", "version": "2.0", "author": "QA",
+            "files": [{ "projectID": 101, "fileID": 202, "required": true }],
+            "overrides": "overrides",
+        }));
+        use std::io::Read;
+        for (relative, bytes) in [
+            ("mods/unmatched.jar", b"unmatched mod".as_slice()),
+            ("mods/disabled.jar.disabled", matched),
+            ("mods/changed.jar", b"new contents"),
+            ("config/demo.cfg", b"some setting"),
+        ] {
+            let mut data = Vec::new();
+            zip.by_name(&format!("overrides/{relative}")).unwrap().read_to_end(&mut data).unwrap();
+            assert_eq!(data, bytes);
+        }
+        assert_eq!(zip.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn curseforge_export_preserves_legacy_resource_folders() {
+        let fixture = Fixture::new();
+        let game = fixture.1.game_root();
+        let legacy_paths = ["coremods/legacy.jar", "texturepacks/legacy.zip"];
+        let wrong_folder = "mods/misplaced-resource.zip";
+        let resource_pack = "resourcepacks/pack.zip";
+        let shader_pack = "shaderpacks/shader.zip";
+        for path in legacy_paths.into_iter().chain([wrong_folder, resource_pack, shader_pack]) {
+            std::fs::create_dir_all(game.join(path).parent().unwrap()).unwrap();
+            std::fs::write(game.join(path), path).unwrap();
+        }
+        let output = fixture.0.root.join("legacy.zip");
+        export_curseforge_with_lookup(
+            &fixture.1,
+            &output,
+            CurseForgeMetadata { name: "Legacy".into(), version: "1.0".into(), author: String::new() },
+            |fingerprints| async move {
+                let mut matches = BTreeMap::new();
+                for (path, resource_type, project_id, file_id) in [
+                    (wrong_folder, ResourceType::ResourcePack, 101, 201),
+                    (resource_pack, ResourceType::ResourcePack, 101, 202),
+                    (shader_pack, ResourceType::ShaderPack, 102, 303),
+                ] {
+                    matches.insert(curseforge_fingerprint(path.as_bytes()), (
+                        resource_type, FlameManifestFile { projectID: project_id, fileID: file_id, required: true },
+                    ));
+                }
+                assert_eq!(fingerprints, matches.keys().copied().collect::<Vec<_>>());
+                Ok(matches)
+            },
+        ).await.unwrap();
+
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_reader(zip.by_name("manifest.json").unwrap()).unwrap();
+        assert_eq!(manifest["files"], serde_json::json!([
+            { "projectID": 101, "fileID": 202, "required": true },
+            { "projectID": 102, "fileID": 303, "required": true }
+        ]));
+        use std::io::Read;
+        for path in legacy_paths.into_iter().chain([wrong_folder]) {
+            let mut data = String::new();
+            zip.by_name(&format!("overrides/{path}")).unwrap().read_to_string(&mut data).unwrap();
+            assert_eq!(data, path);
+        }
+        assert_eq!(zip.len(), 4);
     }
 
     #[tokio::test]

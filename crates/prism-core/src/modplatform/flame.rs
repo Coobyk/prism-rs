@@ -6,6 +6,7 @@ use crate::loaders::Loader;
 use crate::net::{DownloadRequest, Downloader};
 use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -136,13 +137,65 @@ impl FlameApi {
     }
 
     fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, PlatformError> {
+        self.request(reqwest::Method::GET, path)
+    }
+
+    fn request(&self, method: reqwest::Method, path: &str) -> Result<reqwest::RequestBuilder, PlatformError> {
         let key = self.api_key.as_ref().ok_or_else(|| {
             PlatformError::Request(format!("set a CurseForge API key in Settings → API Keys or set {API_KEY_ENV}"))
         })?;
         Ok(self.http
-            .get(format!("{}{path}", self.base_url))
+            .request(method, format!("{}{path}", self.base_url))
             .header("x-api-key", key)
             .header("Accept", "application/json"))
+    }
+
+    pub(crate) async fn match_fingerprints(
+        &self,
+        fingerprints: &[u32],
+    ) -> Result<BTreeMap<u32, FlameManifestFile>, PlatformError> {
+        #[derive(Deserialize)]
+        struct File {
+            #[serde(rename = "fileFingerprint")]
+            fingerprint: u32,
+            #[serde(rename = "modId")]
+            project: i64,
+            id: i64,
+            #[serde(rename = "isAvailable")]
+            available: bool,
+        }
+        #[derive(Deserialize)]
+        struct Match {
+            file: File,
+        }
+        #[derive(Deserialize)]
+        struct Data {
+            #[serde(rename = "exactMatches")]
+            exact_matches: Vec<Match>,
+        }
+        #[derive(Deserialize)]
+        struct Response {
+            data: Data,
+        }
+        let response = self
+            .request(reqwest::Method::POST, "/fingerprints")?
+            .json(&serde_json::json!({ "fingerprints": fingerprints }))
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(Self::lookup_error(response.status(), "CurseForge fingerprint lookup".into()));
+        }
+        let mut files = BTreeMap::new();
+        for Match { file } in response.json::<Response>().await?.data.exact_matches {
+            if file.available && file.project > 0 && file.id > 0 && fingerprints.contains(&file.fingerprint) {
+                files.entry(file.fingerprint).or_insert(FlameManifestFile {
+                    projectID: file.project,
+                    fileID: file.id,
+                    required: true,
+                });
+            }
+        }
+        Ok(files)
     }
 
     pub async fn search_mods(
