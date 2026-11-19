@@ -58,6 +58,12 @@ To find packs for a Java instance, open **Resource Packs** or **Shader Packs** a
 **Back to installed** shows the downloaded pack. Select it in Minecraft to use it;
 shader packs still need a shader loader such as Iris.
 
+For mod updates, open a Java instance with a mod loader and select **Mods → Check for Updates**.
+Review and apply compatible updates one at a time; close Minecraft before applying them.
+Modrinth mods are identified by file hash or packwiz metadata. CurseForge mods require
+packwiz metadata and `PRISM_RS_CURSEFORGE_API_KEY`. Mods installed through Browse Mods
+or downloaded during CurseForge import save this metadata in `mods/.index`.
+
 ### Horizon
 
 Install the [official Horizon launcher](https://playhorizon.dev/download). Put

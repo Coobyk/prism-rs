@@ -345,7 +345,12 @@ where
                 .install_file(downloader, game_root, &file, resource_type)
                 .await
             {
-                Ok(_) => continue,
+                Ok(_) => {
+                    if resource_type == ResourceType::Mod {
+                        crate::modplatform::updates::record_curseforge(game_root, entry.projectID, &file);
+                    }
+                    continue;
+                }
                 Err(PlatformError::Net(NetError::Status { status: 403, .. })) => {}
                 Err(error) => return Err(error.into()),
             }

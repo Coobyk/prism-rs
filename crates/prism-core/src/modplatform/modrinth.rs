@@ -137,6 +137,14 @@ impl ModrinthApi {
         Ok(request.send().await?.error_for_status()?.json().await?)
     }
 
+    pub(super) async fn version(&self, id: &str) -> Result<ModVersion, PlatformError> {
+        let mut url = reqwest::Url::parse(API_BASE).expect("valid Modrinth base URL");
+        url.path_segments_mut()
+            .expect("Modrinth base URL has a path")
+            .extend(["version", id]);
+        Ok(self.http.get(url).send().await?.error_for_status()?.json().await?)
+    }
+
     /// Pick the primary file of a version.
     pub fn primary_file<'a>(&self, version: &'a ModVersion) -> Option<&'a ModFile> {
         version.files.iter().find(|f| f.primary).or_else(|| version.files.first())
@@ -175,7 +183,11 @@ impl ModrinthApi {
         })?;
         let file = self.primary_file(version)
             .ok_or_else(|| PlatformError::Request("version has no downloadable file".into()))?;
-        self.install_file(downloader, game_root, file, resource_type).await
+        let path = self.install_file(downloader, game_root, file, resource_type).await?;
+        if resource_type == ResourceType::Mod {
+            super::updates::record_modrinth(game_root, &project.title, version, file);
+        }
+        Ok(path)
     }
 }
 
@@ -185,7 +197,7 @@ impl Default for ModrinthApi {
     }
 }
 
-fn modrinth_loader(resource_type: ResourceType, loader: &Loader) -> Option<&'static str> {
+pub(super) fn modrinth_loader(resource_type: ResourceType, loader: &Loader) -> Option<&'static str> {
     if resource_type != ResourceType::Mod {
         return None;
     }

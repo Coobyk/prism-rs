@@ -45,6 +45,7 @@ fn is_resource_file(path: &Path) -> bool {
         return false;
     }
     let name = name.to_lowercase();
+    let name = name.strip_suffix(".disabled").unwrap_or(&name);
     name.ends_with(".jar") || name.ends_with(".zip") || name.ends_with(".litemod")
 }
 
