@@ -431,9 +431,9 @@ pub fn render(
                         }))
                         .child(
                             Checkbox::new(SharedString::from(format!("atl-mod-{i}")))
-                                .label(e.name.clone())
+                                .accessibility_label(e.name.clone())
                                 .checked(checked)
-                                .text_color(rgb(colour))
+                                .child(div().text_color(rgb(colour)).child(e.name.clone()))
                                 .disabled(busy)
                                 .on_click(cx.listener(
                                     move |this: &mut MainWindow, _: &bool, _, cx| {
