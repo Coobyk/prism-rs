@@ -115,7 +115,7 @@ pub fn render(entries: &[ModListEntry], format: Format, fields: Fields, template
                 .map(|entry| format!("\t<li>{}</li>", descriptive(entry, fields, format)))
                 .collect();
             format!(
-                "<html><body><ul>\n{}\n</ul></body></html>",
+                "<html><head><meta charset=\"utf-8\"></head><body><ul>\n{}\n</ul></body></html>",
                 lines.join("\n")
             )
         }
@@ -405,6 +405,22 @@ version = "opaque-id"
             );
             assert_eq!(entry.version, None, "provider ID for {}", entry.name);
         }
+    }
+
+    #[test]
+    fn html_declares_utf8_for_non_ascii_metadata() {
+        let entry = ModListEntry {
+            name: "Café 日本語".into(),
+            url: None,
+            version: None,
+            authors: Vec::new(),
+            filename: "example.jar".into(),
+            mod_id: None,
+        };
+        assert_eq!(
+            render(&[entry], Format::Html, Fields::default(), ""),
+            "<html><head><meta charset=\"utf-8\"></head><body><ul>\n\t<li>Café 日本語</li>\n</ul></body></html>"
+        );
     }
 
     #[test]
