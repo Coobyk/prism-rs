@@ -2,7 +2,7 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
-use gpui_kit::base::{Disableable, InteractiveElementExt, Selectable};
+use gpui_kit::base::{Disableable, Selectable};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
@@ -99,7 +99,6 @@ impl IconPickerDialog {
         );
         for (key, path) in tiles {
             let selected = self.selected == key;
-            let double_key = key.clone();
             let mut tile = div()
                 .id(SharedString::from(format!("icon-{key}")))
                 .w(px(96.))
@@ -132,17 +131,15 @@ impl IconPickerDialog {
             };
             grid = grid.child(
                 tile.child(div().text_size(px(12.)).text_ellipsis().child(key.clone()))
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, event: &ClickEvent, _, cx| {
                         if let Some(dialog) = &mut this.icon_picker {
                             dialog.selected = key.clone();
                         }
-                        cx.notify();
-                    }))
-                    .on_double_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(dialog) = &mut this.icon_picker {
-                            dialog.selected = double_key.clone();
+                        if event.click_count() == 2 {
+                            Self::confirm(this, cx);
+                        } else {
+                            cx.notify();
                         }
-                        Self::confirm(this, cx);
                     })),
             );
         }
