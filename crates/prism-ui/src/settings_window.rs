@@ -133,9 +133,14 @@ impl SettingsWindow {
                     ("ProxyAddr", &self.proxy_address),
                     ("ProxyPort", &self.proxy_port),
                     ("ProxyUser", &self.proxy_user),
-                    ("ProxyPass", &self.proxy_password),
                 ] {
                     cfg.set(key, value(field));
+                }
+                let password = self.proxy_password.read(cx).value();
+                if password.is_empty() {
+                    cfg.ini.remove("ProxyPass");
+                } else {
+                    cfg.set("ProxyPass", password.to_string());
                 }
                 return self
                     .app

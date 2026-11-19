@@ -198,8 +198,8 @@ fn escape_value(s: &str) -> String {
     // leading/trailing whitespace). Values with interior spaces stay bare,
     // like `name=26.3 Coobyk`.
     let needs_quotes = s.is_empty()
-        || s.starts_with(' ')
-        || s.ends_with(' ')
+        || s.starts_with(char::is_whitespace)
+        || s.ends_with(char::is_whitespace)
         || s.contains(',')
         || s.contains(';')
         || s.contains('#')

@@ -150,6 +150,18 @@ mod tests {
     }
 
     #[test]
+    fn proxy_password_preserves_surrounding_whitespace_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismlauncher.cfg");
+        let mut settings = Settings::default();
+        for password in [" fixture ", " ", "\u{a0}fixture\u{a0}", "\tfixture\t"] {
+            settings.set("ProxyPass", password);
+            settings.save(&path).unwrap();
+            assert_eq!(Settings::load(&path).get("ProxyPass"), Some(password));
+        }
+    }
+
+    #[test]
     fn api_keys_use_environment_first_without_overwriting_saved_values() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prismlauncher.cfg");
