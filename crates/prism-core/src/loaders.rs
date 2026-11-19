@@ -147,12 +147,20 @@ pub async fn neoforge_versions(client: &reqwest::Client, mc_version: &str) -> Re
     Ok(out.into_iter().rev().take(15).collect())
 }
 
-fn installer_url(loader: &Loader) -> Option<(String, String)> {
+fn forge_loader_version<'a>(version: &'a str, mc_version: &str) -> &'a str {
+    version.strip_prefix(&format!("{mc_version}-")).unwrap_or(version)
+}
+
+fn forge_profile_id(mc_version: &str, version: &str) -> String {
+    format!("{mc_version}-forge-{}", forge_loader_version(version, mc_version))
+}
+
+fn installer_url(loader: &Loader, mc_version: &str) -> Option<(String, String)> {
     match loader {
-        Loader::Forge { version } => Some((
-            format!("{FORGE_MAVEN}/{version}/forge-{version}-installer.jar"),
-            version.clone(),
-        )),
+        Loader::Forge { version } => {
+            let version = format!("{mc_version}-{}", forge_loader_version(version, mc_version));
+            Some((format!("{FORGE_MAVEN}/{version}/forge-{version}-installer.jar"), version))
+        }
         Loader::NeoForge { version } => Some((
             format!("{NEOFORGE_MAVEN}/{version}/neoforge-{version}-installer.jar"),
             version.clone(),
@@ -176,7 +184,7 @@ pub async fn ensure_forge_installed(
         return Ok(vd);
     }
 
-    let Some((url, full_version)) = installer_url(loader) else {
+    let Some((url, full_version)) = installer_url(loader, mc_version) else {
         return Err("not a forge loader".to_string());
     };
     let installer_path = mc_dir.join(format!("{full_version}-installer.jar"));
@@ -222,10 +230,10 @@ pub async fn ensure_forge_installed(
 pub fn read_forge_version_json(
     loader: &Loader,
     mc_dir: &std::path::Path,
-    _mc_version: &str,
+    mc_version: &str,
 ) -> Result<VersionData, String> {
     let dir_name = match loader {
-        Loader::Forge { version } => version.clone(),
+        Loader::Forge { version } => forge_profile_id(mc_version, version),
         Loader::NeoForge { version } => version.clone(),
         _ => return Err("not a forge loader".to_string()),
     };
@@ -239,4 +247,20 @@ pub fn read_forge_version_json(
     let text = std::fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     VersionData::from_json(&json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forge_installer_accepts_prism_and_maven_versions() {
+        for version in ["47.2.0", "1.20.1-47.2.0"] {
+            let loader = Loader::Forge { version: version.into() };
+            let (url, artifact_version) = installer_url(&loader, "1.20.1").unwrap();
+            assert_eq!(url, format!("{FORGE_MAVEN}/1.20.1-47.2.0/forge-1.20.1-47.2.0-installer.jar"));
+            assert_eq!(artifact_version, "1.20.1-47.2.0");
+            assert_eq!(forge_profile_id("1.20.1", version), "1.20.1-forge-47.2.0");
+        }
+    }
 }
