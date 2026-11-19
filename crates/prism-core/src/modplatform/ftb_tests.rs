@@ -234,12 +234,39 @@ async fn catalog_caches_empty_and_handles_errors() {
             body.as_bytes().to_vec(),
         )]);
         let api = FtbApi::with_endpoint(Arc::new(Downloader::new()), base);
-        assert_eq!(api.catalog().await.is_ok(), ok);
+        assert_eq!(api.catalog(false).await.is_ok(), ok);
         if ok {
-            assert!(api.catalog().await.unwrap().is_empty());
+            assert!(api.catalog(false).await.unwrap().is_empty());
         }
         thread.join().unwrap();
     }
+}
+
+#[tokio::test]
+async fn forced_catalog_refresh_fetches_again() {
+    let (base, thread) = server(vec![
+        (
+            "/modpack/all".into(),
+            "200 OK".into(),
+            br#"{"packs":[]}"#.to_vec(),
+        ),
+        (
+            "/modpack/all".into(),
+            "200 OK".into(),
+            br#"{"packs":[1]}"#.to_vec(),
+        ),
+        (
+            "/modpack/1".into(),
+            "200 OK".into(),
+            br#"{"id":1,"name":"Fresh","versions":[]}"#.to_vec(),
+        ),
+    ]);
+    let api = FtbApi::with_endpoint(Arc::new(Downloader::new()), base);
+    assert!(api.catalog(false).await.unwrap().is_empty());
+    assert!(api.catalog(false).await.unwrap().is_empty());
+    assert_eq!(api.catalog(true).await.unwrap()[0].name, "Fresh");
+    assert_eq!(api.catalog(false).await.unwrap()[0].name, "Fresh");
+    thread.join().unwrap();
 }
 
 #[tokio::test]

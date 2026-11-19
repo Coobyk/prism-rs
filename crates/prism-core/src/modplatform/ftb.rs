@@ -243,9 +243,9 @@ impl FtbApi {
         Ok(pack)
     }
 
-    pub async fn catalog(&self) -> Result<Vec<Pack>, ImportError> {
+    pub async fn catalog(&self, force: bool) -> Result<Vec<Pack>, ImportError> {
         let mut cached = self.catalog.lock().await;
-        if let Some(packs) = cached.as_ref() {
+        if let Some(packs) = cached.as_ref().filter(|_| !force) {
             return Ok(packs.clone());
         }
         let catalog: Catalog = self.get("/modpack/all").await?;

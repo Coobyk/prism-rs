@@ -157,11 +157,11 @@ impl FtbPage {
             busy: false,
             status: String::new(),
         };
-        page.load(cx);
+        page.load(false, cx);
         page
     }
 
-    fn load(&mut self, cx: &mut Context<Self>) {
+    fn load(&mut self, force: bool, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -187,7 +187,10 @@ impl FtbPage {
                         .map_err(|e| e.to_string())?;
                 Ok::<_, String>((Vec::new(), result))
             } else {
-                Ok((api.catalog().await.map_err(|e| e.to_string())?, Vec::new()))
+                Ok((
+                    api.catalog(force).await.map_err(|e| e.to_string())?,
+                    Vec::new(),
+                ))
             }
         });
         cx.spawn(async move |this, cx| {
@@ -273,7 +276,7 @@ impl FtbPage {
                             this.root.update(cx, |state, cx| {
                                 state.set_value(path.to_string_lossy().into_owned(), window, cx)
                             });
-                            this.load(cx);
+                            this.load(false, cx);
                         }
                     }
                     Ok(Ok(None)) => {}
@@ -416,7 +419,7 @@ impl Render for FtbPage {
                                 Button::new("ftb-scan")
                                     .label("Rescan")
                                     .disabled(self.busy)
-                                    .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                                    .on_click(cx.listener(|this, _, _, cx| this.load(false, cx))),
                             ),
                     ),
             );
@@ -455,7 +458,7 @@ impl Render for FtbPage {
                                 "Refresh"
                             })
                             .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.load(cx))),
+                            .on_click(cx.listener(|this, _, _, cx| this.load(true, cx))),
                     ),
             );
         }
