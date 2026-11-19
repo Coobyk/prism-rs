@@ -685,9 +685,7 @@ pub fn apply_launch(root: &Path, profile: &mut LaunchProfile) -> std::io::Result
             let base = profile.legacy_arguments.get_or_insert_with(String::new);
             for arg in args {
                 base.push(' ');
-                base.push('"');
-                base.push_str(&arg.replace('\\', "\\\\").replace('"', "\\\""));
-                base.push('"');
+                base.push_str(&arg);
             }
         }
     }
@@ -893,7 +891,10 @@ mod tests {
         let mut profile = LaunchProfile::default();
         apply_launch(&inst.root, &mut profile).unwrap();
         assert_eq!(profile.main_class, "example.Main");
-        assert!(profile.legacy_arguments.unwrap().contains("example.Tweak"));
+        assert_eq!(
+            profile.legacy_arguments.unwrap().split_whitespace().collect::<Vec<_>>(),
+            ["--tweakClass", "example.Tweak"]
+        );
     }
     #[tokio::test]
     async fn browser_error_and_client_filter() {
