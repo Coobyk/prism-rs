@@ -13,6 +13,7 @@ prism-core = { workspace = true }
 fs2 = "0.4"
 serde_json = { workspace = true }
 gpui-kit = { version = "0.8", features = ["assets"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
 tokio = { version = "1", features = ["io-util", "rt"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
