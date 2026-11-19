@@ -334,6 +334,9 @@ pub struct PreparedLaunch {
 
 impl PreparedLaunch {
     fn hook(&self, script: &str, label: &str, output: &mut impl FnMut(String)) -> std::io::Result<()> {
+        use std::io::{BufRead, BufReader, Read};
+        use std::process::Stdio;
+
         if script.trim().is_empty() {
             return Ok(());
         }
@@ -346,19 +349,28 @@ impl PreparedLaunch {
             command.args(["-c", script]);
             command
         };
-        let captured = command
+        // A background descendant may keep stdout and stderr open after the shell exits.
+        let stdout = tempfile::NamedTempFile::new()?;
+        let stderr = tempfile::NamedTempFile::new()?;
+        let status = command
             .current_dir(&self.instance_dir)
             .envs(self.env.iter().cloned())
-            .output()?;
-        for (stream, bytes) in [("stdout", &captured.stdout), ("stderr", &captured.stderr)] {
-            for line in String::from_utf8_lossy(bytes).lines() {
+            .stdin(Stdio::null())
+            .stdout(stdout.reopen()?)
+            .stderr(stderr.reopen()?)
+            .status()?;
+        for (stream, file) in [("stdout", stdout), ("stderr", stderr)] {
+            let reader = file.reopen()?;
+            let len = reader.metadata()?.len();
+            for line in BufReader::new(reader.take(len)).split(b'\n') {
+                let line = line?;
+                let line = String::from_utf8_lossy(line.strip_suffix(b"\r").unwrap_or(&line));
                 output(format!("{label} ({stream}): {line}"));
             }
         }
-        if !captured.status.success() {
+        if !status.success() {
             return Err(std::io::Error::other(format!(
-                "Hook command failed ({}): {script}",
-                captured.status
+                "Hook command failed ({status}): {script}"
             )));
         }
         Ok(())
@@ -1011,6 +1023,33 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn post_exit_hook_does_not_wait_for_background_output() {
+        use std::{sync::mpsc, time::Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let launch = PreparedLaunch {
+            command: Vec::new(),
+            working_dir: dir.path().into(),
+            env: Vec::new(),
+            instance_dir: dir.path().into(),
+            pre_launch_command: String::new(),
+            post_exit_command: "echo foreground; (while [ ! -f release ]; do sleep 0.05; done; echo background) &".into(),
+            command_error: None,
+        };
+        let (tx, rx) = mpsc::channel();
+        let runner = std::thread::spawn(move || {
+            let mut lines = Vec::new();
+            let result = launch.run_post_exit_with_output(|line| lines.push(line));
+            let _ = tx.send(result.map(|()| lines));
+        });
+        let result = rx.recv_timeout(Duration::from_secs(3));
+        std::fs::write(dir.path().join("release"), []).unwrap();
+        runner.join().unwrap();
+        assert_eq!(result.unwrap().unwrap(), ["Post-exit (stdout): foreground"]);
+    }
 
     #[test]
     fn server_addresses() {
