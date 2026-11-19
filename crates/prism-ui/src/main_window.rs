@@ -395,7 +395,14 @@ impl MainWindow {
                         }
                     })),
             )
-            .child(self.sidebar_button("copy", "Copy", enabled && !horizon))
+            .child(self.sidebar_button("copy", "Copy", enabled && !horizon).on_click(cx.listener(|this, _, window, cx| {
+                if let Some(instance) = this.app.read(cx).selected_instance().filter(|i| !i.is_horizon()).cloned() {
+                    let prompt = PromptState::new(crate::dialogs::PromptKind::Copy, instance.id, format!("{} (Copy)", instance.name), window, cx);
+                    prompt.copy_group.as_ref().unwrap().update(cx, |input, cx| input.set_value(instance.group.unwrap_or_default(), window, cx));
+                    this.prompt = Some(prompt);
+                    cx.notify();
+                }
+            })))
             .child(
                 self.sidebar_button(
                     "delete",

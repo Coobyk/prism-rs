@@ -22,6 +22,20 @@ fn main() {
     // Headless CLI: verify/test the launch pipeline without a GUI.
     // Usage: prism-rs prepare <mc-version> [--world <name> | --server <host[:port]>] | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("copy") {
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            if args.len() < 4 || args.len() > 5 { return Err("Usage: prism-rs copy <instance-id> <name> [group]".into()); }
+            let paths = prism_core::Paths::new();
+            let list = prism_core::InstanceList::load(&paths)?;
+            let source = list.get(&args[2]).ok_or("Instance not found")?;
+            let group = args.get(4).map(String::as_str).or(source.group.as_deref());
+            let copied = prism_core::copy::copy_instance(&paths, source, &args[3], group, &Default::default())?;
+            println!("Copied: {} ({})", copied.name, copied.id);
+            Ok(())
+        })();
+        if let Err(error) = result { eprintln!("Copy failed: {error}"); std::process::exit(1); }
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("export") {
         if args.len() != 4 {
             eprintln!("Usage: prism-rs export <instance-id> <out.zip|out.mrpack>");
