@@ -369,8 +369,13 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
                             if !outcome.missing_files.is_empty() {
                                 let count = outcome.missing_files.len();
                                 let report = prism_core::import::CURSEFORGE_MISSING_FILES_REPORT;
+                                if outcome.curseforge_api_key_missing {
+                                    message.push_str(" — CurseForge API key missing or invalid. ");
+                                } else {
+                                    message.push_str(" — ");
+                                }
                                 message.push_str(&format!(
-                                    " — {count} file(s) need manual download. See {report} in the instance folder."
+                                    "{count} file(s) need manual download. See {report} in the instance folder."
                                 ));
                             }
                             app.toast = Some((message, std::time::Instant::now()));

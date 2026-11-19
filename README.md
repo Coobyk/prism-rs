@@ -34,8 +34,10 @@ prism-rs import pack.mrpack     # import a Modrinth modpack
 prism-rs import pack.zip        # import a CurseForge modpack or MultiMC instance
 ```
 
-For CurseForge packs that list downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
+For automatic CurseForge downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
 your own CurseForge API key before running the CLI or opening the launcher.
+Without a key, the instance and overrides still import and every listed file
+is reported for manual download.
 Files unavailable for automatic download are listed in
 `curseforge-missing-files.txt` in the new instance folder and can be added
 manually to the appropriate Minecraft folder (`mods`, `resourcepacks`, or `shaderpacks`).

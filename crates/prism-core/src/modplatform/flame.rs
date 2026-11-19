@@ -82,6 +82,10 @@ impl FlameApi {
         }
     }
 
+    pub(crate) fn has_api_key(&self) -> bool {
+        self.api_key.is_some()
+    }
+
     fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, PlatformError> {
         let key = self.api_key.as_ref().ok_or_else(|| {
             PlatformError::Request(format!("set {API_KEY_ENV} to a valid CurseForge API key"))
