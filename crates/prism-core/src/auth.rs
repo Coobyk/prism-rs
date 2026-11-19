@@ -44,6 +44,18 @@ pub struct AccountList {
 }
 
 impl AccountList {
+    pub async fn session_for_account(
+        path: &Path,
+        account_id: &str,
+    ) -> Result<Option<crate::launch::AuthSession>, AuthError> {
+        let mut accounts = Self::load(path);
+        if !accounts.accounts.iter().any(|account| account.id == account_id) {
+            return Err(AuthError::AccountRemoved);
+        }
+        accounts.active = Some(account_id.to_owned());
+        accounts.session_for_launch(path).await
+    }
+
     pub async fn session_for_launch(
         &mut self,
         path: &Path,
@@ -216,6 +228,8 @@ fn default_interval() -> u64 {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    #[error("The selected account was removed before launch")]
+    AccountRemoved,
     #[error("Microsoft account refresh failed. Please sign in again before launching.")]
     SignInAgain,
     #[error("network: {0}")]
@@ -475,6 +489,22 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_launch_keeps_the_selected_account_if_the_active_account_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let mut accounts = AccountList::default();
+        let player_id = accounts.add_offline("Player").id.clone();
+        accounts.active = Some(accounts.add_offline("Other").id.clone());
+        accounts.save(&path).unwrap();
+        let session = AccountList::session_for_account(&path, &player_id).await.unwrap().unwrap();
+        assert_eq!(session.player_name, "Player");
+        assert_eq!(AccountList::load(&path).active_account().unwrap().player_name, "Other");
+        accounts.accounts.remove(0);
+        accounts.save(&path).unwrap();
+        assert!(matches!(AccountList::session_for_account(&path, &player_id).await, Err(AuthError::AccountRemoved)));
+    }
 
     #[test]
     fn account_edits_recover_from_invalid_json_and_keep_a_backup() {

@@ -224,6 +224,7 @@ impl App {
         let mut settings = LaunchSettings::for_instance(&inst, &self.paths);
         settings.quick_play = quick_play;
         let accounts_path = self.paths.accounts_file();
+        let account_id = AccountList::load(&accounts_path).active_account().map(|account| account.id.clone());
         let (accounts_tx, accounts_rx) = tokio::sync::oneshot::channel();
         cx.spawn(async move |this, cx| {
             if accounts_rx.await.is_ok() {
@@ -265,7 +266,10 @@ impl App {
                 }
             };
 
-            let session = match AccountList::load(&accounts_path).session_for_launch(&accounts_path).await {
+            let session = match match account_id {
+                Some(id) => AccountList::session_for_account(&accounts_path, &id).await,
+                None => Ok(None),
+            } {
                 Ok(session) => session,
                 Err(error) => {
                     log_lock(&log).push(format!("Fatal: {error}"));
