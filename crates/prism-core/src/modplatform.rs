@@ -58,6 +58,8 @@ pub struct LocalResource {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
+    #[error("CurseForge API key was rejected ({0})")]
+    CurseForgeApiKeyRejected(reqwest::StatusCode),
     #[error("network: {0}")]
     Net(#[from] crate::net::NetError),
     #[error("request failed: {0}")]

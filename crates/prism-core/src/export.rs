@@ -460,7 +460,7 @@ mod tests {
         }
         let output = f.0.root.join("test.zip");
         export_zip(&f.1, &output).unwrap();
-        let imported = crate::import::import_sync(&f.0, &output, None).unwrap();
+        let imported = crate::import::import_sync(&f.0, &output, None).unwrap().instance;
         assert_eq!(imported.name, f.1.name);
         assert!(imported.game_root().join("config/test.txt").exists());
         assert!(!imported.game_root().join("logs").exists());
@@ -478,14 +478,14 @@ mod tests {
         export_zip(&f.1, &output).unwrap();
         let mut zip = zip::ZipArchive::new(File::open(&output).unwrap()).unwrap();
         assert!(zip.by_name("minecraft/").unwrap().is_dir());
-        let imported = crate::import::import_sync(&f.0, &output, None).unwrap();
+        let imported = crate::import::import_sync(&f.0, &output, None).unwrap().instance;
         assert_eq!(imported.game_root(), imported.root.join("minecraft"));
         assert!(imported.game_root().is_dir());
 
         std::fs::create_dir_all(f.1.game_root().join("config/empty")).unwrap();
         let output = f.0.root.join("nested.zip");
         export_zip(&f.1, &output).unwrap();
-        let imported = crate::import::import_sync(&f.0, &output, None).unwrap();
+        let imported = crate::import::import_sync(&f.0, &output, None).unwrap().instance;
         assert!(imported.game_root().join("config/empty").is_dir());
     }
 

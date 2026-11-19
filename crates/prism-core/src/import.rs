@@ -3,10 +3,12 @@
 
 use crate::instance::{Instance, InstanceList};
 use crate::loaders::Loader;
+use crate::modplatform::flame::{FlameApi, FlameFile, FlameManifest, FlameManifestFile};
 use crate::modplatform::modrinth::MrpackIndex;
-use crate::net::{DownloadRequest, Downloader};
+use crate::modplatform::{PlatformError, ResourceType};
+use crate::net::{DownloadRequest, Downloader, NetError};
 use crate::Paths;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
@@ -25,6 +27,70 @@ pub enum ImportError {
     Platform(#[from] crate::modplatform::PlatformError),
     #[error("{0}")]
     Other(String),
+}
+
+#[derive(Debug)]
+pub struct ImportOutcome {
+    pub instance: Instance,
+    pub missing_files: Vec<MissingCurseForgeFile>,
+    pub curseforge_key_issue: Option<CurseForgeKeyIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CurseForgeKeyIssue {
+    Missing,
+    Rejected,
+}
+
+impl CurseForgeKeyIssue {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Missing => "CurseForge API key missing or invalid",
+            Self::Rejected => "CurseForge API key was rejected",
+        }
+    }
+}
+
+#[derive(Default)]
+struct CurseForgeFiles {
+    missing_files: Vec<MissingCurseForgeFile>,
+    key_issue: Option<CurseForgeKeyIssue>,
+}
+
+impl CurseForgeFiles {
+    fn manual(files: &[FlameManifestFile], issue: CurseForgeKeyIssue) -> Self {
+        Self {
+            missing_files: files
+                .iter()
+                .map(|entry| MissingCurseForgeFile {
+                    project_id: entry.projectID,
+                    file_id: entry.fileID,
+                    filename: None,
+                })
+                .collect(),
+            key_issue: Some(issue),
+        }
+    }
+}
+
+pub const CURSEFORGE_MISSING_FILES_REPORT: &str = "curseforge-missing-files.txt";
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct MissingCurseForgeFile {
+    pub project_id: i64,
+    pub file_id: i64,
+    pub filename: Option<String>,
+}
+
+impl std::fmt::Display for MissingCurseForgeFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let project = self.project_id;
+        let file = self.file_id;
+        match &self.filename {
+            Some(filename) => write!(f, "{filename} (CurseForge project {project}, file {file})"),
+            None => write!(f, "CurseForge project {project}, file {file}"),
+        }
+    }
 }
 
 /// Detect the pack format of an (extracted) directory.
@@ -69,12 +135,70 @@ pub fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), ImportError> {
 }
 
 /// Import an instance from a `.mrpack`/`.zip` file or an extracted directory.
-/// Returns the created instance.
+/// Returns the created instance and any CurseForge files to download manually.
 pub fn import_sync(
     paths: &Paths,
     source: &Path,
     downloader: Option<&Arc<Downloader>>,
-) -> Result<Instance, ImportError> {
+) -> Result<ImportOutcome, ImportError> {
+    import_with_curseforge_installer(paths, source, downloader, |files, game_root| {
+        let api = FlameApi::new();
+        install_curseforge_manifest_files(
+            files,
+            game_root,
+            downloader,
+            api.has_api_key().then_some(&api),
+        )
+    })
+}
+
+fn install_curseforge_manifest_files(
+    files: &[FlameManifestFile],
+    game_root: &Path,
+    downloader: Option<&Arc<Downloader>>,
+    api: Option<&FlameApi>,
+) -> Result<CurseForgeFiles, ImportError> {
+    if files.is_empty() {
+        return Ok(CurseForgeFiles::default());
+    }
+    let Some(api) = api else {
+        return Ok(CurseForgeFiles::manual(files, CurseForgeKeyIssue::Missing));
+    };
+    let downloader = downloader.ok_or_else(|| {
+        ImportError::Other("network downloader required for modpack files".to_string())
+    })?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(install_curseforge_files(
+        files, game_root, downloader, api, |project, file| async move {
+            let file = api.file(project, file).await?;
+            let resource_type = if has_curseforge_download(&file) {
+                api.project_resource_type(project).await?
+            } else {
+                ResourceType::Mod
+            };
+            Ok((file, resource_type))
+        },
+    ));
+    match result {
+        Ok(missing_files) => Ok(CurseForgeFiles { missing_files, key_issue: None }),
+        Err(ImportError::Platform(PlatformError::CurseForgeApiKeyRejected(_))) => {
+            Ok(CurseForgeFiles::manual(files, CurseForgeKeyIssue::Rejected))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn import_with_curseforge_installer(
+    paths: &Paths,
+    source: &Path,
+    downloader: Option<&Arc<Downloader>>,
+    install_files: impl FnOnce(
+        &[FlameManifestFile],
+        &Path,
+    ) -> Result<CurseForgeFiles, ImportError>,
+) -> Result<ImportOutcome, ImportError> {
     // Extract zips to a temp dir first.
     let temp;
     let dir: &Path = if source.is_dir() {
@@ -88,14 +212,151 @@ pub fn import_sync(
         &temp
     };
 
-    match detect_format(dir) {
+    let instance = match detect_format(dir) {
         "modrinth" => import_modrinth(paths, dir, downloader),
         "multimc" => import_multimc(paths, dir),
-        "curseforge" => Err(ImportError::Other(
-            "CurseForge packs are not yet supported; use a Modrinth .mrpack".to_string(),
-        )),
+        "curseforge" => return import_curseforge(paths, dir, install_files),
         _ => Err(ImportError::UnknownFormat),
+    }?;
+    Ok(ImportOutcome {
+        instance,
+        missing_files: Vec::new(),
+        curseforge_key_issue: None,
+    })
+}
+
+fn import_curseforge(
+    paths: &Paths,
+    dir: &Path,
+    install_files: impl FnOnce(
+        &[FlameManifestFile],
+        &Path,
+    ) -> Result<CurseForgeFiles, ImportError>,
+) -> Result<ImportOutcome, ImportError> {
+    let manifest = FlameManifest::from_dir(dir)?;
+    if manifest.manifestType != "minecraftModpack" {
+        return Err(ImportError::UnknownFormat);
     }
+    let mc_version = manifest
+        .minecraft_version()
+        .filter(|version| !version.is_empty())
+        .ok_or_else(|| {
+            ImportError::Other("CurseForge manifest has no Minecraft version".to_string())
+        })?;
+    let loader = match manifest.loader_version() {
+        Some((kind, version)) => match kind.as_str() {
+            "forge" => Loader::Forge { version },
+            "fabric" => Loader::Fabric { version },
+            "neoforge" => Loader::NeoForge { version },
+            "quilt" => Loader::Quilt { version },
+            _ => {
+                return Err(ImportError::Other(format!(
+                    "unsupported CurseForge mod loader: {kind}"
+                )));
+            }
+        },
+        None if manifest.minecraft["modLoaders"]
+            .as_array()
+            .is_some_and(|loaders| !loaders.is_empty()) =>
+        {
+            return Err(ImportError::Other("invalid CurseForge mod loader".to_string()));
+        }
+        None => Loader::None,
+    };
+    let overrides = curseforge_overrides(dir, &manifest.overrides)?;
+    let name = if manifest.name.trim().is_empty() {
+        "Imported Modpack"
+    } else {
+        &manifest.name
+    };
+    let instance = InstanceList::create(paths, name, "default", &mc_version)?;
+    let result = (|| {
+        crate::instance::set_loader(&instance, &loader)?;
+        let game_root = instance.game_root();
+        let files = install_files(&manifest.files, &game_root)?;
+        if let Some(overrides) = overrides {
+            copy_dir_recursive(&overrides, &game_root)?;
+        }
+        if !files.missing_files.is_empty() {
+            let report: String = files.missing_files.iter().map(|file| format!("{file}\n")).collect();
+            std::fs::write(instance.root.join(CURSEFORGE_MISSING_FILES_REPORT), report)?;
+        }
+        Ok(files)
+    })();
+    match result {
+        Ok(files) => Ok(ImportOutcome {
+            instance,
+            missing_files: files.missing_files,
+            curseforge_key_issue: files.key_issue,
+        }),
+        Err(error) => {
+            let _ = std::fs::remove_dir_all(&instance.root);
+            Err(error)
+        }
+    }
+}
+
+fn curseforge_overrides(dir: &Path, overrides: &str) -> Result<Option<PathBuf>, ImportError> {
+    if overrides.is_empty() {
+        return Ok(None);
+    }
+    let invalid = || ImportError::Other(format!("invalid CurseForge overrides path: {overrides}"));
+    let path = Path::new(overrides);
+    if overrides.contains(['\\', ':'])
+        || !path.components().all(|c| matches!(c, Component::Normal(_)))
+    {
+        return Err(invalid());
+    }
+    let root = dir.canonicalize()?;
+    let path = match dir.join(path).canonicalize() {
+        Ok(path) => path,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    if path == root || !path.starts_with(&root) || !path.is_dir() {
+        return Err(invalid());
+    }
+    Ok(Some(path))
+}
+
+fn has_curseforge_download(file: &FlameFile) -> bool {
+    file.downloadUrl.as_deref().is_some_and(|url| !url.is_empty())
+}
+
+async fn install_curseforge_files<F>(
+    files: &[FlameManifestFile],
+    game_root: &Path,
+    downloader: &Arc<Downloader>,
+    api: &FlameApi,
+    resolve: impl Fn(i64, i64) -> F,
+) -> Result<Vec<MissingCurseForgeFile>, ImportError>
+where
+    F: std::future::Future<Output = Result<(FlameFile, ResourceType), PlatformError>>,
+{
+    let mut resolved = Vec::with_capacity(files.len());
+    for entry in files {
+        resolved.push(resolve(entry.projectID, entry.fileID).await?);
+    }
+
+    let mut missing = Vec::new();
+    for (entry, (file, resource_type)) in files.iter().zip(resolved) {
+        if has_curseforge_download(&file) {
+            match api
+                .install_file(downloader, game_root, &file, resource_type)
+                .await
+            {
+                Ok(_) => continue,
+                Err(PlatformError::Net(NetError::Status { status: 403, .. })) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        missing.push(MissingCurseForgeFile {
+            project_id: entry.projectID,
+            file_id: entry.fileID,
+            filename: (!file.fileName.is_empty()).then_some(file.fileName),
+        });
+    }
+    Ok(missing)
 }
 
 fn import_modrinth(
@@ -226,6 +487,7 @@ pub fn download_requests_from_urls(urls: Vec<(String, PathBuf, Option<String>)>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn detects_formats() {
@@ -242,5 +504,182 @@ mod tests {
         std::fs::write(dir.join("instance.cfg"), "name=x").unwrap();
         assert_eq!(detect_format(&dir), "multimc");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn imports_curseforge_zip_with_overrides_and_missing_file_report() {
+        let paths = Paths {
+            root: std::env::temp_dir().join(format!("prism-import-{}", uuid::Uuid::new_v4())),
+        };
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(paths.root.clone());
+        paths.ensure().unwrap();
+        let source = paths.root.join("pack.zip");
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("manifest.json", options).unwrap();
+        zip.write_all(br#"{
+            "manifestType": "minecraftModpack",
+            "manifestVersion": 1,
+            "name": "Test CurseForge",
+            "minecraft": {"version": "1.20.1", "modLoaders": [{"id": "forge-47.2.0", "primary": true}]},
+            "overrides": "custom",
+            "files": [{"projectID": 42, "fileID": 73, "required": true}]
+        }"#).unwrap();
+        zip.start_file("custom/config/test.toml", options).unwrap();
+        zip.write_all(b"enabled = true").unwrap();
+        zip.finish().unwrap();
+
+        let outcome = import_with_curseforge_installer(&paths, &source, None, |files, game_root| {
+            let downloader = Arc::new(Downloader::new());
+            let api = FlameApi::new();
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            let missing_files = runtime.block_on(install_curseforge_files(files, game_root, &downloader, &api, |project, file| {
+                assert_eq!((project, file), (42, 73));
+                std::future::ready(Ok((serde_json::from_str::<FlameFile>(
+                    r#"{"id":73,"fileName":"blocked.jar","downloadUrl":null}"#,
+                ).unwrap(), ResourceType::Mod)))
+            }))?;
+            Ok(CurseForgeFiles { missing_files, key_issue: None })
+        }).unwrap();
+        let instance = outcome.instance;
+        assert_eq!(Instance::load(&instance.root).unwrap().name, "Test CurseForge");
+        assert_eq!(crate::instance::loader_of(&instance), Loader::Forge { version: "47.2.0".into() });
+        let pack: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(instance.root.join("mmc-pack.json")).unwrap(),
+        ).unwrap();
+        assert_eq!(pack["components"][0]["version"], "1.20.1");
+        assert_eq!(std::fs::read_to_string(instance.game_root().join("config/test.toml")).unwrap(), "enabled = true");
+        assert_eq!(outcome.missing_files, vec![MissingCurseForgeFile {
+            project_id: 42,
+            file_id: 73,
+            filename: Some("blocked.jar".into()),
+        }]);
+        assert_eq!(
+            std::fs::read_to_string(instance.root.join(CURSEFORGE_MISSING_FILES_REPORT)).unwrap(),
+            "blocked.jar (CurseForge project 42, file 73)\n",
+        );
+    }
+
+    fn offline_curseforge_fixture() -> (Paths, PathBuf) {
+        let paths = Paths {
+            root: std::env::temp_dir().join(format!("prism-import-{}", uuid::Uuid::new_v4())),
+        };
+        let source = paths.root.join("pack");
+        let overrides = source.join("overrides/config");
+        std::fs::create_dir_all(&overrides).unwrap();
+        std::fs::write(overrides.join("test.toml"), "enabled = true").unwrap();
+        std::fs::write(source.join("manifest.json"), br#"{
+            "manifestType":"minecraftModpack",
+            "minecraft":{"version":"1.20.1"},
+            "name":"Offline CurseForge",
+            "files":[{"projectID":42,"fileID":73,"required":true},{"projectID":43,"fileID":74,"required":false}]
+        }"#).unwrap();
+        (paths, source)
+    }
+
+    #[test]
+    fn imports_overrides_and_reports_all_files_without_a_curseforge_api_key() {
+        let (paths, source) = offline_curseforge_fixture();
+        let outcome = import_with_curseforge_installer(&paths, &source, None, |files, game_root| {
+            install_curseforge_manifest_files(files, game_root, None, None)
+        }).unwrap();
+        assert_eq!(outcome.curseforge_key_issue, Some(CurseForgeKeyIssue::Missing));
+        assert_eq!(outcome.missing_files.len(), 2);
+        assert!(outcome.instance.game_root().join("config/test.toml").is_file());
+        assert_eq!(
+            std::fs::read_to_string(outcome.instance.root.join(CURSEFORGE_MISSING_FILES_REPORT)).unwrap(),
+            "CurseForge project 42, file 73\nCurseForge project 43, file 74\n"
+        );
+        std::fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    fn mock_curseforge(status: &'static str) -> (FlameApi, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        let socket = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = FlameApi::with_test_endpoint(format!("http://{}", socket.local_addr().unwrap()));
+        let server = std::thread::spawn(move || {
+            for (expected_path, status, body) in [
+                (
+                    "/mods/42/files/73",
+                    "200 OK",
+                    r#"{"data":{"id":73,"fileName":"blocked.jar","downloadUrl":null}}"#,
+                ),
+                ("/mods/43/files/74", status, "{}"),
+            ] {
+                let (mut connection, _) = socket.accept().unwrap();
+                let mut reader = BufReader::new(&mut connection);
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                assert!(line.starts_with(&format!("GET {expected_path} ")));
+                let mut has_key = false;
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    has_key |= line.eq_ignore_ascii_case("x-api-key: mock-key\r\n");
+                }
+                assert!(has_key);
+                write!(
+                    connection,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                ).unwrap();
+            }
+        });
+        (api, server)
+    }
+
+    #[test]
+    fn imports_overrides_and_reports_all_files_when_curseforge_rejects_the_key() {
+        for status in ["401 Unauthorized", "403 Forbidden"] {
+            let (paths, source) = offline_curseforge_fixture();
+            let (api, server) = mock_curseforge(status);
+            let downloader = Arc::new(Downloader::new());
+            let outcome = import_with_curseforge_installer(
+                &paths,
+                &source,
+                Some(&downloader),
+                |files, game_root| {
+                    install_curseforge_manifest_files(files, game_root, Some(&downloader), Some(&api))
+                },
+            );
+            server.join().unwrap();
+            let outcome = outcome.unwrap();
+            assert_eq!(outcome.curseforge_key_issue, Some(CurseForgeKeyIssue::Rejected));
+            assert_eq!(outcome.missing_files.len(), 2);
+            assert!(outcome.instance.game_root().join("config/test.toml").is_file());
+            assert_eq!(
+                std::fs::read_to_string(outcome.instance.root.join(CURSEFORGE_MISSING_FILES_REPORT)).unwrap(),
+                "CurseForge project 42, file 73\nCurseForge project 43, file 74\n"
+            );
+            std::fs::remove_dir_all(&paths.root).unwrap();
+        }
+    }
+
+    #[test]
+    fn curseforge_server_errors_fail_without_leaving_an_instance() {
+        let (paths, source) = offline_curseforge_fixture();
+        let (api, server) = mock_curseforge("503 Service Unavailable");
+        let downloader = Arc::new(Downloader::new());
+        let result = import_with_curseforge_installer(
+            &paths,
+            &source,
+            Some(&downloader),
+            |files, game_root| {
+                install_curseforge_manifest_files(files, game_root, Some(&downloader), Some(&api))
+            },
+        );
+        server.join().unwrap();
+        assert!(matches!(result, Err(ImportError::Platform(PlatformError::Request(message)))
+            if message.contains("503 Service Unavailable")));
+        assert_eq!(paths.instances_dir().read_dir().unwrap().count(), 0);
+        std::fs::remove_dir_all(&paths.root).unwrap();
     }
 }

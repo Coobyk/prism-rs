@@ -150,12 +150,22 @@ fn headless_import(path: &str) -> i32 {
     paths.ensure().expect("failed to create data dirs");
     let downloader = std::sync::Arc::new(prism_core::net::Downloader::new());
     match prism_core::import::import_sync(&paths, std::path::Path::new(path), Some(&downloader)) {
-        Ok(inst) => {
+        Ok(outcome) => {
+            let inst = outcome.instance;
             println!("Imported: {} ({})", inst.name, inst.id);
             println!(
                 "loader: {:?}",
                 prism_core::instance::loader_of(&inst)
             );
+            if let Some(issue) = outcome.curseforge_key_issue {
+                eprintln!(
+                    "{}: set a valid PRISM_RS_CURSEFORGE_API_KEY for automatic downloads.",
+                    issue.message()
+                );
+            }
+            for file in outcome.missing_files {
+                eprintln!("Manual download needed: {file}");
+            }
             0
         }
         Err(e) => {
