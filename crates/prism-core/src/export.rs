@@ -4,7 +4,7 @@ use crate::modplatform::modrinth::{ModVersion, ModrinthApi, MrpackFile, MrpackIn
 use crate::Instance;
 use sha1::{Digest, Sha1};
 use sha2::Sha512;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,21 @@ pub struct MrpackMetadata {
 }
 
 fn collect(root: &Path, game: &Path, out: &mut Vec<PathBuf>) -> Result<(), ExportError> {
+    collect_directory(root, game, out, &mut BTreeSet::new())?;
+    out.sort();
+    Ok(())
+}
+
+fn collect_directory(
+    root: &Path,
+    game: &Path,
+    out: &mut Vec<PathBuf>,
+    ancestors: &mut BTreeSet<PathBuf>,
+) -> Result<(), ExportError> {
+    let canonical = root.canonicalize()?;
+    if !ancestors.insert(canonical.clone()) {
+        return Ok(());
+    }
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
@@ -45,14 +60,14 @@ fn collect(root: &Path, game: &Path, out: &mut Vec<PathBuf>) -> Result<(), Expor
         {
             continue;
         }
-        let kind = entry.file_type()?;
+        let kind = std::fs::metadata(&path)?;
         if kind.is_dir() {
-            collect(&path, game, out)?;
+            collect_directory(&path, game, out, ancestors)?;
         } else if kind.is_file() {
             out.push(path);
         }
     }
-    out.sort();
+    ancestors.remove(&canonical);
     Ok(())
 }
 
@@ -272,6 +287,45 @@ mod tests {
             version: "1.0".into(),
             summary: "Example".into(),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linked_game_and_resources_are_exported_without_cycles() {
+        use std::os::unix::fs::symlink;
+
+        let f = Fixture::new();
+        let game = f.1.root.join("minecraft");
+        let shared = f.0.root.join("shared-game");
+        std::fs::rename(f.1.game_root(), &shared).unwrap();
+        symlink(&shared, &game).unwrap();
+        let config = f.0.root.join("shared-config");
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(config.join("settings.txt"), b"config").unwrap();
+        symlink(&config, game.join("config")).unwrap();
+        let jar = f.0.root.join("shared.jar");
+        std::fs::write(&jar, b"mod").unwrap();
+        symlink(&jar, game.join("mods/linked.jar")).unwrap();
+        symlink(&game, game.join("cycle")).unwrap();
+
+        let output = f.0.root.join("linked.zip");
+        export_zip(&f.1, &output).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        assert!(zip.by_name("minecraft/config/settings.txt").is_ok());
+        assert!(zip.by_name("minecraft/mods/linked.jar").is_ok());
+        assert!(!zip.file_names().any(|name| name.contains("cycle/")));
+
+        let output = f.0.root.join("linked.mrpack");
+        export_mrpack_with_lookup(&f.1, &output, metadata(), |hashes| async move {
+            assert_eq!(hashes, vec![hex::encode(Sha1::digest(b"mod"))]);
+            Ok(BTreeMap::new())
+        })
+        .await
+        .unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        assert!(zip.by_name("overrides/config/settings.txt").is_ok());
+        assert!(zip.by_name("overrides/mods/linked.jar").is_ok());
+        assert!(!zip.file_names().any(|name| name.contains("cycle/")));
     }
 
     #[cfg(unix)]
