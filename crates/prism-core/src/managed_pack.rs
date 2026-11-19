@@ -285,6 +285,10 @@ impl Snapshot {
         let mut kept_saves = Vec::new();
         for (path, new) in &stage.pack.files {
             let target = self.game.join(path);
+            if existing_world(&self.game, path)? {
+                kept_saves.push(path.clone());
+                continue;
+            }
             if existing_file(&self.game, &target)? {
                 if path.starts_with("saves") {
                     kept_saves.push(path.clone());
@@ -645,6 +649,32 @@ mod tests {
     }
 
     #[test]
+    fn does_not_add_pack_files_to_an_existing_world() {
+        let (_dir, instance, pack) = fixture();
+        let game = instance.game_root();
+        write(&game, "saves/World/level.dat", b"original");
+        let mut stage = next(pack);
+        for path in ["saves/World/datapacks/new.zip", "saves/New World/level.dat"] {
+            write(&stage.payload(), path, b"next");
+            stage.pack.files.insert(path.into(), OwnedFile::Override);
+        }
+
+        let updated = Snapshot::load(instance).unwrap().apply(stage).unwrap();
+        assert_eq!(
+            fs::read(game.join("saves/World/level.dat")).unwrap(),
+            b"original"
+        );
+        assert!(!game.join("saves/World/datapacks").exists());
+        assert!(!updated
+            .files
+            .contains_key(Path::new("saves/World/datapacks/new.zip")));
+        assert_eq!(
+            fs::read(game.join("saves/New World/level.dat")).unwrap(),
+            b"next"
+        );
+    }
+
+    #[test]
     fn keeps_an_untracked_file_with_a_disabled_pack_mods_name() {
         let (_dir, instance, pack) = fixture();
         let game = instance.game_root();
@@ -775,6 +805,28 @@ fn existing_file(root: &Path, path: &Path) -> io::Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error),
     }
+}
+
+fn existing_world(game: &Path, relative: &Path) -> io::Result<bool> {
+    let Ok(relative) = relative.strip_prefix("saves") else {
+        return Ok(false);
+    };
+    let mut parts = relative.components();
+    let (Some(world), Some(_)) = (parts.next(), parts.next()) else {
+        return Ok(false);
+    };
+    let saves = game.join("saves");
+    // Do not inspect or write into an external saves directory.
+    for folder in [&saves, &saves.join(world.as_os_str())] {
+        match fs::symlink_metadata(folder) {
+            Ok(metadata) if metadata.is_symlink() => return Ok(true),
+            Ok(metadata) if !metadata.is_dir() => return Ok(false),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(true)
 }
 
 fn apply_changes(
