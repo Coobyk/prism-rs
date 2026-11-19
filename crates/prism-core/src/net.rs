@@ -136,7 +136,13 @@ impl Downloader {
         let dest = req.dest.clone();
         tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             use std::io::Write;
-            let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+            let mut builder = tempfile::Builder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                builder.permissions(std::fs::Permissions::from_mode(0o666));
+            }
+            let mut tmp = builder.tempfile_in(parent)?;
             tmp.write_all(&bytes)?;
             tmp.persist(dest).map_err(|error| error.error)?;
             Ok(())
@@ -302,5 +308,15 @@ mod tests {
         assert_eq!(first.unwrap(), dest);
         assert_eq!(second.unwrap(), dest);
         Downloader::verify_sha1(&dest, &checksum).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let reference = dir.path().join("ordinary-file");
+            std::fs::write(&reference, []).unwrap();
+            assert_eq!(
+                dest.metadata().unwrap().permissions().mode(),
+                reference.metadata().unwrap().permissions().mode()
+            );
+        }
     }
 }
