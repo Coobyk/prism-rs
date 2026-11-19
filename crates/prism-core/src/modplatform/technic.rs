@@ -352,18 +352,42 @@ fn property<'a>(text: &'a str, key: &str) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
+fn can_use_embedded_forge(
+    jar: &mut zip::ZipArchive<fs::File>,
+    minecraft: &str,
+) -> Result<bool, ImportError> {
+    let legacy = minecraft
+        .strip_prefix("1.")
+        .and_then(|version| version.split('.').next())
+        .and_then(|minor| minor.parse::<u32>().ok())
+        .is_some_and(|minor| minor < 13);
+    if !legacy {
+        return Ok(false);
+    }
+    let Some(text) = jar_text(jar, "install_profile.json")? else {
+        return Ok(true);
+    };
+    let installer: serde_json::Value = serde_json::from_str(&text)?;
+    Ok(match installer.get("processors") {
+        None => true,
+        Some(processors) => processors.as_array().is_some_and(Vec::is_empty),
+    })
+}
+
 fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
     let jar = game.join("bin/modpack.jar");
     let external = game.join("bin/version.json");
     let mut fml = String::new();
     let mut jar_mod = false;
     let mut forge_patch = None;
+    let mut modpack_jar = None;
     let version = if jar.is_file() {
         let mut zip = zip::ZipArchive::new(fs::File::open(&jar)?)
             .map_err(|error| ImportError::Zip(error.to_string()))?;
         let version = jar_text(&mut zip, "version.json")?;
         if version.is_some() {
             fml = jar_text(&mut zip, "fmlversion.properties")?.unwrap_or_default();
+            modpack_jar = Some(zip);
         } else {
             jar_mod = true;
         }
@@ -381,14 +405,17 @@ fn recipe(game: &Path, fallback: &str) -> Result<Recipe, ImportError> {
             &json.inherits_from
         };
         let loader = loader_from_version(&json, minecraft);
-        if jar.is_file()
-            && matches!(loader, Loader::Forge { .. })
+        if matches!(loader, Loader::Forge { .. })
             && json
                 .libraries
                 .iter()
                 .any(|library| bundled_forge(&library.name))
         {
-            forge_patch = Some(version);
+            if let Some(zip) = &mut modpack_jar {
+                if can_use_embedded_forge(zip, minecraft)? {
+                    forge_patch = Some(version);
+                }
+            }
         }
         (checked_minecraft(minecraft)?, loader)
     } else {
@@ -479,8 +506,7 @@ fn forge_patch(
             .map(|url| url.trim_end_matches('/'))
         {
             Some(
-                "http://files.minecraftforge.net/maven"
-                | "https://files.minecraftforge.net/maven",
+                "http://files.minecraftforge.net/maven" | "https://files.minecraftforge.net/maven",
             ) => "https://maven.minecraftforge.net",
             Some(url) => url,
             None => "https://libraries.minecraft.net",
@@ -523,15 +549,21 @@ pub fn apply_forge_patch(
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let Some(patch) = forge_patch(&patch, &profile.minecraft_version, loader)? else {
-        return Ok(false);
-    };
-    let game = game.canonicalize()?;
-    let bundled_root = instance.canonicalize()?.join(BUNDLED_LIBRARIES);
     let jar = game.join("bin/modpack.jar");
     if !jar.is_file() {
         return Err(problem("The Technic Forge profile needs bin/modpack.jar."));
     }
+    let mut zip = zip::ZipArchive::new(fs::File::open(&jar)?)
+        .map_err(|error| ImportError::Zip(error.to_string()))?;
+    if !can_use_embedded_forge(&mut zip, &profile.minecraft_version)? {
+        return Ok(false);
+    }
+    let Some(patch) = forge_patch(&patch, &profile.minecraft_version, loader)? else {
+        return Ok(false);
+    };
+    let game = game.canonicalize()?;
+    let jar = game.join("bin/modpack.jar");
+    let bundled_root = instance.canonicalize()?.join(BUNDLED_LIBRARIES);
     let library_root = game.join("libraries");
     let (libraries, natives) = (profile.libraries.len(), profile.natives.len());
     profile.apply_loader(&patch);
@@ -782,6 +814,56 @@ mod tests {
         )
         .unwrap());
         assert!(checked_maven_path("org.example:../outside:1").is_err());
+    }
+
+    #[test]
+    fn forge_versions_that_need_processing_keep_the_installer_path() {
+        for (minecraft, version, installer) in [
+            ("1.16.5", "36.2.42", r#"{"processors":[]}"#),
+            ("1.12.2", "14.23.5.2864", r#"{"processors":[{}]}"#),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let game = dir.path().join("game");
+            let patch = serde_json::json!({
+                "inheritsFrom": minecraft,
+                "mainClass": "example.Main",
+                "libraries": [{"name": format!("net.minecraftforge:forge:{minecraft}-{version}")}],
+            })
+            .to_string();
+            fixture(
+                &game,
+                &[
+                    ("version.json", &patch),
+                    ("install_profile.json", installer),
+                ],
+            );
+            let paths = Paths {
+                root: dir.path().join("launcher"),
+            };
+            let installed = install_staged(&paths, "Installer Forge", &game, minecraft).unwrap();
+            let loader = crate::instance::loader_of(&installed);
+            assert_eq!(
+                loader,
+                Loader::Forge {
+                    version: version.into()
+                }
+            );
+            let patch_path = installed.root.join(FORGE_PATCH);
+            assert!(!patch_path.exists());
+            fs::write(patch_path, patch).unwrap();
+            let mut profile = LaunchProfile {
+                minecraft_version: minecraft.into(),
+                ..Default::default()
+            };
+            assert!(!apply_forge_patch(
+                &mut profile,
+                &installed.root,
+                &installed.game_root(),
+                &loader
+            )
+            .unwrap());
+            assert!(profile.libraries.is_empty());
+        }
     }
 
     #[test]
