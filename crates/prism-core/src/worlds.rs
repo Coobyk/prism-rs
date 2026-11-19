@@ -51,7 +51,8 @@ impl From<&fs::Metadata> for FileStamp {
 pub struct World {
     game_root: PathBuf,
     name: String,
-    folder_id: FileIdentity,
+    saves: Directory,
+    target: WorldTarget,
     level_stamp: FileStamp,
 }
 
@@ -86,16 +87,54 @@ pub(crate) fn require_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-fn stamps(world: &Path) -> io::Result<(FileIdentity, FileStamp)> {
-    let folder = fs::symlink_metadata(world)?;
-    if !folder.is_dir() {
-        return Err(io::Error::other("Not a regular world directory"));
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Directory {
+    path: PathBuf,
+    id: FileIdentity,
+}
+
+impl Directory {
+    fn resolve(path: &Path) -> io::Result<Self> {
+        let path = fs::canonicalize(path)?;
+        let meta = fs::symlink_metadata(&path)?;
+        if !meta.is_dir() {
+            return Err(io::Error::other("Not a directory"));
+        }
+        Ok(Self {
+            path,
+            id: (&meta).into(),
+        })
     }
-    let metadata = fs::symlink_metadata(world.join(LEVEL_DAT))?;
-    if !metadata.is_file() {
-        return Err(io::Error::other("Not a Java world (no regular level.dat)"));
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WorldTarget {
+    folder: Directory,
+    link: Option<FileStamp>,
+}
+
+impl WorldTarget {
+    fn read(entry: PathBuf) -> io::Result<(Self, FileStamp)> {
+        let meta = fs::symlink_metadata(&entry)?;
+        let (folder, link) = if meta.file_type().is_symlink() {
+            (Directory::resolve(&entry)?, Some((&meta).into()))
+        } else if meta.is_dir() {
+            (
+                Directory {
+                    path: entry,
+                    id: (&meta).into(),
+                },
+                None,
+            )
+        } else {
+            return Err(io::Error::other("Not a world directory"));
+        };
+        let level = fs::symlink_metadata(folder.path.join(LEVEL_DAT))?;
+        if !level.is_file() {
+            return Err(io::Error::other("Not a Java world (no regular level.dat)"));
+        }
+        Ok((Self { folder, link }, (&level).into()))
     }
-    Ok(((&folder).into(), (&metadata).into()))
 }
 
 pub(crate) fn nbt_child<'a>(root: &'a Tag, name: &str) -> Option<&'a Tag> {
@@ -123,42 +162,63 @@ pub(crate) fn read_level(path: &Path) -> io::Result<(String, Tag)> {
 
 impl World {
     pub fn open(game_root: &Path, name: &str) -> io::Result<Self> {
+        Self::open_in(
+            game_root,
+            name,
+            &Directory::resolve(&game_root.join("saves"))?,
+        )
+    }
+
+    pub fn open_regular(game_root: &Path, name: &str) -> io::Result<Self> {
+        let world = Self::open(game_root, name)?;
+        world.regular_world_path()?;
+        Ok(world)
+    }
+
+    fn open_in(game_root: &Path, name: &str, saves: &Directory) -> io::Result<Self> {
         if !plain_name(name) {
             return Err(io::Error::other("Invalid world name"));
         }
-        let saves = game_root.join("saves");
-        require_directory(&saves)?;
-        let (folder_id, level_stamp) = stamps(&saves.join(name))?;
+        let (target, level_stamp) = WorldTarget::read(saves.path.join(name))?;
         Ok(Self {
             game_root: game_root.into(),
             name: name.into(),
-            folder_id,
+            saves: saves.clone(),
+            target,
             level_stamp,
         })
     }
 
     pub fn list(game_root: &Path) -> io::Result<Vec<Self>> {
+        Self::list_with_links(game_root, true)
+    }
+
+    pub fn list_regular(game_root: &Path) -> io::Result<Vec<Self>> {
+        Self::list_with_links(game_root, false)
+    }
+
+    fn list_with_links(game_root: &Path, follow_links: bool) -> io::Result<Vec<Self>> {
         let saves = game_root.join("saves");
-        match require_directory(&saves) {
+        let directory = (|| {
+            if !follow_links {
+                require_directory(&saves)?;
+            }
+            Directory::resolve(&saves)
+        })();
+        let saves = match directory {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             result => result?,
-        }
+        };
         let mut worlds = Vec::new();
-        for entry in fs::read_dir(saves)? {
+        for entry in fs::read_dir(&saves.path)? {
             let entry = entry?;
             let Ok(name) = entry.file_name().into_string() else {
                 continue;
             };
-            if !plain_name(&name) {
-                continue;
-            }
-            if let Ok((folder_id, level_stamp)) = stamps(&entry.path()) {
-                worlds.push(Self {
-                    game_root: game_root.into(),
-                    name,
-                    folder_id,
-                    level_stamp,
-                });
+            if let Ok(world) = Self::open_in(game_root, &name, &saves) {
+                if follow_links || world.target.link.is_none() {
+                    worlds.push(world);
+                }
             }
         }
         worlds.sort_by_key(|world| (world.name.to_lowercase(), world.name.clone()));
@@ -174,20 +234,37 @@ impl World {
     }
 
     pub fn world_path(&self) -> io::Result<PathBuf> {
-        let saves = self.game_root.join("saves");
-        require_directory(&saves)?;
-        let world = saves.join(&self.name);
-        let (folder_id, level_stamp) = stamps(&world)?;
-        if folder_id != self.folder_id || level_stamp != self.level_stamp {
-            return Err(io::Error::other(
-                "The selected world changed. Refresh and try again.",
-            ));
-        }
+        self.check()?;
+        Ok(self.game_root.join("saves").join(&self.name))
+    }
+
+    pub(crate) fn regular_world_path(&self) -> io::Result<PathBuf> {
+        let world = self.world_path()?;
+        require_directory(&self.game_root.join("saves"))?;
+        require_directory(&world)?;
         Ok(world)
     }
 
+    fn entry_path(&self) -> PathBuf {
+        self.saves.path.join(&self.name)
+    }
+
+    fn check(&self) -> io::Result<()> {
+        let saves = self.game_root.join("saves");
+        if Directory::resolve(&saves)? == self.saves {
+            let (target, level_stamp) = WorldTarget::read(self.entry_path())?;
+            if target == self.target && level_stamp == self.level_stamp {
+                return Ok(());
+            }
+        }
+        Err(io::Error::other(
+            "The selected world changed. Refresh and try again.",
+        ))
+    }
+
     pub fn details(&self) -> io::Result<WorldDetails> {
-        let (_, root) = read_level(&self.world_path()?.join(LEVEL_DAT))?;
+        self.check()?;
+        let (_, root) = read_level(&self.target.folder.path.join(LEVEL_DAT))?;
         let Some(data @ Tag::Compound(_)) = nbt_child(&root, "Data") else {
             return Err(invalid_data());
         };
@@ -219,43 +296,43 @@ impl World {
     }
 
     pub fn rename(&self, name: &str) -> io::Result<RenameOutcome> {
-        let path = self.world_path()?;
-        let bytes = renamed_level(&path, name)?;
-        let file = write_level(&path, &bytes)?;
+        self.check()?;
+        let path = &self.target.folder.path;
+        let bytes = renamed_level(path, name)?;
+        let file = write_level(path, &bytes)?;
         let level_stamp = FileStamp::from(&file.as_file().metadata()?);
-        self.world_path()?;
+        self.check()?;
         file.persist(path.join(LEVEL_DAT))
             .map_err(|error| error.error)?;
         let updated = Self {
             level_stamp,
             ..self.clone()
         };
-        Ok(match updated.rename_folder(&path, name) {
+        Ok(match updated.rename_folder(name) {
             Ok(()) => RenameOutcome::Renamed,
             Err(error) => RenameOutcome::NameOnly(error),
         })
     }
 
-    fn rename_folder(&self, path: &Path, name: &str) -> io::Result<()> {
-        let saves = self.game_root.join("saves");
+    fn rename_folder(&self, name: &str) -> io::Result<()> {
+        let path = self.entry_path();
         let base = rename_folder_base(name);
         for index in 0..=9000 {
-            let target = saves.join(if index == 0 {
+            let target = self.saves.path.join(if index == 0 {
                 base.clone()
             } else {
                 format!("{base}({index})")
             });
             if target == path {
-                self.world_path()?;
-                return Ok(());
+                return self.check();
             }
             match fs::symlink_metadata(&target) {
                 Ok(_) => continue,
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error),
             }
-            self.world_path()?;
-            match fs::rename(path, &target) {
+            self.check()?;
+            match fs::rename(&path, &target) {
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 result => return result,
             }
@@ -267,13 +344,16 @@ impl World {
     }
 
     pub fn copy(&self, name: &str) -> io::Result<PathBuf> {
-        let source = self.world_path()?;
-        let bytes = renamed_level(&source, name)?;
-        let saves = self.game_root.join("saves");
-        let dest = reserve_copy_path(&saves, name)?;
+        self.check()?;
+        let source = &self.target.folder.path;
+        if self.saves.path.starts_with(source) {
+            return Err(io::Error::other("Cannot copy a world into itself"));
+        }
+        let bytes = renamed_level(source, name)?;
+        let dest = reserve_copy_path(&self.saves.path, name)?;
         let result = (|| {
-            copy_tree(&source, &dest, true)?;
-            self.world_path()?;
+            copy_tree(source, &dest, true)?;
+            self.check()?;
             write_level(&dest, &bytes)?
                 .persist_noclobber(dest.join(LEVEL_DAT))
                 .map_err(|error| error.error)?;
@@ -282,11 +362,19 @@ impl World {
         if result.is_err() {
             let _ = fs::remove_dir_all(&dest);
         }
-        result.map(|()| dest)
+        result.map(|()| self.game_root.join("saves").join(dest.file_name().unwrap()))
     }
 
     pub fn delete(&self) -> io::Result<()> {
-        fs::remove_dir_all(self.world_path()?)
+        self.check()?;
+        let entry = self.entry_path();
+        if self.target.link.is_some() {
+            #[cfg(windows)]
+            return fs::remove_dir(entry);
+            #[cfg(not(windows))]
+            return fs::remove_file(entry);
+        }
+        fs::remove_dir_all(entry)
     }
 }
 
@@ -602,6 +690,119 @@ mod tests {
         fs::rename(old.join(LEVEL_DAT), path.join(LEVEL_DAT)).unwrap();
         assert!(snapshot.delete().is_err());
         assert!(path.join(LEVEL_DAT).is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lists_worlds_through_linked_saves_and_world_folders() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let world = fixture(root, "World", vec![]);
+        symlink("World", world.with_file_name("Alias")).unwrap();
+        for linked_saves in [false, true] {
+            if linked_saves {
+                fs::rename(root.join("saves"), root.join("moved-saves")).unwrap();
+                symlink("moved-saves", root.join("saves")).unwrap();
+            }
+            let worlds = World::list(root).unwrap();
+            assert_eq!(
+                worlds.iter().map(World::name).collect::<Vec<_>>(),
+                ["Alias", "World"]
+            );
+            assert_eq!(worlds[0], World::open(root, "Alias").unwrap());
+            assert_eq!(worlds[0].world_path().unwrap(), root.join("saves/Alias"));
+            assert_eq!(worlds[0].details().unwrap().display_name, "Alias");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_world_operations_leave_the_real_folder_in_place() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let world = fixture(root, "Original", vec![]);
+        fs::create_dir(world.join("region")).unwrap();
+        fs::write(world.join("region/r.0.0.mca"), "chunks").unwrap();
+        fs::rename(root.join("saves"), root.join("stored")).unwrap();
+        let world = root.join("stored/Original");
+        fs::create_dir(root.join("linked-saves")).unwrap();
+        symlink("linked-saves", root.join("saves")).unwrap();
+        symlink("../stored/Original", root.join("linked-saves/Alias")).unwrap();
+
+        let alias = World::open(root, "Alias").unwrap();
+        assert!(matches!(
+            alias.rename("New World").unwrap(),
+            RenameOutcome::Renamed
+        ));
+        assert!(!root.join("linked-saves/Alias").exists());
+        assert_eq!(
+            fs::read_link(root.join("linked-saves/New World")).unwrap(),
+            Path::new("../stored/Original")
+        );
+        let (_, tag) = read_level(&world.join(LEVEL_DAT)).unwrap();
+        assert_eq!(
+            nbt_child(nbt_child(&tag, "Data").unwrap(), "LevelName"),
+            Some(&Tag::String("New World".into()))
+        );
+
+        let renamed = World::open(root, "New World").unwrap();
+        let copy = renamed.copy("Independent").unwrap();
+        assert!(fs::symlink_metadata(&copy).unwrap().is_dir());
+        assert_eq!(fs::read(copy.join("region/r.0.0.mca")).unwrap(), b"chunks");
+        assert_eq!(
+            World::open(root, "World-Independent")
+                .unwrap()
+                .details()
+                .unwrap()
+                .display_name,
+            "Independent"
+        );
+        assert_eq!(renamed.details().unwrap().display_name, "New World");
+
+        renamed.delete().unwrap();
+        assert!(fs::symlink_metadata(root.join("linked-saves/New World")).is_err());
+        assert!(world.join(LEVEL_DAT).is_file());
+        assert!(world.join("region/r.0.0.mca").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retargeting_a_world_link_chain_or_saves_link_invalidates_the_handle() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let alpha = fixture(root, "Alpha", vec![]);
+        let beta = fixture(root, "Beta", vec![]);
+        let level = fs::read(beta.join(LEVEL_DAT)).unwrap();
+        let bridge = root.join("bridge");
+        let alias = root.join("saves/Alias");
+        symlink(&alpha, &bridge).unwrap();
+        symlink(&bridge, &alias).unwrap();
+        let stale = World::open(root, "Alias").unwrap();
+        fs::remove_file(&bridge).unwrap();
+        symlink(&beta, &bridge).unwrap();
+        assert!(stale.rename("Stale").is_err());
+        assert!(stale.copy("Stale").is_err());
+        assert!(stale.delete().is_err());
+        assert_eq!(fs::read(beta.join(LEVEL_DAT)).unwrap(), level);
+        assert!(alias.is_symlink());
+
+        fs::rename(root.join("saves"), root.join("real-saves")).unwrap();
+        symlink("real-saves", root.join("saves")).unwrap();
+        let original = root.join("real-saves/Beta");
+        let stale = World::open(root, "Beta").unwrap();
+        fs::create_dir(root.join("replacement-saves")).unwrap();
+        let moved = root.join("replacement-saves/Beta");
+        fs::rename(original, &moved).unwrap();
+        fs::remove_file(root.join("saves")).unwrap();
+        symlink("replacement-saves", root.join("saves")).unwrap();
+        assert!(stale.delete().is_err());
+        assert_eq!(fs::read(moved.join(LEVEL_DAT)).unwrap(), level);
     }
 
     #[cfg(unix)]

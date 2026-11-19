@@ -64,7 +64,8 @@ impl InstanceWindow {
         if instance.is_horizon() {
             return None;
         }
-        let world = World::open(&instance.game_root(), self.datapacks.selected.as_deref()?).ok()?;
+        let world =
+            World::open_regular(&instance.game_root(), self.datapacks.selected.as_deref()?).ok()?;
         Some(self.datapacks.target(world))
     }
 
@@ -290,7 +291,7 @@ impl InstanceWindow {
                 .into_any_element();
         };
         let running = app.is_running(&self.instance_id);
-        let worlds = match World::list(&instance.game_root()) {
+        let worlds = match World::list_regular(&instance.game_root()) {
             Ok(worlds) if worlds.is_empty() => {
                 return page
                     .child(

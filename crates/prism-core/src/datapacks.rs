@@ -78,7 +78,7 @@ fn ensure_absent(path: &Path) -> io::Result<()> {
 
 impl World {
     pub fn ensure_pack_folder(&self) -> io::Result<PathBuf> {
-        Self::ensure_folder(self.world_path()?.join(ResourceType::DataPack.folder()))
+        Self::ensure_folder(self.regular_world_path()?.join(ResourceType::DataPack.folder()))
     }
 
     fn ensure_folder(folder: PathBuf) -> io::Result<PathBuf> {
@@ -92,7 +92,7 @@ impl World {
     }
 
     pub fn packs(&self) -> io::Result<Vec<DataPack>> {
-        let world = self.world_path()?;
+        let world = self.regular_world_path()?;
         let mut packs = Vec::new();
         Self::scan(
             &world.join(ResourceType::DataPack.folder()),
@@ -207,7 +207,7 @@ impl World {
         if pack.disabled_in_world() {
             return Err(io::Error::other("This pack is disabled in Minecraft"));
         }
-        let world = self.world_path()?;
+        let world = self.regular_world_path()?;
         let path = Self::pack_path(&world, pack)?;
         let target = if pack.directory {
             let folder = if pack.enabled {
@@ -226,7 +226,7 @@ impl World {
     }
 
     pub fn remove(&self, pack: &DataPack) -> io::Result<()> {
-        let path = Self::pack_path(&self.world_path()?, pack)?;
+        let path = Self::pack_path(&self.regular_world_path()?, pack)?;
         if pack.directory {
             fs::remove_dir_all(path)
         } else {
@@ -459,8 +459,13 @@ mod tests {
         let a = world(root.path(), "Alpha");
         let b = world(root.path(), "Beta");
         symlink(&b, a.with_file_name("Alias")).unwrap();
-        let worlds = World::list(root.path()).unwrap();
+        let worlds = World::list_regular(root.path()).unwrap();
         assert_eq!(worlds.len(), 2);
+        assert!(World::open_regular(root.path(), "Alias").is_err());
+        assert!(World::open(root.path(), "Alias")
+            .unwrap()
+            .ensure_pack_folder()
+            .is_err());
         let target = worlds[1].ensure_pack_folder().unwrap();
         symlink(&target, a.join("datapacks")).unwrap();
         assert!(worlds[0]
