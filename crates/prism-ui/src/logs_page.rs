@@ -64,10 +64,13 @@ struct Viewer {
     status: String,
     url: Option<String>,
     uploading: bool,
+    content_revision: u64,
 }
 
 impl Viewer {
     fn replace(&mut self, text: Option<String>) {
+        self.content_revision += 1;
+        self.url = None;
         self.lines = Arc::new(
             text.as_deref()
                 .unwrap_or_default()
@@ -86,6 +89,21 @@ impl Viewer {
         self.exact_text
             .clone()
             .unwrap_or_else(|| self.lines.join("\n"))
+    }
+
+    fn finish_upload(&mut self, content_revision: u64, result: Option<Result<String, String>>) {
+        self.uploading = false;
+        if self.content_revision != content_revision {
+            return;
+        }
+        match result {
+            Some(Ok(url)) => {
+                self.status = "Log uploaded to mclo.gs.".into();
+                self.url = Some(url);
+            }
+            Some(Err(error)) => self.status = format!("Upload failed: {error}"),
+            None => self.status = "Upload canceled.".into(),
+        }
     }
 
     fn set_query(&mut self, query: String) {
@@ -177,7 +195,6 @@ impl InstanceWindow {
         if !unchanged {
             viewer.replace(None);
             viewer.status.clear();
-            viewer.url = None;
             self.logs.console_len = 0;
             self.logs.console_log = current.clone();
         }
@@ -267,7 +284,6 @@ impl InstanceWindow {
         let revision = self.logs.revision;
         self.logs.selected = Some(file.clone());
         self.logs.other.replace(None);
-        self.logs.other.url = None;
         self.logs.other.status = "Reading log…".into();
         let task = self
             .app
@@ -303,6 +319,7 @@ impl InstanceWindow {
             return;
         }
         let text = viewer.text();
+        let content_revision = viewer.content_revision;
         viewer.uploading = true;
         viewer.url = None;
         let answer = window.prompt(
@@ -317,32 +334,34 @@ impl InstanceWindow {
         );
         let runtime = self.app.read(cx).runtime.clone();
         cx.spawn(async move |this, cx| {
-            let result = if answer.await == Ok(1) {
-                let _ = this.update(cx, |this, cx| {
-                    this.logs.viewer_mut(source).status = "Uploading log…".into();
-                    cx.notify();
-                });
+            let confirmed = answer.await == Ok(1)
+                && this
+                    .update(cx, |this, cx| {
+                        let viewer = this.logs.viewer_mut(source);
+                        if viewer.content_revision != content_revision {
+                            return false;
+                        }
+                        viewer.status = "Uploading log…".into();
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false);
+            let result = if confirmed {
                 Some(
                     runtime
                         .spawn(async move { upload_log(&text).await })
                         .await
                         .map_err(|error| error.to_string())
-                        .and_then(|result| result),
+                        .and_then(|result| result)
+                        .map(|url| url.to_string()),
                 )
             } else {
                 None
             };
             let _ = this.update(cx, |this, cx| {
-                let viewer = this.logs.viewer_mut(source);
-                viewer.uploading = false;
-                match result {
-                    Some(Ok(url)) => {
-                        viewer.status = "Log uploaded to mclo.gs.".into();
-                        viewer.url = Some(url.to_string());
-                    }
-                    Some(Err(error)) => viewer.status = format!("Upload failed: {error}"),
-                    None => viewer.status = "Upload canceled.".into(),
-                }
+                this.logs
+                    .viewer_mut(source)
+                    .finish_upload(content_revision, result);
                 cx.notify();
             });
         })
@@ -661,6 +680,37 @@ impl InstanceWindow {
 #[cfg(test)]
 mod tests {
     use super::Viewer;
+
+    #[test]
+    fn replacing_or_clearing_a_log_discards_its_share_link() {
+        let mut viewer = Viewer::default();
+        for replacement in [None, Some("another log")] {
+            viewer.replace(Some("shared log".into()));
+            viewer.url = Some("https://mclo.gs/Test123".into());
+            viewer.replace(replacement.map(str::to_owned));
+            assert!(viewer.url.is_none());
+        }
+    }
+
+    #[test]
+    fn a_previous_logs_upload_cannot_restore_its_share_link() {
+        let mut viewer = Viewer::default();
+        viewer.replace(Some("shared log".into()));
+        let previous_revision = viewer.content_revision;
+        viewer.uploading = true;
+        viewer.replace(Some("another log".into()));
+        viewer.status = "Current log status".into();
+        viewer.finish_upload(previous_revision, Some(Ok("https://mclo.gs/Old123".into())));
+        assert!(!viewer.uploading);
+        assert!(viewer.url.is_none());
+        assert_eq!(viewer.status, "Current log status");
+
+        viewer.finish_upload(
+            viewer.content_revision,
+            Some(Ok("https://mclo.gs/Current123".into())),
+        );
+        assert_eq!(viewer.url.as_deref(), Some("https://mclo.gs/Current123"));
+    }
 
     #[test]
     fn search_keeps_utf8_ranges_and_wraps_in_both_directions() {
