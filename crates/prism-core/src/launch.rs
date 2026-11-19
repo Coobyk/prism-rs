@@ -7,6 +7,7 @@ use crate::meta::{self, VersionData};
 use crate::loaders::{self, Loader};
 use crate::net::{DownloadRequest, Downloader, NetError};
 use crate::profile::{LaunchProfile, ResolvedLibrary, DEFAULT_JVM_ARGUMENTS, LEGACY_GAME_ARGUMENTS};
+use crate::version_components::{self, ArchiveKind, Pack};
 use crate::Paths;
 use md5::{Digest as Md5Digest, Md5};
 use std::path::{Path, PathBuf};
@@ -473,6 +474,7 @@ impl Launcher {
 
     /// Fetch and cache the Mojang version JSON for one version id.
     pub async fn fetch_version_data(&self, version_id: &str) -> Result<VersionData, LaunchError> {
+        let version_id = version_components::version_id(version_id)?;
         // Cached?
         let cache_path = self.paths.metadata_dir().join("net.minecraft").join(format!("{version_id}.json"));
         if let Ok(text) = tokio::fs::read_to_string(&cache_path).await {
@@ -503,6 +505,52 @@ impl Launcher {
             let _ = tokio::fs::write(&url_path, url).await;
         }
         Ok(vd)
+    }
+
+    pub async fn fetch_lwjgl(&self, uid: &str, version: &str) -> Result<VersionData, LaunchError> {
+        let version = version_components::version_id(version)?;
+        if !matches!(uid, version_components::LWJGL | version_components::LWJGL3) {
+            return Err(std::io::Error::other("Unknown LWJGL component.").into());
+        }
+        let cache = self.paths.metadata_dir().join(uid).join(format!("{version}.json"));
+        let cached = tokio::fs::read(&cache).await.ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .filter(|json| json["uid"] == uid && json["version"] == version && json["libraries"].is_array());
+        let fetched = cached.is_none();
+        let mut json = match cached {
+            Some(json) => json,
+            None => self.downloader
+                .get_json(&format!("https://meta.prismlauncher.org/v1/{uid}/{version}.json"))
+                .await?,
+        };
+        if json["uid"] != uid || json["version"] != version || !json["libraries"].is_array() {
+            return Err(std::io::Error::other("Invalid LWJGL component metadata.").into());
+        }
+        // Prism metadata represents LWJGL 3 native jars as separate classpath
+        // libraries, not the extracted LWJGL 2 native classifiers.
+        for lib in json["libraries"].as_array_mut().unwrap() {
+            let spec = lib["name"].as_str().unwrap_or_default();
+            let segments = spec.split(':').collect::<Vec<_>>();
+            if segments.len() != 3 || segments.iter().any(|part| version_components::version_id(part).is_err()) {
+                return Err(std::io::Error::other("Invalid LWJGL library coordinate.").into());
+            }
+            let coordinate = if let Some((name, classifier)) = segments[1].split_once("-natives-") {
+                format!("{}:{name}:{}:natives-{classifier}", segments[0], segments[2])
+            } else {
+                spec.to_owned()
+            };
+            if lib["downloads"]["artifact"].is_object() {
+                lib["downloads"]["artifact"]["path"] = serde_json::json!(meta::maven_path(&coordinate));
+            }
+        }
+        let data = VersionData::from_json(&json)?;
+        if fetched {
+            if let Some(dir) = cache.parent() {
+                let _ = tokio::fs::create_dir_all(dir).await;
+                let _ = tokio::fs::write(cache, serde_json::to_vec(&json)?).await;
+            }
+        }
+        Ok(data)
     }
 
     /// Download everything the profile needs, then extract natives.
@@ -661,7 +709,7 @@ impl Launcher {
         }
 
         // Extract natives.
-        let natives_dir = settings.game_dir.join("bin");
+        let natives_dir = profile.natives_override.clone().unwrap_or_else(|| settings.game_dir.join("bin"));
         tokio::fs::create_dir_all(&natives_dir).await?;
         for native in &profile.natives {
             let jar = libraries_dir.join(&native.path);
@@ -691,6 +739,20 @@ impl Launcher {
     ) -> Result<LaunchProfile, LaunchError> {
         let version_data = self.fetch_version_data(&settings.mc_version).await?;
         let mut profile = LaunchProfile::from_mojang(&version_data);
+        let pack = match Pack::load(&settings.instance_dir) {
+            Ok(pack) => Some(pack),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some((uid, version)) = pack.as_ref().and_then(Pack::lwjgl) {
+            if profile.lwjgl_family() != Some(uid) {
+                return Err(std::io::Error::other("The LWJGL override does not match this Minecraft version. Reset it on the Version page.").into());
+            }
+            let replacement = self.fetch_lwjgl(uid, version).await?;
+            profile.apply_lwjgl(&replacement)?;
+            profile.natives_override = Some(settings.game_dir.join("bin").join(format!("lwjgl-{uid}-{version}")));
+            progress(format!("Using {uid} {version}"));
+        }
         progress(self.resolve_java(settings, &profile).await?);
 
         if loader != Loader::None {
@@ -735,6 +797,24 @@ impl Launcher {
             ));
         }
         self.prepare_files(&profile, settings).await?;
+        if let Some(pack) = pack {
+            let mods = pack.archive_paths(ArchiveKind::JarMod)?;
+            profile.extra_classpath = pack.archive_paths(ArchiveKind::Classpath)?;
+            if !mods.is_empty() {
+                let client = self.client_jar_path(&settings.mc_version);
+                let root = settings.instance_dir.clone();
+                let count = mods.len();
+                let patched = tokio::task::spawn_blocking(move || version_components::patched_client(&root, &client, &mods))
+                    .await.map_err(std::io::Error::other)??;
+                profile.client_override = Some(patched);
+                progress(format!("Applied {count} jar mod(s) to the Minecraft client"));
+            }
+            if !profile.extra_classpath.is_empty() {
+                progress(format!("Added {} extra classpath archive(s)", profile.extra_classpath.len()));
+            }
+            std::env::join_paths(profile.extra_classpath.iter().chain(profile.client_override.iter()))
+                .map_err(std::io::Error::other)?;
+        }
         progress("Downloads complete".to_string());
         Ok(profile)
     }
@@ -762,8 +842,8 @@ impl Launcher {
         profile: &LaunchProfile,
     ) -> PreparedLaunch {
         let libraries_dir = self.paths.libraries_dir();
-        let natives_dir = settings.game_dir.join("bin");
-        let client_jar = self.client_jar_path(&profile.minecraft_version);
+        let natives_dir = profile.natives_override.clone().unwrap_or_else(|| settings.game_dir.join("bin"));
+        let client_jar = profile.client_override.clone().unwrap_or_else(|| self.client_jar_path(&profile.minecraft_version));
 
         // Classpath entries: prefer libraries installed by loader installers
         // inside the instance (game_dir/libraries), then the shared cache.
@@ -780,6 +860,7 @@ impl Launcher {
             })
             .collect();
         classpath.push(client_jar.to_string_lossy().to_string());
+        classpath.extend(profile.extra_classpath.iter().map(|path| path.to_string_lossy().into_owned()));
         let classpath_str = classpath.join(if cfg!(windows) { ";" } else { ":" });
 
         let assets_root = self.paths.assets_dir();
@@ -1196,6 +1277,53 @@ mod tests {
             .command
             .iter()
             .any(|arg| arg.contains("quickPlay")));
+    }
+
+    #[tokio::test]
+    async fn fetch_version_data_accepts_official_ids_with_spaces() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths { root: temp.path().into() };
+        let cache = paths.metadata_dir().join("net.minecraft");
+        std::fs::create_dir_all(&cache).unwrap();
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        for id in ["3D Shareware v1.34", "1.14.2 Pre-Release 4"] {
+            std::fs::write(
+                cache.join(format!("{id}.json")),
+                serde_json::json!({"id": id}).to_string(),
+            )
+            .unwrap();
+            assert_eq!(launcher.fetch_version_data(id).await.unwrap().id, id);
+        }
+        for id in [
+            "..",
+            "../other version",
+            "..\\other version",
+            "/other version",
+            "C:other version",
+        ] {
+            assert!(version_components::version_id(id).is_err(), "{id:?}");
+        }
+    }
+
+    #[test]
+    fn patched_client_and_classpath_entries_keep_the_profile_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths { root: temp.path().into() };
+        let inst = crate::instance::InstanceList::create(&paths, "QA", "default", "1.20.4").unwrap();
+        let settings = LaunchSettings::for_instance(&inst, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let patched = temp.path().join("patched.jar");
+        let extra = [temp.path().join("extra one.jar"), temp.path().join("extra two.jar")];
+        let profile = LaunchProfile {
+            minecraft_version: "1.20.4".into(),
+            client_override: Some(patched.clone()),
+            extra_classpath: extra.to_vec(),
+            ..Default::default()
+        };
+        let command = launcher.build_command(&settings, None, &profile).command;
+        let classpath = command.windows(2).find(|args| args[0] == "-cp").unwrap();
+        assert_eq!(std::env::split_paths(&classpath[1]).collect::<Vec<_>>(),
+            [patched, extra[0].clone(), extra[1].clone()]);
     }
 
     #[cfg(unix)]

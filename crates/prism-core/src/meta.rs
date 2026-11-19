@@ -298,6 +298,25 @@ pub fn os_arch() -> &'static str {
 /// Evaluate a rule list against the current platform. An empty list allows.
 /// Semantics: every `allow` rule must pass, `disallow` rules veto.
 pub fn rules_allow(rules: &[Rule], features: &BTreeMap<String, bool>) -> bool {
+    rules_allow_on(rules, features, os_name(), os_arch(), false)
+}
+
+pub(crate) fn prism_rules_allow(rules: &[Rule], features: &BTreeMap<String, bool>) -> bool {
+    let arch = match std::env::consts::ARCH {
+        "aarch64" => "arm64",
+        "arm" => "arm32",
+        arch => arch,
+    };
+    rules_allow_on(rules, features, os_name(), arch, true)
+}
+
+fn rules_allow_on(
+    rules: &[Rule],
+    features: &BTreeMap<String, bool>,
+    system: &str,
+    arch: &str,
+    prism: bool,
+) -> bool {
     if rules.is_empty() {
         return true;
     }
@@ -309,12 +328,22 @@ pub fn rules_allow(rules: &[Rule], features: &BTreeMap<String, bool>) -> bool {
                 let name_ok = os
                     .name
                     .as_deref()
-                    .map(|n| n == os_name())
+                    .map(|name| {
+                        if !prism {
+                            return name == system;
+                        }
+                        match name.split_once('-') {
+                            Some((rule_system, rule_arch)) => {
+                                rule_system == system && rule_arch == arch
+                            }
+                            None => name == system && matches!(arch, "x86" | "x86_64"),
+                        }
+                    })
                     .unwrap_or(true);
                 let arch_ok = os
                     .arch
                     .as_deref()
-                    .map(|a| a == os_arch())
+                    .map(|a| a == arch)
                     .unwrap_or(true);
                 name_ok && arch_ok
             }
@@ -405,6 +434,30 @@ mod tests {
     #[test]
     fn empty_rules_allow() {
         assert!(rules_allow(&[], &Default::default()));
+    }
+
+    #[test]
+    fn prism_native_rules_select_only_the_matching_architecture() {
+        let metadata = VersionData::from_json(&serde_json::json!({
+            "libraries": [
+                {"name": "arm", "rules": [{"action": "allow", "os": {"name": "osx-arm64"}}]},
+                {"name": "intel", "rules": [{"action": "allow", "os": {"name": "osx"}}]},
+                {"name": "linux", "rules": [{"action": "allow", "os": {"name": "linux-arm64"}}]}
+            ]
+        }))
+        .unwrap();
+        let selected = |os, arch, prism| {
+            metadata
+                .libraries
+                .iter()
+                .filter(|lib| rules_allow_on(&lib.rules, &Default::default(), os, arch, prism))
+                .map(|lib| lib.name.as_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(selected("osx", "arm64", true), ["arm"]);
+        assert_eq!(selected("osx", "x86_64", true), ["intel"]);
+        assert_eq!(selected("linux", "arm64", true), ["linux"]);
+        assert_eq!(selected("osx", "arm64", false), ["intel"]);
     }
 
     #[test]

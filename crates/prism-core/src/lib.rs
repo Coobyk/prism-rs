@@ -30,6 +30,7 @@ pub mod resources;
 pub mod settings;
 pub mod servers;
 pub mod screenshots;
+pub mod version_components;
 pub mod worlds;
 
 pub use auth::AccountList;

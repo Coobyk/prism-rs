@@ -2,7 +2,7 @@
 //! (Mojang JSON, later extended with loader components). Mirrors
 //! PrismLauncher's `LaunchProfile` + `LibraryUtils`.
 
-use crate::meta::{self, MoLibrary, RuleAction, VersionData};
+use crate::meta::{self, MoLibrary, VersionData};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -22,6 +22,9 @@ pub struct ResolvedLibrary {
 
 #[derive(Debug, Clone, Default)]
 pub struct LaunchProfile {
+    pub(crate) client_override: Option<PathBuf>,
+    pub(crate) extra_classpath: Vec<PathBuf>,
+    pub(crate) natives_override: Option<PathBuf>,
     pub minecraft_version: String,
     pub version_type: Option<String>,
     pub main_class: String,
@@ -75,18 +78,28 @@ impl LaunchProfile {
 
     /// Resolve a Mojang version JSON into a platform-evaluated profile.
     pub fn from_mojang(vd: &VersionData) -> LaunchProfile {
+        Self::from_version(vd, meta::rules_allow)
+    }
+
+    fn from_version(
+        vd: &VersionData,
+        rules_allow: impl Fn(&[meta::Rule], &BTreeMap<String, bool>) -> bool,
+    ) -> LaunchProfile {
         let features = BTreeMap::new(); // no optional features (demo/resolution) enabled
         let mut libraries = Vec::new();
         let mut natives = Vec::new();
 
         for lib in &vd.libraries {
-            if !meta::rules_allow(&lib.rules, &features) {
+            if !rules_allow(&lib.rules, &features) {
                 continue;
             }
             push_library(lib, &mut libraries, &mut natives);
         }
 
         LaunchProfile {
+            client_override: None,
+            extra_classpath: Vec::new(),
+            natives_override: None,
             minecraft_version: vd.id.clone(),
             version_type: vd.version_type.clone(),
             main_class: vd.main_class.clone(),
@@ -122,6 +135,33 @@ impl LaunchProfile {
     /// Final classpath entries (library dir prefix added by the caller).
     pub fn classpath(&self) -> Vec<PathBuf> {
         self.libraries.iter().map(|l| l.path.clone()).collect()
+    }
+
+    pub fn lwjgl_family(&self) -> Option<&'static str> {
+        self.libraries.iter().find_map(|lib| match lib.spec.split(':').next() {
+            Some("org.lwjgl") => Some(crate::version_components::LWJGL3),
+            Some("org.lwjgl.lwjgl") => Some(crate::version_components::LWJGL),
+            _ => None,
+        })
+    }
+
+    pub fn apply_lwjgl(&mut self, replacement: &VersionData) -> std::io::Result<()> {
+        let old_family = self.lwjgl_family();
+        let replacement = Self::from_version(replacement, meta::prism_rules_allow);
+        if old_family.is_none() || replacement.lwjgl_family() != old_family {
+            return Err(std::io::Error::other("LWJGL metadata does not match the game's LWJGL family or platform."));
+        }
+        let replaced = |library: &ResolvedLibrary| {
+            let group = library.spec.split(':').next().unwrap_or_default();
+            matches!(group, "org.lwjgl" | "org.lwjgl.lwjgl")
+                || (old_family == Some(crate::version_components::LWJGL)
+                    && matches!(group, "net.java.jinput" | "net.java.jutils"))
+        };
+        self.libraries.retain(|library| !replaced(library));
+        self.natives.retain(|library| !replaced(library));
+        self.libraries.extend(replacement.libraries);
+        self.natives.extend(replacement.natives);
+        Ok(())
     }
 
     pub fn is_legacy(&self) -> bool {
@@ -211,27 +251,4 @@ fn push_library(lib: &MoLibrary, libraries: &mut Vec<ResolvedLibrary>, natives: 
 }
 
 /// Rules helper re-exported for loader components that carry their own rules.
-pub fn rules_allow(rules: &[crate::meta::Rule], features: &BTreeMap<String, bool>) -> bool {
-    // Special-case: never let a loader drop required libraries by rule.
-    if rules.is_empty() {
-        return true;
-    }
-    let mut allowed = false;
-    let mut vetoed = false;
-    for rule in rules {
-        let passes = match (&rule.os, &rule.features) {
-            (Some(os), _) => {
-                let name_ok = os.name.as_deref().map(|n| n == meta::os_name()).unwrap_or(true);
-                let arch_ok = os.arch.as_deref().map(|a| a == meta::os_arch()).unwrap_or(true);
-                name_ok && arch_ok
-            }
-            (None, Some(f)) => f.iter().all(|(k, v)| features.get(k).copied().unwrap_or(false) == *v),
-            (None, None) => true,
-        };
-        match rule.action {
-            RuleAction::Allow => allowed |= passes,
-            RuleAction::Disallow => vetoed |= passes,
-        }
-    }
-    allowed && !vetoed
-}
+pub use meta::rules_allow;
