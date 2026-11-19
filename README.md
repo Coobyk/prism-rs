@@ -48,7 +48,8 @@ owns Minecraft: Java Edition. The corresponding CLI commands are
 `horizon-launcher prepare` (if the build needs assets prepared).
 **Remove from Prism** removes only the link; the Horizon game folder and saves
 remain. Manage Horizon mods, servers, and exports through the official Horizon
-launcher; Prism's mod browser, server editor, and export are for Java instances.
+launcher, and select resource packs in the Horizon game. Prism's mod browser,
+server editor, resource-pack editor, and export are for Java instances.
 
 ## Architecture
 

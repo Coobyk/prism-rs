@@ -60,8 +60,19 @@ impl Page {
         ]
     }
 
-    fn available(self, inst: &Instance) -> bool {
-        !inst.is_horizon() || matches!(self, Self::Log | Self::ResourcePacks | Self::Worlds | Self::Screenshots | Self::Notes)
+    fn available(self, horizon: bool) -> bool {
+        !horizon || matches!(self, Self::Log | Self::Worlds | Self::Screenshots | Self::Notes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Page;
+
+    #[test]
+    fn resource_pack_editor_is_only_available_for_java() {
+        assert!(Page::ResourcePacks.available(false));
+        assert!(!Page::ResourcePacks.available(true));
     }
 }
 
@@ -328,7 +339,7 @@ impl InstanceWindow {
             )
             .child(div().h(px(1.)).bg(rgb(0x1c1c1c)));
 
-        for page in Page::all().into_iter().filter(|page| page.available(&inst)) {
+        for page in Page::all().into_iter().filter(|page| page.available(inst.is_horizon())) {
             let active = self.page == page;
             let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
             col = col.child(
@@ -835,7 +846,7 @@ impl InstanceWindow {
             cx.notify();
             return;
         };
-        if !Page::Servers.available(instance) {
+        if !Page::Servers.available(instance.is_horizon()) {
             return;
         }
         let game_root = instance.game_root();
@@ -1104,7 +1115,7 @@ impl InstanceWindow {
 
 impl Render for InstanceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.page.available(&self.instance(cx)) {
+        if !self.page.available(self.instance(cx).is_horizon()) {
             self.page = Page::Log;
         }
         let running = self.servers_running(cx);
