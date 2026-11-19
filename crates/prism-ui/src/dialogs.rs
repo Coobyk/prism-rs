@@ -995,37 +995,57 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
     let kind = prompt.kind;
     let target = prompt.target_id.clone();
     if kind == PromptKind::ImportPath {
-        if let Some((project, version)) = prism_core::managed_pack::import_source(&value) {
-            let app = this.app.clone();
-            let state = app.read(cx);
-            let paths = state.paths.clone();
-            let downloader = state.runtime.downloader.clone();
-            let task = state.runtime.spawn(async move {
+        let app = this.app.clone();
+        let state = app.read(cx);
+        let paths = state.paths.clone();
+        let downloader = state.runtime.downloader.clone();
+        let task = state.runtime.spawn(async move {
+            if let Some((project, version)) = prism_core::managed_pack::import_source(&value) {
                 prism_core::managed_pack::install_modrinth(&paths, &downloader, &project, version.as_deref()).await
-            });
-            this.prompt = None;
-            this.app.update(cx, |app, _| {
-                app.toast = Some(("Installing managed pack…".into(), std::time::Instant::now()));
-            });
-            cx.spawn(async move |_, cx| {
-                let result = task.await;
-                let _ = app.update(cx, |app, cx| {
-                    let message = match result {
-                        Ok(Ok(instance)) => {
-                            app.reload_instances();
-                            app.selected = Some(instance.id);
-                            format!("Imported: {}", instance.name)
+                    .map(|instance| prism_core::import::ImportOutcome {
+                        instance,
+                        missing_files: Vec::new(),
+                        curseforge_key_issue: None,
+                    })
+            } else {
+                prism_core::import::import_source(&paths, &value, &downloader).await
+            }
+        });
+        this.prompt = None;
+        this.app.update(cx, |app, _| {
+            app.toast = Some(("Importing instance…".into(), std::time::Instant::now()));
+        });
+        cx.spawn(async move |_, cx| {
+            let result = task.await;
+            let _ = app.update(cx, |app, cx| {
+                let message = match result {
+                    Ok(Ok(outcome)) => {
+                        app.reload_instances();
+                        app.selected = Some(outcome.instance.id);
+                        let mut message = format!("Imported: {}", outcome.instance.name);
+                        if !outcome.missing_files.is_empty() {
+                            message.push_str(" — ");
+                            if let Some(issue) = outcome.curseforge_key_issue {
+                                message.push_str(issue.message());
+                                message.push_str(". ");
+                            }
+                            message.push_str(&format!(
+                                "{} file(s) need manual download. See {} in the instance folder.",
+                                outcome.missing_files.len(),
+                                prism_core::import::CURSEFORGE_MISSING_FILES_REPORT,
+                            ));
                         }
-                        Ok(Err(error)) => format!("Import failed: {error}"),
-                        Err(error) => format!("Import failed: {error}"),
-                    };
-                    app.toast = Some((message, std::time::Instant::now()));
-                    cx.notify();
-                });
-            }).detach();
-            cx.notify();
-            return;
-        }
+                        message
+                    }
+                    Ok(Err(error)) => format!("Import failed: {error}"),
+                    Err(error) => format!("Import failed: {error}"),
+                };
+                app.toast = Some((message, std::time::Instant::now()));
+                cx.notify();
+            });
+        }).detach();
+        cx.notify();
+        return;
     }
     if kind == PromptKind::Copy {
         if value.is_empty() {
@@ -1146,7 +1166,7 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
 
     this.app.update(cx, |app, _cx| {
         match kind {
-            PromptKind::Export | PromptKind::Copy => unreachable!(),
+            PromptKind::Export | PromptKind::Copy | PromptKind::ImportPath => unreachable!(),
             PromptKind::Rename => {
                 if let Some(inst) = app.instances.get_mut(&target) {
                     if let Err(error) = inst.rename(value.clone()) {
@@ -1159,34 +1179,6 @@ fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window,
                     .groups
                     .set_group(&target, if value.is_empty() { None } else { Some(value.as_str()) });
                 let _ = app.instances.groups.save(&app.paths.instances_dir());
-            }
-            PromptKind::ImportPath => {
-                let source = std::path::PathBuf::from(&value);
-                if !source.exists() {
-                    app.toast = Some((format!("Import source not found: {value}"), std::time::Instant::now()));
-                } else {
-                    match prism_core::import::import_sync(&app.paths, &source, Some(&app.runtime.downloader)) {
-                        Ok(outcome) => {
-                            let mut message = format!("Imported: {}", outcome.instance.name);
-                            if !outcome.missing_files.is_empty() {
-                                let count = outcome.missing_files.len();
-                                let report = prism_core::import::CURSEFORGE_MISSING_FILES_REPORT;
-                                message.push_str(" — ");
-                                if let Some(issue) = outcome.curseforge_key_issue {
-                                    message.push_str(issue.message());
-                                    message.push_str(". ");
-                                }
-                                message.push_str(&format!(
-                                    "{count} file(s) need manual download. See {report} in the instance folder."
-                                ));
-                            }
-                            app.toast = Some((message, std::time::Instant::now()));
-                        }
-                        Err(e) => {
-                            app.toast = Some((format!("Import failed: {e}"), std::time::Instant::now()));
-                        }
-                    }
-                }
             }
         }
         app.reload_instances();

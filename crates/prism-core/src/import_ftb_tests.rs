@@ -15,6 +15,32 @@ fn fixture(root: &Path) -> PathBuf {
     app
 }
 
+#[tokio::test]
+async fn shared_dispatch_imports_local_paths_and_rejects_invalid_sources() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = fixture(dir.path());
+    let paths = Paths {
+        root: dir.path().join("launcher"),
+    };
+    let downloader = std::sync::Arc::new(crate::net::Downloader::new());
+    let out = crate::import::import_source(&paths, app.to_str().unwrap(), &downloader)
+        .await
+        .unwrap();
+    assert_eq!(out.instance.name, "Local fixture");
+    assert_eq!(out.instance.total_time_played, 123);
+    for source in ["", "ftb:0", "ftb:invalid"] {
+        assert!(crate::import::import_source(&paths, source, &downloader)
+            .await
+            .is_err());
+    }
+    let missing = dir.path().join("missing");
+    assert!(
+        crate::import::import_source(&paths, missing.to_str().unwrap(), &downloader)
+            .await
+            .is_err()
+    );
+}
+
 #[test]
 fn scans_and_imports_settings_worlds_and_legacy_loader() {
     let dir = tempfile::tempdir().unwrap();
