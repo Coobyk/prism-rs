@@ -168,13 +168,13 @@ impl App {
         let running = RunningInstance::new();
         self.running.insert(id.to_string(), running.clone());
 
-        if let InstanceKind::Horizon { id, home } = inst.kind {
+        if let InstanceKind::Horizon { id, home, token } = inst.kind {
             let config = self.paths.global_config();
             log_lock(&running.log).push(format!("Launching Horizon instance {:?}", inst.name));
             self.runtime.handle().spawn_blocking(move || {
                 let settings = prism_core::settings::Settings::load(&config);
                 let launcher = HorizonLauncher::from_settings(&settings);
-                monitor_launch(running, "Horizon", launcher.play(&id, &home));
+                monitor_launch(running, "Horizon", launcher.play(&id, &home, token));
             });
             return;
         }

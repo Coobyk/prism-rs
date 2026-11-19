@@ -96,7 +96,7 @@ fn headless_instances() -> i32 {
                 println!("No instances found.");
             }
             for inst in &list.instances {
-                if let prism_core::InstanceKind::Horizon { id, home } = &inst.kind {
+                if let prism_core::InstanceKind::Horizon { id, home, .. } = &inst.kind {
                     println!(
                         "- {:?} (Horizon, Horizon ID: {}, group {}, game dir: {})",
                         inst.name, id, inst.group.as_deref().unwrap_or("-"), home.display()

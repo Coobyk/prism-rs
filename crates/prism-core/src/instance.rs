@@ -2,7 +2,7 @@
 //! and the instance list. Mirrors PrismLauncher's `BaseInstance` +
 //! `InstanceList` (minus Qt model machinery, which the UI layer provides).
 
-use crate::horizon::HorizonInstance;
+use crate::horizon::{HorizonInstance, mark_link};
 use crate::ini::IniFile;
 use crate::Paths;
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstanceKind {
     Java,
-    Horizon { id: String, home: PathBuf },
+    Horizon { id: String, home: PathBuf, token: Option<uuid::Uuid> },
 }
 
 /// A Prism instance directory, holding a Java game or a link to a Horizon game.
@@ -46,7 +46,8 @@ impl Instance {
             if !home.is_absolute() || id.is_empty() {
                 return None;
             }
-            InstanceKind::Horizon { id: id.to_string(), home }
+            let token = cfg.get("HorizonLinkToken").and_then(|value| value.parse().ok());
+            InstanceKind::Horizon { id: id.to_string(), home, token }
         } else {
             InstanceKind::Java
         };
@@ -96,10 +97,13 @@ impl Instance {
         }
         match &self.kind {
             InstanceKind::Java => cfg.set("InstanceType", "OneSix"),
-            InstanceKind::Horizon { id, home } => {
+            InstanceKind::Horizon { id, home, token } => {
                 cfg.set("InstanceType", "Horizon");
                 cfg.set("HorizonInstanceId", id.as_str());
                 cfg.set("HorizonGameHome", home.to_string_lossy().into_owned());
+                if let Some(token) = token {
+                    cfg.set("HorizonLinkToken", token.to_string());
+                }
             }
         }
         cfg.save(&self.root.join("instance.cfg"))
@@ -236,10 +240,11 @@ impl InstanceList {
     }
 
     pub fn link_horizon(paths: &Paths, horizon: HorizonInstance) -> std::io::Result<Instance> {
+        let token = mark_link(&horizon.home)?;
         let dir = unique_dir_name(paths.instances_dir(), &horizon.name);
         let inst = Instance {
             id: dir.file_name().unwrap().to_string_lossy().to_string(),
-            kind: InstanceKind::Horizon { id: horizon.id, home: horizon.home },
+            kind: InstanceKind::Horizon { id: horizon.id, home: horizon.home, token: Some(token) },
             root: dir,
             name: horizon.name,
             icon_key: "default".to_string(),
@@ -404,7 +409,9 @@ mod tests {
         })).unwrap();
         let inst = InstanceList::link_horizon(&paths, horizon).unwrap();
         let mut reloaded = Instance::load(&inst.root).unwrap();
-        assert_eq!(reloaded.kind, InstanceKind::Horizon { id: "native".into(), home: home.clone() });
+        assert!(matches!(&reloaded.kind, InstanceKind::Horizon { id, home: linked_home, token: Some(_) }
+            if id == "native" && linked_home == &home));
+        assert_eq!(reloaded.kind, inst.kind);
         assert_eq!(reloaded.game_root(), home);
         assert!(!reloaded.root.join("mmc-pack.json").exists());
         reloaded.name = "New Prism name".into();

@@ -328,6 +328,7 @@ mod tests {
         f.1.kind = crate::InstanceKind::Horizon {
             id: "native".into(),
             home: f.0.root.join("horizon"),
+            token: None,
         };
         let zip = f.0.root.join("horizon.zip");
         let mrpack = f.0.root.join("horizon.mrpack");

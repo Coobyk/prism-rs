@@ -2,12 +2,23 @@
 
 use crate::settings::Settings;
 use serde::Deserialize;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 pub const LAUNCHER_PATH_SETTING: &str = "HorizonLauncherPath";
 pub const DOWNLOAD_URL: &str = "https://playhorizon.dev/download";
+const LINK_MARKER: &str = ".prism-horizon-link";
+
+pub(crate) fn mark_link(home: &Path) -> io::Result<uuid::Uuid> {
+    let token = uuid::Uuid::new_v4();
+    let mut file = std::fs::File::options()
+        .write(true)
+        .create_new(true)
+        .open(home.join(LINK_MARKER))?;
+    write!(file, "{token}")?;
+    Ok(token)
+}
 
 #[derive(Debug, Deserialize)]
 pub struct HorizonInstance {
@@ -35,6 +46,8 @@ pub enum HorizonError {
     InvalidInstance,
     #[error("Horizon instance {0:?} was not found at its linked game folder. Check it in the Horizon launcher.")]
     MissingInstance(String),
+    #[error("Cannot verify the Prism link for Horizon instance {0:?}. The instance may have been replaced, or the link may predate identity checks.")]
+    UnverifiedLink(String),
 }
 
 pub struct HorizonLauncher {
@@ -64,9 +77,15 @@ impl HorizonLauncher {
         Ok(instances)
     }
 
-    pub fn play(&self, id: &str, home: &Path) -> Result<Child, HorizonError> {
+    pub fn play(&self, id: &str, home: &Path, token: Option<uuid::Uuid>) -> Result<Child, HorizonError> {
         if !self.list()?.iter().any(|instance| instance.id == id && instance.home == home) {
             return Err(HorizonError::MissingInstance(id.to_string()));
+        }
+        let found = std::fs::read_to_string(home.join(LINK_MARKER))
+            .ok()
+            .and_then(|text| text.parse().ok());
+        if token.is_none() || found != token {
+            return Err(HorizonError::UnverifiedLink(id.to_string()));
         }
         Command::new(&self.program)
             .arg("play")
@@ -107,23 +126,30 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    struct FakeLauncher(PathBuf);
+    struct FakeLauncher(PathBuf, PathBuf);
 
     impl FakeLauncher {
         fn new() -> Self {
             let dir = std::env::temp_dir().join(format!("prism-horizon-{}", uuid::Uuid::new_v4()));
             fs::create_dir(&dir).unwrap();
             let script = dir.join("fake horizon-launcher");
+            let home = dir.join("game folder");
+            fs::create_dir(&home).unwrap();
+            let instance = serde_json::json!({"id":"a-name","name":"A name with spaces","home":home,"java":null});
+            fs::write(dir.join("create.json"), instance.to_string()).unwrap();
+            fs::write(dir.join("list.json"), serde_json::json!([
+                instance, {"id":"java","name":"Java","home":"/java","java":{}}
+            ]).to_string()).unwrap();
             fs::write(&script, r#"#!/bin/sh
 case "$1:$2:$3:$#" in
   --json:instance:create:5)
     [ "$4" = '--' ] && [ "$5" = 'A name with spaces' ] || {
         echo 'Horizon rejected the instance name' >&2; exit 2;
     }
-    printf '%s\n' '{"id":"a-name","name":"A name with spaces","home":"/game folder","java":null}'
+    cat "$(dirname "$0")/create.json"
     ;;
   --json:instance:list:3)
-    printf '%s\n' '[{"id":"a-name","name":"A name with spaces","home":"/game folder","java":null},{"id":"java","name":"Java","home":"/java","java":{}}]'
+    cat "$(dirname "$0")/list.json"
     ;;
   play:--instance=a-name::2)
     echo 'error: Sign in with a Microsoft account' >&2
@@ -133,7 +159,7 @@ case "$1:$2:$3:$#" in
 esac
 "#).unwrap();
             fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
-            Self(script)
+            Self(script, home)
         }
 
         fn launcher(&self) -> HorizonLauncher {
@@ -156,12 +182,13 @@ esac
         let instance = launcher.create("A name with spaces").unwrap();
         assert_eq!(instance.id, "a-name");
         assert_eq!(instance.name, "A name with spaces");
-        assert_eq!(instance.home, PathBuf::from("/game folder"));
+        assert_eq!(instance.home, fake.1);
         let listed = launcher.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, instance.id);
 
-        let output = launcher.play(&instance.id, &instance.home).unwrap().wait_with_output().unwrap();
+        let token = mark_link(&instance.home).unwrap();
+        let output = launcher.play(&instance.id, &instance.home, Some(token)).unwrap().wait_with_output().unwrap();
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(String::from_utf8(output.stderr).unwrap().trim(), "error: Sign in with a Microsoft account");
     }
@@ -173,12 +200,26 @@ esac
         let error = launcher.create("wrong argument").unwrap_err().to_string();
         assert!(error.contains("exit status: 2"));
         assert!(error.contains("Horizon rejected the instance name"));
-        let error = launcher.play("a-name", Path::new("/different-home")).unwrap_err();
+        let error = launcher.play("a-name", Path::new("/different-home"), Some(uuid::Uuid::new_v4())).unwrap_err();
         assert!(matches!(error, HorizonError::MissingInstance(_)));
 
         fs::remove_file(&fake.0).unwrap();
         let error = launcher.list().unwrap_err().to_string();
         assert!(error.contains(DOWNLOAD_URL));
         assert!(error.contains("Settings"));
+    }
+
+    #[test]
+    fn reused_id_and_home_cannot_launch_from_an_old_link() {
+        let fake = FakeLauncher::new();
+        let launcher = fake.launcher();
+        let token = mark_link(&fake.1).unwrap();
+        fs::remove_dir_all(&fake.1).unwrap();
+        fs::create_dir(&fake.1).unwrap();
+        mark_link(&fake.1).unwrap();
+
+        for token in [Some(token), None] {
+            assert!(matches!(launcher.play("a-name", &fake.1, token), Err(HorizonError::UnverifiedLink(_))));
+        }
     }
 }
