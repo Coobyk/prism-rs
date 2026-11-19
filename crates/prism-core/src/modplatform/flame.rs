@@ -3,15 +3,13 @@
 
 use super::{install_path, PlatformError, ResourceType};
 use crate::net::{DownloadRequest, Downloader};
+use reqwest::header::HeaderValue;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Arc;
 
-/// Prism's public CurseForge API key (embedded in the original launcher).
-pub const FLAME_API_KEY: &str =
-    "$2a$10$wuAJuNZuted3NORVmpgUC.m8sI.pv1tOPKZyBgLFGjxFp/br0lZCC";
-
 pub const API_BASE: &str = "https://api.curseforge.com/v1";
+pub const API_KEY_ENV: &str = "PRISM_RS_CURSEFORGE_API_KEY";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlameSearchHit {
@@ -44,6 +42,7 @@ pub struct FlameFile {
 
 pub struct FlameApi {
     http: reqwest::Client,
+    api_key: Option<HeaderValue>,
 }
 
 impl FlameApi {
@@ -51,16 +50,30 @@ impl FlameApi {
         FlameApi {
             http: reqwest::Client::builder()
                 .user_agent(format!("prism-rs/{}", env!("CARGO_PKG_VERSION")))
+                .timeout(std::time::Duration::from_secs(30))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .unwrap(),
+            api_key: std::env::var(API_KEY_ENV).ok().and_then(|key| {
+                let key = key.trim();
+                if key.is_empty() {
+                    return None;
+                }
+                let mut header = HeaderValue::from_str(key).ok()?;
+                header.set_sensitive(true);
+                Some(header)
+            }),
         }
     }
 
-    fn get(&self, path: &str) -> reqwest::RequestBuilder {
-        self.http
+    fn get(&self, path: &str) -> Result<reqwest::RequestBuilder, PlatformError> {
+        let key = self.api_key.as_ref().ok_or_else(|| {
+            PlatformError::Request(format!("set {API_KEY_ENV} to a valid CurseForge API key"))
+        })?;
+        Ok(self.http
             .get(format!("{API_BASE}{path}"))
-            .header("x-api-key", FLAME_API_KEY)
-            .header("Accept", "application/json")
+            .header("x-api-key", key)
+            .header("Accept", "application/json"))
     }
 
     /// Search mods in the classId=6 (mods) section.
@@ -71,10 +84,12 @@ impl FlameApi {
         class_id: i64,
         limit: u32,
     ) -> Result<Vec<FlameSearchHit>, PlatformError> {
-        let url = format!(
-            "{API_BASE}/mods/search?gameId=432&searchFilter={query}&classId={class_id}&gameVersion={game_version}&sortField=2&sortOrder=desc&pageSize={limit}"
+        let path = format!(
+            "/mods/search?gameId=432&classId={class_id}&sortField=2&sortOrder=desc&pageSize={limit}"
         );
-        let resp = self.http.get(&url).header("x-api-key", FLAME_API_KEY).send().await?;
+        let resp = self.get(&path)?
+            .query(&[("searchFilter", query), ("gameVersion", game_version)])
+            .send().await?;
         if !resp.status().is_success() {
             return Err(PlatformError::Request(format!("flame search: {}", resp.status())));
         }
@@ -85,13 +100,32 @@ impl FlameApi {
 
     /// List files of a project.
     pub async fn files(&self, project_id: i64) -> Result<Vec<FlameFile>, PlatformError> {
-        let resp = self.get(&format!("/mods/{project_id}/files")).send().await?;
+        let resp = self.get(&format!("/mods/{project_id}/files"))?.send().await?;
         if !resp.status().is_success() {
             return Err(PlatformError::Request(format!("flame files: {}", resp.status())));
         }
         let json: serde_json::Value = resp.json().await?;
         let files: Vec<FlameFile> = serde_json::from_value(json.get("data").cloned().unwrap_or_default())?;
         Ok(files)
+    }
+
+    pub async fn file(&self, project_id: i64, file_id: i64) -> Result<FlameFile, PlatformError> {
+        #[derive(Deserialize)]
+        struct Response {
+            data: FlameFile,
+        }
+
+        let resp = self
+            .get(&format!("/mods/{project_id}/files/{file_id}"))?
+            .send()
+            .await?;
+        if !resp.status().is_success() {
+            return Err(PlatformError::Request(format!(
+                "CurseForge project {project_id}, file {file_id}: {}",
+                resp.status()
+            )));
+        }
+        Ok(resp.json::<Response>().await?.data)
     }
 
     /// Download a file into the instance's resource folder.
@@ -108,6 +142,16 @@ impl FlameApi {
                 file.id
             ))
         })?;
+        if file.fileName.is_empty()
+            || file.fileName == "."
+            || file.fileName == ".."
+            || file.fileName.contains(['/', '\\', ':'])
+        {
+            return Err(PlatformError::Request(format!(
+                "CurseForge file {} has an invalid filename",
+                file.id
+            )));
+        }
         let dest = install_path(game_root, resource_type, &file.fileName);
         let req = DownloadRequest::new(url, &dest);
         downloader.download(&req).await?;
@@ -121,7 +165,7 @@ impl Default for FlameApi {
     }
 }
 
-/// CurseForge `manifest.json` (pack export format).
+/// CurseForge modpack `manifest.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FlameManifest {
     #[serde(default)]
@@ -130,12 +174,16 @@ pub struct FlameManifest {
     pub manifestType: String,
     #[serde(default)]
     pub files: Vec<FlameManifestFile>,
-    #[serde(default)]
+    #[serde(default = "default_overrides")]
     pub overrides: String,
     #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub version: String,
+}
+
+fn default_overrides() -> String {
+    "overrides".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,10 +206,20 @@ impl FlameManifest {
 
     pub fn loader_version(&self) -> Option<(String, String)> {
         let loaders = self.minecraft["modLoaders"].as_array()?;
-        let first = loaders.first()?;
-        let id = first["id"].as_str()?;
-        // e.g. "fabric-0.15.0" or "forge-47.2.0"
+        let loader = loaders
+            .iter()
+            .find(|loader| loader["primary"].as_bool() == Some(true))
+            .or_else(|| loaders.first())?;
+        let id = loader["id"].as_str()?;
         let (kind, version) = id.split_once('-')?;
+        let version = if kind == "neoforge" {
+            version.strip_prefix("1.20.1-").unwrap_or(version)
+        } else {
+            version
+        };
+        if version.is_empty() {
+            return None;
+        }
         Some((kind.to_string(), version.to_string()))
     }
 }
@@ -175,7 +233,10 @@ mod tests {
         let json = serde_json::json!({
             "minecraft": {
                 "version": "1.20.1",
-                "modLoaders": [{"id": "fabric-0.15.0", "primary": true}]
+                "modLoaders": [
+                    {"id": "forge-47.2.0", "primary": false},
+                    {"id": "fabric-0.15.0", "primary": true}
+                ]
             },
             "manifestType": "minecraftModpack",
             "name": "Test",
@@ -184,6 +245,17 @@ mod tests {
         let m: FlameManifest = serde_json::from_value(json).unwrap();
         assert_eq!(m.minecraft_version().as_deref(), Some("1.20.1"));
         assert_eq!(m.loader_version().map(|(k, _)| k), Some("fabric".to_string()));
+        assert_eq!(m.loader_version(), Some(("fabric".into(), "0.15.0".into())));
+        assert_eq!(m.overrides, "overrides");
         assert_eq!(m.files.len(), 1);
+        assert_eq!((m.files[0].projectID, m.files[0].fileID), (1, 2));
+    }
+
+    #[test]
+    fn parses_legacy_neoforge_loader() {
+        let manifest: FlameManifest = serde_json::from_value(serde_json::json!({
+            "minecraft": {"modLoaders": [{"id": "neoforge-1.20.1-47.1.106"}]}
+        })).unwrap();
+        assert_eq!(manifest.loader_version(), Some(("neoforge".into(), "47.1.106".into())));
     }
 }

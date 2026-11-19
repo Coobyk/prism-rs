@@ -30,8 +30,15 @@ Headless CLI (used to verify the launch pipeline without a GUI):
 
 ```sh
 prism-rs prepare 1.20.1          # fetch metadata, download game files, print the java command
-prism-rs import pack.mrpack      # import a Modrinth modpack / MultiMC instance zip
+prism-rs import pack.mrpack     # import a Modrinth modpack
+prism-rs import pack.zip        # import a CurseForge modpack or MultiMC instance
 ```
+
+For CurseForge packs that list downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
+your own CurseForge API key before running the CLI or opening the launcher.
+Files unavailable for automatic download are listed in
+`curseforge-missing-files.txt` in the new instance folder and can be added
+manually to its Minecraft `mods` folder.
 
 ## Architecture
 
@@ -50,7 +57,7 @@ crates/prism-core
   auth.rs         accounts.json, offline accounts, MSA device-code login (XBL→XSTS→MC)
   modplatform/    Modrinth (search/versions/install/.mrpack) and CurseForge (Flame)
   resources.rs    local mod/pack scanning (fabric.mod.json, mods.toml, mcmod.info, quilt)
-  import.rs       instance import: .mrpack, CurseForge manifest (partial), MultiMC zips
+  import.rs       instance import: .mrpack, CurseForge modpacks, MultiMC zips
   news.rs         Atom/RSS news feed
 
 crates/prism-ui (GPUI)
@@ -72,12 +79,13 @@ Working today:
 - Version manifest browsing, loader install (Fabric/Quilt from meta APIs, Forge/NeoForge via
   installer)
 - Modrinth: search, install mods, import `.mrpack` modpacks
+- CurseForge: import modpack zips
 - Offline accounts; MSA device-code login implemented end-to-end
 - Global + per-instance settings (memory, Java, window size)
 - Live console with log capture; kill running instances
 - News feed, grouped instance list, persistent config
 
-Not yet at parity (tracked in the issue tracker of your heart): CurseForge/ATL/FTB/Technic pack
+Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
 import, instance export (Prism zip / mrpack / CurseForge), servers.dat NBT editing, screenshots
 upload, themes/translations, updater, jar mods, profiling tools, per-instance console window
 options, quick-play singleplayer/multiplayer dialogs.
