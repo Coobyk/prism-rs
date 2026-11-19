@@ -3,6 +3,7 @@
 mod accounts_window;
 mod dialogs;
 mod instance_window;
+mod instance_settings_page;
 mod main_window;
 mod settings_window;
 mod state;
@@ -20,7 +21,7 @@ fn main() {
         .init();
 
     // Headless CLI: verify/test the launch pipeline without a GUI.
-    // Usage: prism-rs prepare <mc-version> [--world <name> | --server <host[:port]>] | import <pack-file>
+    // Usage: prism-rs prepare <mc-version> | prepare --instance <id> | import <pack-file>
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("export") {
         if args.len() != 4 {
@@ -176,6 +177,30 @@ fn headless_import(path: &str) -> i32 {
 }
 
 fn headless_prepare(version: &str, args: &[String]) -> i32 {
+    let paths = prism_core::Paths::new();
+    let instance = if version == "--instance" {
+        let [id] = args else {
+            eprintln!("Usage: prism-rs prepare --instance <id>");
+            return 1;
+        };
+        let list = match prism_core::InstanceList::load(&paths) {
+            Ok(list) => list,
+            Err(error) => {
+                eprintln!("Could not load instances: {error}");
+                return 1;
+            }
+        };
+        match list.get(id).filter(|instance| !instance.is_horizon()) {
+            Some(instance) => Some(instance.clone()),
+            None => {
+                eprintln!("Java instance not found: {id}");
+                return 1;
+            }
+        }
+    } else {
+        None
+    };
+    let args = if instance.is_some() { &[][..] } else { args };
     let quick_play = match args {
         [] => None,
         [flag, world] if flag == "--world" && !world.is_empty() => {
@@ -195,8 +220,30 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             return 1;
         }
     };
-    let paths = prism_core::Paths::new();
     paths.ensure().expect("failed to create data dirs");
+    let settings = if let Some(instance) = &instance {
+        prism_core::launch::LaunchSettings::for_instance(instance, &paths)
+    } else {
+        prism_core::launch::LaunchSettings {
+            quick_play,
+            instance_name: "headless-test".into(),
+            instance_id: "headless-test".into(),
+            instance_dir: paths.instances_dir().join("headless-test"),
+            game_dir: paths.instances_dir().join("headless-test").join(".minecraft"),
+            mc_version: version.into(),
+            java_path: prism_core::java::find_java().unwrap_or_else(|| "java".into()),
+            min_memory_mb: 512,
+            max_memory_mb: 2048,
+            extra_jvm_args: vec![],
+            window_width: 854,
+            window_height: 480,
+            env: vec![],
+            pre_launch_command: String::new(),
+            wrapper_command: String::new(),
+            post_exit_command: String::new(),
+        }
+    };
+    let version = settings.mc_version.as_str();
     let runtime = prism_core::net::CoreRuntime::new();
     let launcher = prism_core::launch::Launcher::new(paths.clone(), runtime.downloader.clone());
 
@@ -204,8 +251,46 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
         println!("Fetching version metadata for {version}…");
         let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
         let mut profile = prism_core::profile::LaunchProfile::from_mojang(&vd);
-        // Loader overlay if the caller set PRISM_RS_LOADER (e.g. "0.16.14").
-        if let Ok(loader_version) = std::env::var("PRISM_RS_FABRIC") {
+        if let Some(instance) = &instance {
+            let loader = prism_core::instance::loader_of(instance);
+            match &loader {
+                prism_core::loaders::Loader::None => {}
+                prism_core::loaders::Loader::Forge { .. }
+                | prism_core::loaders::Loader::NeoForge { .. } => {
+                    launcher.prepare_files(&profile, &settings)
+                        .await.expect("vanilla prepare failed");
+                    let versions = settings.game_dir.join("versions").join(version);
+                    std::fs::create_dir_all(&versions).unwrap();
+                    std::fs::copy(
+                        launcher.client_jar_path(version),
+                        versions.join(format!("{version}.jar")),
+                    ).unwrap();
+                    let overlay = prism_core::loaders::ensure_forge_installed(
+                        &settings.java_path,
+                        &loader,
+                        version,
+                        &settings.game_dir,
+                        &runtime.downloader,
+                    )
+                    .await
+                    .expect("loader installation failed");
+                    profile.apply_loader(&overlay);
+                }
+                _ => {
+                    let overlay = prism_core::loaders::fetch_loader_profile(
+                        runtime.downloader.client(), &loader, version,
+                    )
+                    .await
+                    .expect("loader profile fetch failed");
+                    profile.apply_loader(&overlay);
+                }
+            }
+        }
+        // Version-only preparation can select Fabric via PRISM_RS_FABRIC.
+        if let Some(loader_version) = std::env::var("PRISM_RS_FABRIC")
+            .ok()
+            .filter(|_| instance.is_none())
+        {
             if !loader_version.is_empty() {
                 let loader = prism_core::loaders::Loader::Fabric { version: loader_version };
                 let lvd = prism_core::loaders::fetch_loader_profile(
@@ -227,22 +312,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             profile.java_major
         );
 
-        let game_dir = paths.instances_dir().join("headless-test").join(".minecraft");
-        std::fs::create_dir_all(&game_dir).unwrap();
-        let settings = prism_core::launch::LaunchSettings {
-            quick_play,
-            instance_name: "headless-test".into(),
-            instance_id: "headless-test".into(),
-            game_dir: game_dir.clone(),
-            mc_version: version.into(),
-            java_path: prism_core::java::find_java().unwrap_or_else(|| "java".into()),
-            min_memory_mb: 512,
-            max_memory_mb: 2048,
-            extra_jvm_args: vec![],
-            window_width: 854,
-            window_height: 480,
-            env: vec![],
-        };
+        std::fs::create_dir_all(&settings.game_dir).unwrap();
 
         println!("Downloading game files…");
         launcher.prepare_files(&profile, &settings).await.expect("prepare failed");
@@ -254,17 +324,10 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             println!("  {arg}");
         }
 
-        // Emit a runnable script (run paths through the same substitution).
-        let script = format!(
-            "#!/bin/sh\ncd '{}'\nexec {}\n",
-            prepared.working_dir.display(),
-            prepared
-                .command
-                .iter()
-                .map(|a| format!("'{}'", a.replace('\'', "'\\''")))
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
+        println!("Environment: {:?}", prepared.env);
+        println!("Pre-launch: {}", prepared.pre_launch_command);
+        println!("Post-exit: {}", prepared.post_exit_command);
+        let script = prepared.shell_script().expect("invalid launch command");
         let script_path = paths.root.join("launch-headless.sh");
         std::fs::write(&script_path, script).unwrap();
         println!("\nLaunch script written to {}", script_path.display());

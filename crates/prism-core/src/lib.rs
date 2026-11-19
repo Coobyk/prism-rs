@@ -11,6 +11,7 @@ pub mod horizon;
 pub mod import;
 pub mod ini;
 pub mod instance;
+pub mod instance_settings;
 pub mod java;
 pub mod launch;
 pub mod loaders;

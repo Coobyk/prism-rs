@@ -191,7 +191,7 @@ impl App {
                     }
                     child
                 });
-                monitor_launch(running, "Horizon", result);
+                monitor_launch(running, "Horizon", result, None);
             });
             cx.spawn(async move |this, cx| {
                 if let Ok(current_home) = rx.await {
@@ -324,7 +324,8 @@ impl App {
             // 3. Command + spawn.
             let prepared = launcher.build_command(&settings, session.as_ref(), &profile);
             log_lock(&log).push(format!("Command: {}", prepared.command.join(" ")));
-            monitor_launch(running, "Minecraft", prepared.spawn());
+            let result = prepared.spawn_with_output(|line| log_lock(&log).push(line));
+            monitor_launch(running, "Minecraft", result, Some(prepared));
         });
     }
 
@@ -395,6 +396,7 @@ fn monitor_launch(
     running: RunningInstance,
     game: &str,
     result: Result<std::process::Child, impl std::fmt::Display>,
+    prepared: Option<prism_core::launch::PreparedLaunch>,
 ) {
     let mut child = match result {
         Ok(child) => child,
@@ -418,6 +420,16 @@ fn monitor_launch(
     std::thread::spawn(move || {
         let status = child.wait();
         *pid_lock(&running.pid) = None;
+        if let Some(prepared) = prepared {
+            if let Err(error) = prepared.run_post_exit_with_output(|line| log_lock(&running.log).push(line))
+            {
+                log_lock(&running.log).push(format!("Post-exit command failed: {error}"));
+                state_lock(&running.state, |state| {
+                    *state = InstanceRunState::Crashed(error.to_string())
+                });
+                return;
+            }
+        }
         match status {
             Ok(code) if code.success() => {
                 log_lock(&running.log).push("Game exited normally".to_string());
