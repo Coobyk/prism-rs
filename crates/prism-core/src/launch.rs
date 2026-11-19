@@ -4,6 +4,7 @@
 //! instead of the bundled launcher agent).
 
 use crate::meta::{self, VersionData};
+use crate::loaders::{self, Loader};
 use crate::net::{DownloadRequest, Downloader, NetError};
 use crate::profile::{LaunchProfile, ResolvedLibrary, DEFAULT_JVM_ARGUMENTS, LEGACY_GAME_ARGUMENTS};
 use crate::Paths;
@@ -311,6 +312,8 @@ pub enum LaunchError {
     IncompatibleJava { mc: String, path: PathBuf, found: u32, required: Vec<u32> },
     #[error("java download: {0}")]
     JavaDownload(#[from] crate::java::JavaDownloadError),
+    #[error("could not prepare {loader:?}: {message}")]
+    Loader { loader: Loader, message: String },
 }
 
 fn join_majors(majors: &[u32]) -> String {
@@ -329,8 +332,12 @@ pub struct PreparedLaunch {
     pub command_error: Option<String>,
 }
 
+pub type HookOutput = Box<dyn FnMut(String)>;
+
 impl PreparedLaunch {
-    fn hook(&self, script: &str, label: &str, output: &mut impl FnMut(String)) -> std::io::Result<()> {
+    fn hook(&self, script: &str, label: &'static str, output: Option<HookOutput>) -> std::io::Result<()> {
+        use std::process::Stdio;
+
         if script.trim().is_empty() {
             return Ok(());
         }
@@ -343,19 +350,24 @@ impl PreparedLaunch {
             command.args(["-c", script]);
             command
         };
-        let captured = command
+        command
             .current_dir(&self.instance_dir)
             .envs(self.env.iter().cloned())
-            .output()?;
-        for (stream, bytes) in [("stdout", &captured.stdout), ("stderr", &captured.stderr)] {
-            for line in String::from_utf8_lossy(bytes).lines() {
-                output(format!("{label} ({stream}): {line}"));
+            .stdin(Stdio::null());
+        let status = if let Some(mut output) = output {
+            let captured = command.output()?;
+            for (stream, bytes) in [("stdout", &captured.stdout), ("stderr", &captured.stderr)] {
+                for line in String::from_utf8_lossy(bytes).lines() {
+                    output(format!("{label} ({stream}): {line}"));
+                }
             }
-        }
-        if !captured.status.success() {
+            captured.status
+        } else {
+            command.status()?
+        };
+        if !status.success() {
             return Err(std::io::Error::other(format!(
-                "Hook command failed ({}): {script}",
-                captured.status
+                "Hook command failed ({status}): {script}"
             )));
         }
         Ok(())
@@ -363,11 +375,11 @@ impl PreparedLaunch {
 
     /// Call after waiting for the game, including unsuccessful game exits.
     pub fn run_post_exit(&self) -> std::io::Result<()> {
-        self.run_post_exit_with_output(|line| println!("{line}"))
+        self.hook(&self.post_exit_command, "Post-exit", None)
     }
 
-    pub fn run_post_exit_with_output(&self, mut output: impl FnMut(String)) -> std::io::Result<()> {
-        self.hook(&self.post_exit_command, "Post-exit", &mut output)
+    pub fn run_post_exit_with_output(&self, output: HookOutput) -> std::io::Result<()> {
+        self.hook(&self.post_exit_command, "Post-exit", Some(output))
     }
 
     /// POSIX script with the same environment, wrapper and hooks as spawn().
@@ -412,18 +424,26 @@ impl PreparedLaunch {
     }
 
     pub fn spawn(&self) -> std::io::Result<std::process::Child> {
-        self.spawn_with_output(|line| println!("{line}"))
+        self.spawn_with(None, std::process::Command::spawn)
     }
 
     pub fn spawn_with_output(
         &self,
-        mut output: impl FnMut(String),
+        output: HookOutput,
+    ) -> std::io::Result<std::process::Child> {
+        self.spawn_with(Some(output), std::process::Command::spawn)
+    }
+
+    pub fn spawn_with(
+        &self,
+        output: Option<HookOutput>,
+        spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Child>,
     ) -> std::io::Result<std::process::Child> {
         use std::process::{Command, Stdio};
         if let Some(error) = &self.command_error {
             return Err(std::io::Error::other(error.clone()));
         }
-        self.hook(&self.pre_launch_command, "Pre-launch", &mut output)?;
+        self.hook(&self.pre_launch_command, "Pre-launch", output)?;
         let mut cmd = Command::new(&self.command[0]);
         cmd.args(&self.command[1..])
             .current_dir(&self.working_dir)
@@ -433,7 +453,7 @@ impl PreparedLaunch {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
-        cmd.spawn()
+        spawn(&mut cmd)
     }
 }
 
@@ -550,25 +570,27 @@ impl Launcher {
         }
     }
 
-    pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
-        let libraries_dir = self.paths.libraries_dir();
-
-        // Client jar.
-        let client_jar = self.client_jar_path(&profile.minecraft_version);
+    async fn ensure_client_jar(&self, version: &str) -> Result<PathBuf, LaunchError> {
+        let client_jar = self.client_jar_path(version);
         if !client_jar.exists() {
             let url = self
-                .cached_client_url(&profile.minecraft_version)
+                .cached_client_url(version)
                 .await
                 .unwrap_or_else(|| {
                     format!(
-                        "https://s3.amazonaws.com/Minecraft.Download/versions/{0}/{0}.jar",
-                        profile.minecraft_version
+                        "https://s3.amazonaws.com/Minecraft.Download/versions/{version}/{version}.jar"
                     )
                 });
             self.downloader
                 .download(&DownloadRequest::new(url, &client_jar))
                 .await?;
         }
+        Ok(client_jar)
+    }
+
+    pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
+        let libraries_dir = self.paths.libraries_dir();
+        self.ensure_client_jar(&profile.minecraft_version).await?;
 
         // Libraries.
         // Old versions list some artifacts twice (once plain, once with
@@ -658,6 +680,63 @@ impl Launcher {
         let p = self.paths.metadata_dir().join("net.minecraft").join(format!("{version}.json"));
         let text = std::fs::read_to_string(p).ok()?;
         VersionData::from_json(&serde_json::from_str(&text).ok()?).ok()
+    }
+
+    /// Resolve the game and loader, select Java, and prepare the files for an installed instance.
+    pub async fn prepare_instance(
+        &self,
+        settings: &mut LaunchSettings,
+        loader: Loader,
+        mut progress: impl FnMut(String),
+    ) -> Result<LaunchProfile, LaunchError> {
+        let version_data = self.fetch_version_data(&settings.mc_version).await?;
+        let mut profile = LaunchProfile::from_mojang(&version_data);
+        progress(self.resolve_java(settings, &profile).await?);
+
+        if loader != Loader::None {
+            progress(format!("Preparing loader: {loader:?}"));
+            let version = &settings.mc_version;
+            let overlay = match &loader {
+                Loader::Forge { .. } | Loader::NeoForge { .. } => {
+                    let versions_dir = settings.game_dir.join("versions").join(version);
+                    let destination = versions_dir.join(format!("{version}.jar"));
+                    if !destination.exists() {
+                        let client = self.ensure_client_jar(version).await?;
+                        tokio::fs::create_dir_all(&versions_dir).await?;
+                        tokio::fs::copy(client, destination).await?;
+                    }
+                    loaders::ensure_forge_installed(
+                        &settings.java_path,
+                        &loader,
+                        version,
+                        &settings.game_dir,
+                        &self.downloader,
+                    )
+                    .await
+                }
+                _ => loaders::fetch_loader_profile(self.downloader.client(), &loader, version).await,
+            }
+            .map_err(|message| LaunchError::Loader { loader, message })?;
+            profile.apply_loader(&overlay);
+        }
+
+        progress(format!(
+            "Resolved profile: mainClass={}, libraries={}, natives={}",
+            profile.main_class,
+            profile.libraries.len(),
+            profile.natives.len()
+        ));
+        if matches!(settings.quick_play, Some(QuickPlayTarget::Singleplayer { .. }))
+            && !profile.supports_quick_play_singleplayer()
+        {
+            progress(format!(
+                "Minecraft {} does not support Quick Play singleplayer; launching to the title screen",
+                settings.mc_version
+            ));
+        }
+        self.prepare_files(&profile, settings).await?;
+        progress("Downloads complete".to_string());
+        Ok(profile)
     }
 
     async fn cached_client_url(&self, version: &str) -> Option<String> {
@@ -941,6 +1020,62 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn post_exit_hook_reports_partial_output_on_the_calling_thread() {
+        use std::{sync::mpsc, time::Duration};
+
+        let dir = tempfile::tempdir().unwrap();
+        let launch = PreparedLaunch {
+            command: Vec::new(),
+            working_dir: dir.path().into(),
+            env: Vec::new(),
+            instance_dir: dir.path().into(),
+            pre_launch_command: String::new(),
+            post_exit_command: r#"
+                printf foreground
+                printf diagnostic >&2
+                (
+                    i=0
+                    while [ ! -f release ] && [ "$i" -lt 100 ]; do
+                        sleep 0.05
+                        i=$((i+1))
+                    done
+                    printf 'background\n'
+                    touch background-finished
+                ) >background.log 2>&1 &
+            "#.into(),
+            command_error: None,
+        };
+        let (tx, rx) = mpsc::channel();
+        let runner = std::thread::spawn(move || {
+            let (output_tx, output_rx) = mpsc::channel();
+            let caller = std::thread::current().id();
+            let result = launch.run_post_exit_with_output(Box::new(move |line| {
+                let _ = output_tx.send((std::thread::current().id(), line));
+            }));
+            let _ = tx.send(result.map(|()| (caller, output_rx.try_iter().collect::<Vec<_>>())));
+        });
+        let result = rx.recv_timeout(Duration::from_secs(3));
+        std::fs::write(dir.path().join("release"), []).unwrap();
+        runner.join().unwrap();
+        let (caller, mut output) = result.unwrap().unwrap();
+        output.sort_by(|(_, lhs), (_, rhs)| lhs.cmp(rhs));
+        assert_eq!(output, [
+            (caller, "Post-exit (stderr): diagnostic".into()),
+            (caller, "Post-exit (stdout): foreground".into()),
+        ]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !dir.path().join("background-finished").exists() {
+            assert!(std::time::Instant::now() < deadline, "background hook did not finish");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("background.log")).unwrap(),
+            "background\n"
+        );
+    }
 
     #[test]
     fn server_addresses() {

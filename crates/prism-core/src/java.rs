@@ -140,6 +140,17 @@ pub fn parse_java_version(text: &str) -> Option<JavaVersion> {
 const MOJANG_RUNTIMES_URL: &str =
     "https://piston-meta.mojang.com/v1/products/java-runtime/2ec0cc96c44e5a76b9c8b7c39df7210883d12871/all.json";
 
+fn lock_runtime_installs(java_dir: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::create_dir_all(java_dir)?;
+    let file = std::fs::File::options()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(java_dir.join(".install.lock"))?;
+    fs2::FileExt::lock_exclusive(&file)?;
+    Ok(file)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum JavaDownloadError {
     #[error(transparent)]
@@ -177,11 +188,11 @@ pub async fn install_mojang_runtime(
     component: &str,
 ) -> Result<PathBuf, JavaDownloadError> {
     let os = mojang_runtime_os().ok_or(JavaDownloadError::UnsupportedPlatform)?;
-    // One install at a time: two launches needing the same runtime would
-    // otherwise share a staging directory. The second one reuses the first's.
-    static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-    let _guard = INSTALL_LOCK.lock().await;
     let runtime_dir = java_dir.join(component);
+    let lock_dir = java_dir.to_path_buf();
+    let _guard = tokio::task::spawn_blocking(move || lock_runtime_installs(&lock_dir))
+        .await
+        .map_err(std::io::Error::other)??;
     if let Some(java) = runtime_java_binary(&runtime_dir) {
         return Ok(java);
     }
@@ -265,6 +276,24 @@ async fn populate_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn waits_for_another_installer_to_publish_the_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let java_dir = dir.path();
+        let lock = lock_runtime_installs(java_dir).unwrap();
+        let component = "java-runtime-gamma";
+        let downloader = Arc::new(Downloader::new());
+        let mut install = Box::pin(install_mojang_runtime(&downloader, java_dir, component));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), &mut install)
+            .await.is_err());
+        let binary = java_dir.join(component).join("bin").join(java_binary_name());
+        std::fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        std::fs::write(&binary, []).unwrap();
+        drop(lock);
+        assert_eq!(install.await.unwrap(), binary);
+    }
 
     #[test]
     fn parses_versions() {

@@ -1770,6 +1770,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "futf"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4805,6 +4815,7 @@ checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 name = "prism-core"
 version = "0.1.0"
 dependencies = [
+ "fs2",
  "futures",
  "hex",
  "md-5",
@@ -4813,6 +4824,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -4824,9 +4836,13 @@ dependencies = [
 name = "prism-ui"
 version = "0.1.0"
 dependencies = [
+ "dirs 6.0.0",
+ "fs2",
  "gpui-kit",
+ "libc",
  "prism-core",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",

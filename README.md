@@ -30,10 +30,19 @@ Headless CLI (used to verify the launch pipeline without a GUI):
 
 ```sh
 prism-rs prepare 1.20.1          # fetch metadata, download game files, print the java command
+prism-rs instances              # list installed instances with their IDs
+prism-rs launch my-instance      # launch an installed instance without the launcher window
 prism-rs import pack.mrpack      # import a Modrinth modpack
 prism-rs import pack.zip        # import a CurseForge modpack or MultiMC instance
 prism-rs export my-instance out.zip # export Prism zip (or out.mrpack for Modrinth)
 ```
+
+On Linux, select an instance and click **Create Shortcut** to add a `.desktop` launcher to
+your desktop. It uses the current launcher binary and data directory, so recreate the
+shortcut if either moves. Some desktop environments ask you to trust a new shortcut before
+opening it. A terminal shows game output and stays open on launch or cleanup failure.
+Redirect stdout and stderr from any background hook job that should outlive the hook.
+The GUI waits for captured output to close; CLI launches pass hook output to the terminal.
 
 For automatic CurseForge downloads, set `PRISM_RS_CURSEFORGE_API_KEY` to
 your own CurseForge API key before running the CLI or opening the launcher.
@@ -112,6 +121,7 @@ Working today:
 - Quick Play singleplayer worlds and multiplayer servers, with dialogs and headless prepare options
 - News feed, grouped instance list, persistent config
 - Instance export: Prism zip and Modrinth mrpack (CLI and instance toolbar)
+- Direct instance launch from the CLI and Linux desktop shortcuts
 
 Not yet at parity (tracked in the issue tracker of your heart): ATL/FTB/Technic pack
 import, CurseForge export, screenshots

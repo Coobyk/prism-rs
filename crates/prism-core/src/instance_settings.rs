@@ -501,38 +501,45 @@ mod tests {
                 .unwrap()
                 .starts_with("Example:")
         );
-        let mut output = Vec::new();
-        prepared.pre_launch_command = "printf 'hello\\nworld\\n'; printf 'warning\\n' >&2".into();
+        let output = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let capture = || {
+            let output = output.clone();
+            Box::new(move |line| output.lock().unwrap().push(line))
+        };
+        let take_output = || std::mem::take(&mut *output.lock().unwrap());
+        prepared.pre_launch_command = "printf 'hello\\nworld\\n'; printf 'warning\\n' >/dev/stderr".into();
         prepared
-            .spawn_with_output(|line| output.push(line))
+            .spawn_with_output(capture())
             .unwrap()
             .wait()
             .unwrap();
-        assert_eq!(output, [
+        let mut lines = take_output();
+        lines.sort();
+        assert_eq!(lines, [
+            "Pre-launch (stderr): warning",
             "Pre-launch (stdout): hello",
             "Pre-launch (stdout): world",
-            "Pre-launch (stderr): warning",
         ]);
-        output.clear();
         prepared.post_exit_command = "echo done; echo failed >&2; exit 2".into();
         assert!(prepared
-            .run_post_exit_with_output(|line| output.push(line))
+            .run_post_exit_with_output(capture())
             .is_err());
-        assert_eq!(output, ["Post-exit (stdout): done", "Post-exit (stderr): failed"]);
-        output.clear();
+        let mut lines = take_output();
+        lines.sort();
+        assert_eq!(lines, ["Post-exit (stderr): failed", "Post-exit (stdout): done"]);
         prepared.post_exit_command.clear();
         prepared
-            .run_post_exit_with_output(|line| output.push(line))
+            .run_post_exit_with_output(capture())
             .unwrap();
-        assert!(output.is_empty());
+        assert!(take_output().is_empty());
         prepared.pre_launch_command = "echo aborted >&2; exit 9".into();
         prepared.command = vec!["/not/a/real/executable".into()];
         assert!(prepared
-            .spawn_with_output(|line| output.push(line))
+            .spawn_with_output(capture())
             .unwrap_err()
             .to_string()
             .contains("Hook command failed"));
-        assert_eq!(output, ["Pre-launch (stderr): aborted"]);
+        assert_eq!(take_output(), ["Pre-launch (stderr): aborted"]);
         prepared.pre_launch_command.clear();
         assert!(prepared.spawn().is_err());
         prepared.post_exit_command = "exit 2".into();

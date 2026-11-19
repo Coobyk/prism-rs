@@ -3,7 +3,7 @@
 
 use crate::launch::MSA_CLIENT_ID;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::{io::{self, Write}, path::{Path, PathBuf}};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -44,6 +44,18 @@ pub struct AccountList {
 }
 
 impl AccountList {
+    pub async fn session_for_account(
+        path: &Path,
+        account_id: &str,
+    ) -> Result<Option<crate::launch::AuthSession>, AuthError> {
+        let mut accounts = Self::load(path);
+        if !accounts.accounts.iter().any(|account| account.id == account_id) {
+            return Err(AuthError::AccountRemoved);
+        }
+        accounts.active = Some(account_id.to_owned());
+        accounts.session_for_launch(path).await
+    }
+
     pub async fn session_for_launch(
         &mut self,
         path: &Path,
@@ -73,17 +85,13 @@ impl AccountList {
         let refreshed = refresh(account.clone())
             .await
             .map_err(|_| AuthError::SignInAgain)?;
-        let mut updated: AccountList = match std::fs::read_to_string(path) {
-            Ok(json) => serde_json::from_str(&json)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => AccountList::default(),
-            Err(error) => return Err(error.into()),
-        };
-        for stored in &mut updated.accounts {
-            if stored.id == account.id {
-                *stored = refreshed.clone();
+        let (updated, _) = Self::edit_inner(path, false, |updated| {
+            for stored in &mut updated.accounts {
+                if stored.id == account.id && stored.refresh_token == account.refresh_token {
+                    *stored = refreshed.clone();
+                }
             }
-        }
-        updated.save(path)?;
+        })?;
         *self = updated;
         Ok(Some(self.to_session(&refreshed)))
     }
@@ -95,11 +103,55 @@ impl AccountList {
             .unwrap_or_default()
     }
 
-    pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
+    /// Edit the latest account list, returning any backup of malformed data.
+    pub fn edit(path: &Path, edit: impl FnOnce(&mut Self)) -> io::Result<(Self, Option<PathBuf>)> {
+        Self::edit_inner(path, true, edit)
+    }
+
+    fn edit_inner(
+        path: &Path,
+        recover_invalid: bool,
+        edit: impl FnOnce(&mut Self),
+    ) -> io::Result<(Self, Option<PathBuf>)> {
+        let parent = account_dir(path);
+        std::fs::create_dir_all(parent)?;
+        let lock = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let mut recovered_backup = None;
+        let mut accounts = match std::fs::read(path) {
+            Ok(json) => match serde_json::from_slice(&json) {
+                Ok(accounts) => accounts,
+                Err(_) if recover_invalid => {
+                    let mut backup = tempfile::Builder::new()
+                        .prefix("accounts.json.corrupt-")
+                        .tempfile_in(parent)?;
+                    backup.write_all(&json)?;
+                    let (_, backup_path) = backup.keep().map_err(|error| error.error)?;
+                    recovered_backup = Some(backup_path);
+                    Self::default()
+                }
+                Err(error) => return Err(error.into()),
+            },
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
+            Err(error) => return Err(error),
+        };
+        edit(&mut accounts);
+        accounts.save(path)?;
+        Ok((accounts, recovered_backup))
+    }
+
+    pub fn save(&self, path: &Path) -> io::Result<()> {
+        let parent = account_dir(path);
+        std::fs::create_dir_all(parent)?;
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        serde_json::to_writer_pretty(&mut file, self)?;
+        file.flush()?;
+        file.persist(path).map_err(|error| error.error)?;
+        Ok(())
     }
 
     pub fn active_account(&self) -> Option<&MinecraftAccount> {
@@ -145,6 +197,10 @@ impl AccountList {
     }
 }
 
+fn account_dir(path: &Path) -> &Path {
+    path.parent().filter(|parent| !parent.as_os_str().is_empty()).unwrap_or(Path::new("."))
+}
+
 // ---------------------------------------------------------------------------
 // MSA device-code flow
 // ---------------------------------------------------------------------------
@@ -176,6 +232,8 @@ fn default_interval() -> u64 {
 
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    #[error("The selected account was removed before launch")]
+    AccountRemoved,
     #[error("Microsoft account refresh failed. Please sign in again before launching.")]
     SignInAgain,
     #[error("network: {0}")]
@@ -435,6 +493,55 @@ fn now_unix() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn pending_launch_keeps_the_selected_account_if_the_active_account_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let mut accounts = AccountList::default();
+        let player_id = accounts.add_offline("Player").id.clone();
+        accounts.active = Some(accounts.add_offline("Other").id.clone());
+        accounts.save(&path).unwrap();
+        let session = AccountList::session_for_account(&path, &player_id).await.unwrap().unwrap();
+        assert_eq!(session.player_name, "Player");
+        assert_eq!(AccountList::load(&path).active_account().unwrap().player_name, "Other");
+        accounts.accounts.remove(0);
+        accounts.save(&path).unwrap();
+        assert!(matches!(AccountList::session_for_account(&path, &player_id).await, Err(AuthError::AccountRemoved)));
+    }
+
+    #[test]
+    fn account_edits_recover_from_invalid_json_and_keep_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let malformed = b"{not valid JSON";
+        std::fs::write(&path, malformed).unwrap();
+        let (_, backup) = AccountList::edit(&path, |accounts| {
+            accounts.add_offline("Player");
+        }).unwrap();
+        assert_eq!(std::fs::read(backup.unwrap()).unwrap(), malformed);
+        assert_eq!(AccountList::load(&path).accounts[0].player_name, "Player");
+    }
+
+    #[test]
+    fn changing_active_account_preserves_credentials_refreshed_on_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("accounts.json");
+        let mut gui = AccountList::default();
+        gui.add_offline("Online");
+        gui.accounts[0].account_type = AccountType::Msa;
+        gui.accounts[0].refresh_token = Some("old".into());
+        let offline_id = gui.add_offline("Offline").id.clone();
+        gui.save(&path).unwrap();
+        AccountList::edit(&path, |accounts| {
+            accounts.accounts[0].refresh_token = Some("refreshed".into());
+        }).unwrap();
+        assert_eq!(gui.accounts[0].refresh_token.as_deref(), Some("old"));
+        AccountList::edit(&path, |accounts| accounts.active = Some(offline_id.clone())).unwrap();
+        let saved = AccountList::load(&path);
+        assert_eq!(saved.active, Some(offline_id));
+        assert_eq!(saved.accounts[0].refresh_token.as_deref(), Some("refreshed"));
+    }
 
     #[tokio::test]
     async fn expired_launch_refreshes_and_persists() {

@@ -145,20 +145,22 @@ impl MainWindow {
 
     fn on_cycle_account(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _cx| {
-            if app.accounts.accounts.is_empty() {
-                app.accounts.add_offline("Player");
-            } else {
-                // Cycle to the next account.
-                let idx = app
-                    .accounts
-                    .active
-                    .as_deref()
-                    .and_then(|id| app.accounts.accounts.iter().position(|a| a.id == id))
-                    .map(|i| (i + 1) % app.accounts.accounts.len())
-                    .unwrap_or(0);
-                app.accounts.active = Some(app.accounts.accounts[idx].id.clone());
+            let notice = app.edit_accounts(|accounts| {
+                if accounts.accounts.is_empty() {
+                    accounts.add_offline("Player");
+                } else {
+                    let idx = accounts
+                        .active
+                        .as_deref()
+                        .and_then(|id| accounts.accounts.iter().position(|a| a.id == id))
+                        .map(|i| (i + 1) % accounts.accounts.len())
+                        .unwrap_or(0);
+                    accounts.active = Some(accounts.accounts[idx].id.clone());
+                }
+            });
+            if let Some(notice) = notice {
+                app.toast = Some((notice, std::time::Instant::now()));
             }
-            app.save_accounts();
         });
         cx.notify();
     }
@@ -321,7 +323,7 @@ impl MainWindow {
 
         let selected2 = selected.clone();
         let _ = selected2;
-        div()
+        let sidebar = div()
             .w(px(if horizon { 184. } else { 160. }))
             .flex()
             .flex_col()
@@ -421,8 +423,13 @@ impl MainWindow {
                     enabled && !(horizon && is_running),
                 )
                     .on_click(cx.listener(Self::on_delete)),
-            )
-            .child(self.sidebar_button("shortcut", "Create Shortcut", enabled))
+            );
+        #[cfg(target_os = "linux")]
+        let sidebar = sidebar.child(
+            self.sidebar_button("shortcut", "Create Shortcut", enabled)
+                .on_click(cx.listener(Self::on_create_shortcut)),
+        );
+        sidebar
     }
 
     fn sidebar_button(&self, id: &str, label: &str, enabled: bool) -> Button {
@@ -484,6 +491,21 @@ impl MainWindow {
         cx.notify();
     }
 
+    #[cfg(target_os = "linux")]
+    fn on_create_shortcut(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        self.app.update(cx, |app, _| {
+            let Some(instance) = app.selected_instance() else {
+                return;
+            };
+            let message = match crate::shortcut::create(&app.paths, instance) {
+                Ok(path) => format!("Created shortcut: {}", path.display()),
+                Err(error) => format!("Could not create shortcut: {error}"),
+            };
+            app.toast = Some((message, std::time::Instant::now()));
+        });
+        cx.notify();
+    }
+
     fn on_kill(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let id = self.app.read(cx).selected.clone();
         if let Some(id) = id {
@@ -515,7 +537,13 @@ impl MainWindow {
             .app
             .read(cx)
             .selected_instance()
-            .map(|i| if i.is_horizon() { i.game_root() } else { i.root.clone() });
+            .and_then(|instance| {
+                if instance.is_horizon() {
+                    prism_core::Instance::load(&instance.root).map(|current| current.game_root())
+                } else {
+                    Some(instance.root.clone())
+                }
+            });
         if let Some(dir) = dir {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }

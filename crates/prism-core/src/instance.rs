@@ -34,6 +34,33 @@ pub struct Instance {
 }
 
 impl Instance {
+    pub(crate) const SHORTCUT_TOKEN_FILE: &str = ".prism-rs-shortcut-token";
+    const CONFIG_LOCK_FILE: &str = ".prism-rs-config-write.lock";
+
+    pub(crate) fn is_launch_state_file(name: &std::ffi::OsStr) -> bool {
+        name == Self::SHORTCUT_TOKEN_FILE || name == Self::CONFIG_LOCK_FILE
+    }
+
+    pub fn shortcut_token(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(self.root.join(Self::SHORTCUT_TOKEN_FILE))
+    }
+
+    pub fn ensure_shortcut_token(&self) -> std::io::Result<String> {
+        use std::io::{ErrorKind, Write};
+        match self.shortcut_token() {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            result => return result,
+        }
+        let token = uuid::Uuid::new_v4().to_string();
+        let mut file = tempfile::NamedTempFile::new_in(&self.root)?;
+        file.write_all(token.as_bytes())?;
+        match file.persist_noclobber(self.root.join(Self::SHORTCUT_TOKEN_FILE)) {
+            Ok(_) => Ok(token),
+            Err(error) if error.error.kind() == ErrorKind::AlreadyExists => self.shortcut_token(),
+            Err(error) => Err(error.error),
+        }
+    }
+
     /// Load a single instance from a directory. Returns None when the
     /// directory does not look like an instance (no `instance.cfg`).
     pub fn load(dir: &Path) -> Option<Instance> {
@@ -87,13 +114,50 @@ impl Instance {
     }
 
     pub fn save_horizon_home(&mut self, new_home: PathBuf) -> std::io::Result<()> {
-        let mut updated = self.clone();
-        let InstanceKind::Horizon { home, .. } = &mut updated.kind else {
+        let InstanceKind::Horizon { id, token, .. } = &self.kind else {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Not a Horizon link"));
         };
-        *home = new_home;
-        updated.save()?;
-        self.kind = updated.kind;
+        self.edit_config(|cfg| {
+            if cfg.get("HorizonInstanceId") != Some(id.as_str())
+                || cfg.get("HorizonLinkToken").and_then(|value| value.parse().ok()) != *token
+            {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "Horizon link changed"));
+            }
+            cfg.set("HorizonGameHome", new_home.to_string_lossy().into_owned());
+            Ok(())
+        })?;
+        if let InstanceKind::Horizon { home, .. } = &mut self.kind {
+            *home = new_home;
+        }
+        Ok(())
+    }
+
+    pub fn rename(&mut self, name: String) -> std::io::Result<()> {
+        self.edit_config(|cfg| {
+            cfg.set("name", name.as_str());
+            Ok(())
+        })?;
+        self.name = name;
+        Ok(())
+    }
+
+    fn edit_config(
+        &self,
+        edit: impl FnOnce(&mut IniFile) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        use std::io::Write;
+        let lock = std::fs::File::options()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.root.join(Self::CONFIG_LOCK_FILE))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        let path = self.root.join("instance.cfg");
+        let mut cfg = IniFile::load(&path)?;
+        edit(&mut cfg)?;
+        let mut file = tempfile::NamedTempFile::new_in(&self.root)?;
+        file.write_all(cfg.serialize().as_bytes())?;
+        file.persist(path).map_err(|error| error.error)?;
         Ok(())
     }
 
@@ -465,6 +529,9 @@ mod tests {
     #[test]
     fn moving_a_horizon_link_keeps_the_old_home_until_save_succeeds() {
         let (paths, _guard) = temp_paths();
+        // A pre-existing instance can have the name once used for the shared lock.
+        std::fs::create_dir_all(paths.instances_dir().join(".config-write.lock")).unwrap();
+        std::fs::write(paths.instances_dir().join(".config-write.lock/instance.cfg"), "name=Existing\n").unwrap();
         let old_home = paths.root.join("original");
         let new_home = paths.root.join("moved");
         std::fs::create_dir(&old_home).unwrap();
@@ -472,6 +539,8 @@ mod tests {
             "id": "native", "name": "Native", "home": old_home, "java": null
         })).unwrap();
         let mut instance = InstanceList::link_horizon(&paths, horizon).unwrap();
+        let mut stale_gui_instance = instance.clone();
+        std::fs::create_dir(paths.root.join(".instance-config-write.lock")).unwrap();
         let cfg = instance.root.join("instance.cfg");
         let backup = cfg.with_extension("bak");
         std::fs::rename(&cfg, &backup).unwrap();
@@ -483,8 +552,11 @@ mod tests {
         std::fs::remove_dir(&cfg).unwrap();
         std::fs::rename(&backup, &cfg).unwrap();
         instance.save_horizon_home(new_home.clone()).unwrap();
+        stale_gui_instance.rename("Renamed".into()).unwrap();
         assert_eq!(instance.game_root(), new_home);
-        assert_eq!(Instance::load(&instance.root).unwrap().game_root(), new_home);
+        let stored = Instance::load(&instance.root).unwrap();
+        assert_eq!(stored.game_root(), new_home);
+        assert_eq!(stored.name, "Renamed");
     }
 
     #[test]

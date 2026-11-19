@@ -452,6 +452,10 @@ fn import_multimc(paths: &Paths, dir: &Path) -> Result<Instance, ImportError> {
         candidate = dest_root.join(format!("{base}{n}"));
     }
     copy_dir_recursive(src, &candidate)?;
+    match std::fs::remove_file(candidate.join(Instance::SHORTCUT_TOKEN_FILE)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => {}
+    }
     let imported = Instance::load(&candidate).ok_or(ImportError::UnknownFormat)?;
     Ok(imported)
 }

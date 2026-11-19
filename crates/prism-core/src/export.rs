@@ -135,6 +135,10 @@ pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError>
     }
     let mut files = Vec::new();
     collect(&instance.root, &instance.game_root(), &mut files)?;
+    files.retain(|path| {
+        path.parent() != Some(&instance.root)
+            || !path.file_name().is_some_and(Instance::is_launch_state_file)
+    });
     let (mut output, mut zip) = writer(instance, output)?;
     for path in files {
         if path.is_dir() {
