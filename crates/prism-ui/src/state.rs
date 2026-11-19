@@ -188,12 +188,11 @@ impl App {
                 if let Ok(current_home) = rx.await {
                     let _ = this.update(cx, |app, cx| {
                         let Some(instance) = app.instances.get_mut(&inst.id) else { return };
-                        let InstanceKind::Horizon { home, token: current_token, .. } = &mut instance.kind else { return };
+                        let InstanceKind::Horizon { token: current_token, .. } = &instance.kind else { return };
                         if *current_token != token {
                             return;
                         }
-                        *home = current_home;
-                        if let Err(error) = instance.save() {
+                        if let Err(error) = instance.save_horizon_home(current_home) {
                             log_lock(&log).push(format!("Could not save the moved Horizon game folder: {error}"));
                         }
                         cx.notify();

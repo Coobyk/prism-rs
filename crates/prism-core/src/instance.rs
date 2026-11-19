@@ -86,6 +86,17 @@ impl Instance {
         matches!(self.kind, InstanceKind::Horizon { .. })
     }
 
+    pub fn save_horizon_home(&mut self, new_home: PathBuf) -> std::io::Result<()> {
+        let mut updated = self.clone();
+        let InstanceKind::Horizon { home, .. } = &mut updated.kind else {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "Not a Horizon link"));
+        };
+        *home = new_home;
+        updated.save()?;
+        self.kind = updated.kind;
+        Ok(())
+    }
+
     pub fn save(&self) -> std::io::Result<()> {
         let mut cfg = IniFile::load(&self.root.join("instance.cfg")).unwrap_or_default();
         cfg.set("name", self.name.clone());
@@ -421,6 +432,31 @@ mod tests {
         InstanceList::remove(&paths, &inst.id).unwrap();
         assert!(!inst.root.exists());
         assert!(home.join("options.txt").is_file());
+    }
+
+    #[test]
+    fn moving_a_horizon_link_keeps_the_old_home_until_save_succeeds() {
+        let (paths, _guard) = temp_paths();
+        let old_home = paths.root.join("original");
+        let new_home = paths.root.join("moved");
+        std::fs::create_dir(&old_home).unwrap();
+        let horizon = serde_json::from_value(serde_json::json!({
+            "id": "native", "name": "Native", "home": old_home, "java": null
+        })).unwrap();
+        let mut instance = InstanceList::link_horizon(&paths, horizon).unwrap();
+        let cfg = instance.root.join("instance.cfg");
+        let backup = cfg.with_extension("bak");
+        std::fs::rename(&cfg, &backup).unwrap();
+        std::fs::create_dir(&cfg).unwrap();
+
+        assert!(instance.save_horizon_home(new_home.clone()).is_err());
+        assert_eq!(instance.game_root(), old_home);
+
+        std::fs::remove_dir(&cfg).unwrap();
+        std::fs::rename(&backup, &cfg).unwrap();
+        instance.save_horizon_home(new_home.clone()).unwrap();
+        assert_eq!(instance.game_root(), new_home);
+        assert_eq!(Instance::load(&instance.root).unwrap().game_root(), new_home);
     }
 
     #[test]
