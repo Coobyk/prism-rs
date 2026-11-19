@@ -13,7 +13,7 @@ const DISABLED: &str = ".disabled";
 const DISABLED_FOLDERS: &str = "datapacks.disabled";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct FileStamp {
+pub(crate) struct FileStamp {
     created: Option<SystemTime>,
     modified: Option<SystemTime>,
     len: u64,
@@ -37,9 +37,9 @@ impl From<&fs::Metadata> for FileStamp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct World {
-    game_root: PathBuf,
-    name: String,
-    level_stamp: FileStamp,
+    pub(crate) game_root: PathBuf,
+    pub(crate) name: String,
+    pub(crate) level_stamp: FileStamp,
 }
 
 #[derive(Clone, Debug)]
@@ -66,7 +66,7 @@ impl DataPack {
     }
 }
 
-fn plain_name(name: &str) -> bool {
+pub(crate) fn plain_name(name: &str) -> bool {
     Path::new(name).file_name().and_then(|part| part.to_str()) == Some(name)
         && !name.contains(['/', '\\', ':'])
         && !name.chars().any(char::is_control)
@@ -76,7 +76,7 @@ fn zip_name(name: &str) -> bool {
     plain_name(name) && name.ends_with(".zip")
 }
 
-fn require_directory(path: &Path) -> io::Result<()> {
+pub(crate) fn require_directory(path: &Path) -> io::Result<()> {
     if fs::symlink_metadata(path)?.is_dir() {
         Ok(())
     } else {
@@ -87,7 +87,7 @@ fn require_directory(path: &Path) -> io::Result<()> {
     }
 }
 
-fn level_stamp(world: &Path) -> io::Result<FileStamp> {
+pub(crate) fn level_stamp(world: &Path) -> io::Result<FileStamp> {
     require_directory(world)?;
     let metadata = fs::symlink_metadata(world.join("level.dat"))?;
     if !metadata.is_file() {
@@ -96,7 +96,7 @@ fn level_stamp(world: &Path) -> io::Result<FileStamp> {
     Ok(FileStamp::from(&metadata))
 }
 
-fn nbt_child<'a>(root: &'a Tag, name: &str) -> Option<&'a Tag> {
+pub(crate) fn nbt_child<'a>(root: &'a Tag, name: &str) -> Option<&'a Tag> {
     let Tag::Compound(entries) = root else {
         return None;
     };
@@ -116,7 +116,7 @@ fn pack_names<'a>(packs: &'a Tag, key: &str) -> impl Iterator<Item = &'a str> {
     })
 }
 
-fn disabled_world_packs(path: &Path) -> io::Result<HashSet<String>> {
+pub(crate) fn read_gzip_nbt(path: &Path) -> io::Result<(String, Tag)> {
     const MAX_LEVEL_NBT: u64 = 16 * 1024 * 1024;
     let mut bytes = Vec::new();
     GzDecoder::new(fs::File::open(path)?)
@@ -128,7 +128,11 @@ fn disabled_world_packs(path: &Path) -> io::Result<HashSet<String>> {
             "level.dat exceeds the NBT size limit",
         ));
     }
-    let (_, root) = nbt::read(&bytes)?;
+    nbt::read(&bytes)
+}
+
+fn disabled_world_packs(path: &Path) -> io::Result<HashSet<String>> {
+    let (_, root) = read_gzip_nbt(path)?;
     let Some(packs) = nbt_child(&root, "Data").and_then(|data| nbt_child(data, "DataPacks")) else {
         return Ok(HashSet::new());
     };
@@ -139,7 +143,7 @@ fn disabled_world_packs(path: &Path) -> io::Result<HashSet<String>> {
         .collect())
 }
 
-fn ensure_absent(path: &Path) -> io::Result<()> {
+pub(crate) fn ensure_absent(path: &Path) -> io::Result<()> {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error),
@@ -203,7 +207,7 @@ impl World {
         &self.game_root
     }
 
-    fn world_path(&self) -> io::Result<PathBuf> {
+    pub(crate) fn world_path(&self) -> io::Result<PathBuf> {
         let saves = self.game_root.join("saves");
         require_directory(&saves)?;
         let world = saves.join(&self.name);

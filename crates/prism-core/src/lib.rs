@@ -28,6 +28,7 @@ pub mod profile;
 pub mod resources;
 pub mod settings;
 pub mod servers;
+pub mod worlds;
 
 pub use auth::AccountList;
 pub use instance::{Instance, InstanceGroups, InstanceKind, InstanceList};
