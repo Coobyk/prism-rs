@@ -867,6 +867,49 @@ mod tests {
     }
 
     #[test]
+    fn native_only_forge_library_does_not_resolve_a_plain_jar() {
+        let minecraft = "1.12.2";
+        let loader = Loader::Forge {
+            version: "14.23.5.2864".into(),
+        };
+        let classifier = format!("natives-{}", meta::os_name());
+        let patch = serde_json::json!({
+            "inheritsFrom": minecraft,
+            "mainClass": "example.Main",
+            "libraries": [
+                {"name": "net.minecraftforge:forge:1.12.2-14.23.5.2864"},
+                {"name": "org.example:native-only:1",
+                    "url":"http://repo1.maven.org/maven2",
+                    "natives": {(meta::os_name()): &classifier}},
+                {"name": "org.example:with-plain:1",
+                    "natives": {(meta::os_name()): &classifier},
+                    "downloads": {
+                        "artifact": {"url": "http://libraries.minecraft.net/with-plain.jar"},
+                        "classifiers": {(&classifier): {"url": "http://maven.apache.org/native.jar"}}
+                    }
+                }
+            ]
+        }).to_string();
+        let patch = forge_patch(&patch, minecraft, &loader).unwrap().unwrap();
+        let mut profile = LaunchProfile::default();
+        profile.apply_loader(&patch);
+        assert_eq!(profile.libraries.len(), 2);
+        assert_eq!(profile.libraries[1].spec, "org.example:with-plain:1");
+        assert_eq!(
+            profile.libraries[1].url.as_deref(),
+            Some("https://libraries.minecraft.net/with-plain.jar")
+        );
+        assert_eq!(profile.natives.len(), 2);
+        assert_eq!(profile.natives[0].url.as_deref(), Some(format!(
+            "https://repo1.maven.org/maven2/org/example/native-only/1/native-only-1-{classifier}.jar"
+        ).as_str()));
+        assert_eq!(
+            profile.natives[1].url.as_deref(),
+            Some("https://maven.apache.org/native.jar")
+        );
+    }
+
+    #[test]
     fn known_forge_library_hosts_use_https_but_custom_hosts_are_unchanged() {
         for host in [
             "files.minecraftforge.net",

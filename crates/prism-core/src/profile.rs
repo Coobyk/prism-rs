@@ -214,7 +214,7 @@ fn push_library(lib: &MoLibrary, libraries: &mut Vec<ResolvedLibrary>, natives: 
             sha1,
             native: false,
         });
-    } else {
+    } else if lib.natives.is_none() {
         // Older format: only a specifier + repo base url.
         let path = meta::maven_path(&lib.name);
         let url = lib.url.as_deref().map(|base| {
