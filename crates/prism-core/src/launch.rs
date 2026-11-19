@@ -1036,7 +1036,7 @@ mod tests {
             env: Vec::new(),
             instance_dir: dir.path().into(),
             pre_launch_command: String::new(),
-            post_exit_command: "echo foreground; (while [ ! -f release ]; do sleep 0.05; done; echo background) &".into(),
+            post_exit_command: "echo foreground; (i=0; while [ ! -f release ] && [ \"$i\" -lt 100 ]; do sleep 0.05; i=$((i+1)); done; echo background) &".into(),
             command_error: None,
         };
         let (tx, rx) = mpsc::channel();
