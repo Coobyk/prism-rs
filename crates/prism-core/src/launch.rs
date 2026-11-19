@@ -688,6 +688,7 @@ mod tests {
             root: std::env::temp_dir().join("prism-quick-play-command-test"),
         };
         let inst = crate::instance::Instance {
+            kind: crate::instance::InstanceKind::Java,
             id: "test".into(),
             root: paths.root.clone(),
             name: "Test".into(),

@@ -20,6 +20,8 @@ pub enum ExportError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Platform(#[from] crate::modplatform::PlatformError),
+    #[error("Horizon instances cannot be exported from Prism. Use the Horizon launcher to export the game.")]
+    HorizonInstance,
     #[error("{0}")]
     Invalid(String),
 }
@@ -128,6 +130,9 @@ fn writer(
 }
 
 pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError> {
+    if instance.is_horizon() {
+        return Err(ExportError::HorizonInstance);
+    }
     let mut files = Vec::new();
     collect(&instance.root, &instance.game_root(), &mut files)?;
     let (mut output, mut zip) = writer(instance, output)?;
@@ -172,6 +177,9 @@ where
     F: FnOnce(Vec<String>) -> Fut,
     Fut: std::future::Future<Output = Result<BTreeMap<String, ModVersion>, ExportError>>,
 {
+    if instance.is_horizon() {
+        return Err(ExportError::HorizonInstance);
+    }
     if metadata.name.trim().is_empty() || metadata.version.trim().is_empty() {
         return Err(ExportError::Invalid(
             "Pack name and version are required".into(),
@@ -312,6 +320,28 @@ mod tests {
             version: "1.0".into(),
             summary: "Example".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn horizon_links_are_rejected_without_creating_archives() {
+        let mut f = Fixture::new();
+        f.1.kind = crate::InstanceKind::Horizon {
+            id: "native".into(),
+            home: f.0.root.join("horizon"),
+            token: None,
+        };
+        let zip = f.0.root.join("horizon.zip");
+        let mrpack = f.0.root.join("horizon.mrpack");
+
+        assert!(matches!(export_zip(&f.1, &zip), Err(ExportError::HorizonInstance)));
+        assert!(matches!(
+            export_mrpack_with_lookup(&f.1, &mrpack, metadata(), |_| async {
+                panic!("Horizon export should not resolve Modrinth files")
+            }).await,
+            Err(ExportError::HorizonInstance)
+        ));
+        assert!(!zip.exists());
+        assert!(!mrpack.exists());
     }
 
     #[cfg(unix)]

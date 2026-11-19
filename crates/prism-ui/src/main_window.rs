@@ -230,6 +230,7 @@ impl MainWindow {
             app.selected.as_deref() == Some(id.as_str())
         };
         let running = app.read(cx).is_running(&id);
+        let horizon = app.read(cx).instances.get(&id).is_some_and(|inst| inst.is_horizon());
         let tile_bg = if selected { rgb(0x3d5a80) } else { rgb(0x2b2b2b) };
         let id2 = id.clone();
 
@@ -257,9 +258,9 @@ impl MainWindow {
             }))
             .on_double_click(cx.listener(move |this, _event, _window, cx| {
                 let id = id2.clone();
-                this.app.update(cx, |app, _cx| {
+                this.app.update(cx, |app, cx| {
                     app.selected = Some(id.clone());
-                    app.start_launch(&id);
+                    app.start_launch(&id, cx);
                 });
                 cx.notify();
             }))
@@ -287,6 +288,7 @@ impl MainWindow {
                     .text_ellipsis()
                     .child(name),
             )
+            .children(horizon.then(|| div().text_size(px(11.)).child("Horizon")))
     }
 
     // -- sidebar ------------------------------------------------------------
@@ -300,6 +302,7 @@ impl MainWindow {
             .map(|i| i.name.clone())
             .unwrap_or_default();
         let enabled = selected.is_some();
+        let horizon = app.selected_instance().is_some_and(|inst| inst.is_horizon());
         let is_running = selected
             .as_deref()
             .map(|id| app.is_running(id))
@@ -313,7 +316,7 @@ impl MainWindow {
         let selected2 = selected.clone();
         let _ = selected2;
         div()
-            .w(px(160.))
+            .w(px(if horizon { 184. } else { 160. }))
             .flex()
             .flex_col()
             .gap_1()
@@ -342,7 +345,7 @@ impl MainWindow {
                 self.sidebar_button("launch", "Launch", enabled && !is_running)
                     .on_click(cx.listener(Self::on_launch)),
             )
-            .child(
+            .children((!horizon).then(|| {
                 self.sidebar_button("quick-play", "Quick Play…", enabled && !is_running)
                     .on_click(cx.listener(|this, _, window, cx| {
                         let app = this.app.read(cx);
@@ -356,12 +359,12 @@ impl MainWindow {
                                 Some(crate::dialogs::QuickPlayState::new(&inst, window, cx));
                             cx.notify();
                         }
-                    })),
-            )
-            .child(
+                    }))
+            }))
+            .children((!horizon).then(|| {
                 self.sidebar_button("kill", "Kill", is_running)
-                    .on_click(cx.listener(Self::on_kill)),
-            )
+                    .on_click(cx.listener(Self::on_kill))
+            }))
             .child(toolbar_separator())
             .child(
                 self.sidebar_button("edit", "Edit", enabled)
@@ -373,29 +376,32 @@ impl MainWindow {
             )
             .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
             .child(
-                self.sidebar_button("export", "Export", enabled)
+                self.sidebar_button("export", "Export", enabled && !horizon)
                     .on_click(cx.listener(|this, _, window, cx| {
-                        let selected = this.app.read(cx).selected.clone();
-                        if let Some(id) = selected {
-                            let instance = this.app.read(cx).instances.get(&id).cloned();
+                        if let Some(instance) = this.app.read(cx).selected_instance()
+                            .filter(|instance| !instance.is_horizon())
+                            .cloned()
+                        {
                             let mut prompt = PromptState::new(
                                 crate::dialogs::PromptKind::Export,
-                                id,
+                                instance.id.clone(),
                                 String::new(),
                                 window,
                                 cx,
                             );
-                            if let Some(instance) = instance {
-                                prompt.set_export_defaults(&instance, window, cx);
-                            }
+                            prompt.set_export_defaults(&instance, window, cx);
                             this.prompt = Some(prompt);
                             cx.notify();
                         }
                     })),
             )
-            .child(self.sidebar_button("copy", "Copy", enabled))
+            .child(self.sidebar_button("copy", "Copy", enabled && !horizon))
             .child(
-                self.sidebar_button("delete", "Delete", enabled)
+                self.sidebar_button(
+                    "delete",
+                    if horizon { "Remove from Prism" } else { "Delete" },
+                    enabled && !(horizon && is_running),
+                )
                     .on_click(cx.listener(Self::on_delete)),
             )
             .child(self.sidebar_button("shortcut", "Create Shortcut", enabled))
@@ -455,7 +461,7 @@ impl MainWindow {
         let id = self.app.read(cx).selected.clone();
         if let Some(id) = id {
             self.console_open = true;
-            self.app.update(cx, |app, _cx| app.start_launch(&id));
+            self.app.update(cx, |app, cx| app.start_launch(&id, cx));
         }
         cx.notify();
     }
@@ -491,7 +497,7 @@ impl MainWindow {
             .app
             .read(cx)
             .selected_instance()
-            .map(|i| i.root.clone());
+            .map(|i| if i.is_horizon() { i.game_root() } else { i.root.clone() });
         if let Some(dir) = dir {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }

@@ -165,7 +165,27 @@ fn unquote(s: &str) -> String {
 }
 
 fn unescape_value(s: &str) -> String {
-    s.replace("\\n", "\n").replace("\\t", "\t").replace("\\\\", "\\")
+    let mut value = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        let decoded = if c == '\\' {
+            match chars.peek() {
+                Some('n') => Some('\n'),
+                Some('t') => Some('\t'),
+                Some('\\') => Some('\\'),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some(decoded) = decoded {
+            chars.next();
+            value.push(decoded);
+        } else {
+            value.push(c);
+        }
+    }
+    value
 }
 
 fn escape_key(s: &str) -> String {
@@ -207,6 +227,16 @@ mod tests {
         assert_eq!(parsed, ini);
         assert_eq!(parsed.get("name"), Some("My Instance"));
         assert_eq!(parsed.get("notes"), Some("line1\nline2"));
+    }
+
+    #[test]
+    fn windows_paths_roundtrip_without_decoding_literal_escapes() {
+        let mut ini = IniFile::default();
+        ini.set("HorizonLauncherPath", r"C:\tools\horizon-launcher.exe");
+        ini.set("HorizonGameHome", r"C:\new\test");
+        ini.set("notes", "new\nline\ttab");
+        let parsed = IniFile::parse(&ini.serialize());
+        assert_eq!(parsed, ini);
     }
 
     #[test]
