@@ -235,12 +235,15 @@ impl Selection {
             return Ok(());
         }
         if enable {
-            if !entry.group.is_empty() {
+            if entry.optional && !entry.group.is_empty() {
                 for other in m
                     .mods
                     .iter()
                     .filter(|e| {
-                        e.name != name && e.group == entry.group && self.enabled.contains(&e.name)
+                        e.optional
+                            && e.name != name
+                            && e.group == entry.group
+                            && self.enabled.contains(&e.name)
                     })
                     .cloned()
                     .collect::<Vec<_>>()
@@ -313,7 +316,7 @@ impl Selection {
                 {
                     return Err(error(format!("Missing dependency for {}", e.name)));
                 }
-                if !e.group.is_empty() && !groups.insert(&e.group) {
+                if e.optional && !e.group.is_empty() && !groups.insert(&e.group) {
                     return Err(error(format!("Conflicting mod group: {}", e.group)));
                 }
             }
@@ -841,6 +844,32 @@ mod tests {
         let mut s = Selection::defaults(&m).unwrap();
         s.set(&m, "Addon", false).unwrap();
         assert!(s.enabled.contains("Buildcraft"));
+    }
+    #[test]
+    fn selection_required_groups() {
+        let m: Manifest = serde_json::from_value(json!({"mods":[
+            {"name":"configs one","client":true,"group":"configs"},
+            {"name":"configs two","client":true,"group":"configs"},
+            {"name":"optional configs","client":true,"optional":true,
+             "selected":true,"recommended":true,"group":"configs"},
+            {"name":"alternative","client":true,"optional":true,"group":"configs"}
+        ]}))
+        .unwrap();
+        for preset in [
+            Selection::defaults,
+            Selection::recommended,
+            Selection::clear,
+        ] {
+            let mut s = preset(&m).unwrap();
+            s.validate(&m).unwrap();
+            s.set(&m, "alternative", true).unwrap();
+            s.validate(&m).unwrap();
+            assert!(s.enabled.contains("configs one"));
+            assert!(s.enabled.contains("configs two"));
+            assert!(!s.enabled.contains("optional configs"));
+            s.enabled.insert("optional configs".into());
+            assert!(s.validate(&m).is_err());
+        }
     }
     #[test]
     fn rejects_unsafe_paths_and_archives() {
