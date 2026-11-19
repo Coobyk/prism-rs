@@ -30,7 +30,14 @@ pub struct HorizonInstance {
 
 impl HorizonInstance {
     fn is_horizon(&self) -> bool {
-        self.java.is_none() && !self.id.is_empty() && self.home.is_absolute()
+        self.java.is_none() && !self.id.is_empty() && !self.home.as_os_str().is_empty()
+    }
+
+    fn resolve_home(&mut self) -> Result<(), HorizonError> {
+        if !self.home.is_absolute() {
+            self.home = std::path::absolute(&self.home).map_err(HorizonError::ResolveHome)?;
+        }
+        Ok(())
     }
 }
 
@@ -44,6 +51,8 @@ pub enum HorizonError {
     Json(#[from] serde_json::Error),
     #[error("Horizon launcher did not return a valid Horizon instance")]
     InvalidInstance,
+    #[error("Could not resolve the Horizon game folder: {0}")]
+    ResolveHome(io::Error),
     #[error("Horizon instance {0:?} was not found. Check it in the Horizon launcher.")]
     MissingInstance(String),
     #[error("Cannot verify the Prism link for Horizon instance {0:?}. The instance may have been replaced, or the link may predate identity checks.")]
@@ -64,16 +73,20 @@ impl HorizonLauncher {
     }
 
     pub fn create(&self, name: &str) -> Result<HorizonInstance, HorizonError> {
-        let instance: HorizonInstance = self.json(&["instance", "create", "--", name])?;
+        let mut instance: HorizonInstance = self.json(&["instance", "create", "--", name])?;
         if !instance.is_horizon() {
             return Err(HorizonError::InvalidInstance);
         }
+        instance.resolve_home()?;
         Ok(instance)
     }
 
     pub fn list(&self) -> Result<Vec<HorizonInstance>, HorizonError> {
         let mut instances: Vec<HorizonInstance> = self.json(&["instance", "list"])?;
         instances.retain(HorizonInstance::is_horizon);
+        for instance in &mut instances {
+            instance.resolve_home()?;
+        }
         Ok(instances)
     }
 
@@ -239,5 +252,19 @@ esac
         let (child, home) = launcher.play("a-name", Some(token)).unwrap();
         assert_eq!(home, moved);
         assert_eq!(child.wait_with_output().unwrap().status.code(), Some(1));
+    }
+
+    #[test]
+    fn create_and_list_resolve_relative_homes_from_the_launcher_working_directory() {
+        let fake = FakeLauncher::new();
+        let launcher = fake.launcher();
+        let relative = Path::new("relative-game/instances/a-name");
+        let instance = serde_json::json!({"id":"a-name","name":"A name with spaces","home":relative,"java":null});
+        fs::write(fake.1.with_file_name("create.json"), instance.to_string()).unwrap();
+        fs::write(fake.1.with_file_name("list.json"), serde_json::json!([instance]).to_string()).unwrap();
+        let expected = std::env::current_dir().unwrap().join(relative);
+
+        assert_eq!(launcher.create("A name with spaces").unwrap().home, expected);
+        assert_eq!(launcher.list().unwrap()[0].home, expected);
     }
 }
