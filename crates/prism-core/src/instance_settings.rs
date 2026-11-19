@@ -7,6 +7,7 @@ use std::path::Path;
 pub struct InstanceSettings {
     pub override_memory: Option<bool>,
     pub override_java_location: Option<bool>,
+    pub automatic_java: Option<bool>,
     pub override_java_args: Option<bool>,
     pub override_window: Option<bool>,
     pub override_commands: Option<bool>,
@@ -258,10 +259,10 @@ mod tests {
     #[cfg(unix)]
     fn saving_manual_java_override_replaces_imported_automatic_pick() {
         let fixture = Fixture::new();
-        for original_path in ["/bin/sh", "/bin/echo"] {
+        for (original_path, enabled) in [("/bin/sh", "true"), ("/bin/echo", "false")] {
             let mut imported = IniFile::default();
             imported.set("AutomaticJava", "true");
-            imported.set("OverrideJavaLocation", "true");
+            imported.set("OverrideJavaLocation", enabled);
             imported.set("JavaPath", original_path);
             let automatic = fixture.resolve(&imported);
             assert!(!automatic.java_path_explicit);
@@ -269,6 +270,7 @@ mod tests {
             let mut raw = InstanceSettings::load(&fixture.instance.root).unwrap();
             raw.java_path = Some("/bin/echo".into());
             raw.override_java_location = Some(true);
+            raw.automatic_java = Some(false);
             raw.save(&fixture.instance.root).unwrap();
             let settings = LaunchSettings::for_instance(&fixture.instance, &fixture.paths);
             assert!(
@@ -298,12 +300,19 @@ mod tests {
             for (flag, path) in [
                 (None, Some("imported-java")),
                 (Some(false), Some("retained-java")),
+                (Some(true), Some("imported-java")),
                 (Some(true), None),
                 (Some(true), Some("")),
             ] {
                 let mut imported = IniFile::default();
                 if let Some(marker) = marker {
                     imported.set("AutomaticJava", marker);
+                }
+                if let Some(flag) = flag {
+                    imported.set("OverrideJavaLocation", flag.to_string());
+                }
+                if let Some(path) = path {
+                    imported.set("JavaPath", path);
                 }
                 fixture.resolve(&imported);
                 let mut raw = InstanceSettings::load(&fixture.instance.root).unwrap();
@@ -566,6 +575,7 @@ impl InstanceSettings {
         Self {
             override_memory: flag("OverrideMemory"),
             override_java_location: flag("OverrideJavaLocation"),
+            automatic_java: flag("AutomaticJava"),
             override_java_args: flag("OverrideJavaArgs"),
             override_window: flag("OverrideWindow"),
             override_commands: flag("OverrideCommands"),
@@ -640,10 +650,10 @@ impl InstanceSettings {
         } else {
             cfg.remove("JavaPath");
         }
-        if self.override_java_location == Some(true)
-            && self.java_path.as_deref().is_some_and(|path| !path.trim().is_empty())
-        {
-            cfg.set("AutomaticJava", "false");
+        if let Some(value) = self.automatic_java {
+            cfg.set("AutomaticJava", value.to_string());
+        } else {
+            cfg.remove("AutomaticJava");
         }
         if let Some(value) = &self.legacy_java_path {
             cfg.set("OverrideJavaPath", value.to_string());

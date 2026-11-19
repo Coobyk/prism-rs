@@ -23,6 +23,7 @@ mod tests {
     fn form() -> SettingsForm {
         SettingsForm {
             overrides: [true; 6],
+            loaded_java_path: "/usr/bin/java".into(),
             values: [
                 "512",
                 "4096",
@@ -259,6 +260,60 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn unrelated_saves_preserve_automatic_java_but_manual_edits_disable_it() {
+        let fixture = Fixture::new();
+        let root = fixture.0.instances_dir().join("test");
+        std::fs::create_dir_all(&root).unwrap();
+        for (enabled, path) in [
+            ("true", "/imported/automatic/java"),
+            ("true", "/bin/echo"),
+            ("false", "/bin/echo"),
+        ] {
+            std::fs::write(
+                root.join("instance.cfg"),
+                format!("name=Test\nAutomaticJava=true\nOverrideJavaLocation={enabled}\nJavaPath={path}\nOverrideMemory=true\n"),
+            )
+            .unwrap();
+            let instance = Instance::load(&root).unwrap();
+            let mut baseline = InstanceSettings::load(&root).unwrap();
+            let mut form = SettingsForm::resolved(
+                &LaunchSettings::for_instance(&instance, &fixture.0),
+                &baseline,
+            );
+            if enabled == "true" {
+                assert_ne!(form.values[2], path);
+            }
+            for memory in ["768", "1024"] {
+                form.values[0] = memory.into();
+                let updated = form.convert(&baseline).unwrap();
+                save_checked(&root, &baseline, &updated).unwrap();
+                baseline = InstanceSettings::load(&root).unwrap();
+                assert_eq!(baseline.java_path.as_deref(), Some(path));
+                let cfg = prism_core::ini::IniFile::load(&root.join("instance.cfg")).unwrap();
+                assert_eq!(cfg.get("AutomaticJava"), Some("true"));
+                assert!(!LaunchSettings::for_instance(&instance, &fixture.0).java_path_explicit);
+            }
+
+            form.overrides[1] = true;
+            form.values[2] = "/bin/echo".into();
+            let updated = form.convert(&baseline).unwrap();
+            save_checked(&root, &baseline, &updated).unwrap();
+            let cfg = prism_core::ini::IniFile::load(&root.join("instance.cfg")).unwrap();
+            assert_eq!(cfg.get("AutomaticJava"), Some("false"));
+            let settings = LaunchSettings::for_instance(&instance, &fixture.0);
+            assert_eq!(settings.java_path, std::path::Path::new("/bin/echo"));
+            assert!(settings.java_path_explicit);
+
+            let baseline = InstanceSettings::load(&root).unwrap();
+            form.overrides[1] = false;
+            let updated = form.convert(&baseline).unwrap();
+            save_checked(&root, &baseline, &updated).unwrap();
+            assert!(!LaunchSettings::for_instance(&instance, &fixture.0).java_path_explicit);
+        }
+    }
+
+    #[test]
     fn reads_inherited_values_and_legacy_override_state() {
         let fixture = Fixture::new();
         let mut global = prism_core::settings::Settings::default();
@@ -300,6 +355,7 @@ const LABELS: [&str; 9] = [
 #[derive(Clone)]
 struct SettingsForm {
     overrides: [bool; 6],
+    loaded_java_path: String,
     values: Vec<String>,
     env: Vec<(String, String)>,
 }
@@ -352,6 +408,7 @@ impl SettingsForm {
 
     fn resolved(settings: &LaunchSettings, raw: &InstanceSettings) -> Self {
         Self {
+            loaded_java_path: settings.java_path.to_string_lossy().into_owned(),
             overrides: [
                 raw.override_memory
                     .unwrap_or(raw.min_memory_mb.is_some() || raw.max_memory_mb.is_some()),
@@ -396,6 +453,7 @@ impl SettingsForm {
             });
         Self {
             overrides: [false; 6],
+            loaded_java_path: java.clone(),
             values: vec![
                 global.get_int("MinMemAlloc", 512).max(128).to_string(),
                 global.get_int("MaxMemAlloc", 4096).max(256).to_string(),
@@ -446,9 +504,17 @@ impl SettingsForm {
             raw.min_memory_mb = Some(min);
             raw.max_memory_mb = Some(max);
         }
-        if self.overrides[1] {
+        let java_was_enabled = baseline.override_java_location.unwrap_or(
+            baseline.java_path.is_some() || baseline.legacy_java_path.is_some(),
+        );
+        if self.overrides[1]
+            && (!java_was_enabled || self.values[2].trim() != self.loaded_java_path.trim())
+        {
             raw.java_path = Some(self.values[2].trim().into());
             raw.legacy_java_path = None;
+            if !self.values[2].trim().is_empty() {
+                raw.automatic_java = Some(false);
+            }
         }
         if self.overrides[2] {
             prism_core::launch::split_args(&self.values[3])
@@ -511,6 +577,7 @@ pub(crate) struct SettingsEditor {
     root: std::path::PathBuf,
     paths: Paths,
     baseline: InstanceSettings,
+    loaded_java_path: String,
     overrides: [bool; 6],
     draft: SettingsForm,
     inputs: Vec<Entity<InputState>>,
@@ -546,6 +613,7 @@ impl SettingsEditor {
             root: instance.root.clone(),
             paths: paths.clone(),
             baseline,
+            loaded_java_path: form.loaded_java_path,
             overrides: form.overrides,
             draft,
             inputs,
@@ -617,6 +685,7 @@ impl SettingsEditor {
     fn form(&self, cx: &Context<InstanceWindow>) -> SettingsForm {
         SettingsForm {
             overrides: self.overrides,
+            loaded_java_path: self.loaded_java_path.clone(),
             values: self
                 .inputs
                 .iter()
@@ -640,6 +709,7 @@ impl SettingsEditor {
         match form.convert(&self.baseline).and_then(|updated| {
             save_checked(&self.root, &self.baseline, &updated)?;
             self.baseline = updated;
+            self.loaded_java_path = form.values[2].trim().to_owned();
             Ok(())
         }) {
             Ok(()) => {
