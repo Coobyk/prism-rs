@@ -550,7 +550,7 @@ impl InstanceWindow {
     }
 }
 
-fn open_folder(path: &std::path::Path) -> io::Result<()> {
+pub(super) fn open_folder(path: &std::path::Path) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     let command = "explorer";
     #[cfg(target_os = "macos")]
