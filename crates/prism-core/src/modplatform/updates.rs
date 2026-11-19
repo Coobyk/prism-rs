@@ -440,7 +440,7 @@ pub async fn check(
             .warnings
             .push(format!("Set {API_KEY_ENV} to check CurseForge mods."));
     }
-    let results = stream::iter(installed.iter().map(|file| {
+    let results = stream::iter(installed.into_iter().map(|file| {
         let (mr, cf, current_versions) = (&mr, &cf, &current_versions);
         async move {
             let providers = file.index.as_ref().map(|meta| &meta.index.update);
