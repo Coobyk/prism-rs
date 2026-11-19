@@ -67,7 +67,7 @@ shader packs still need a shader loader such as Iris.
 Open **Worlds** on a Java instance to see each save's name, folder, seed, game
 mode, and last-played time. Join a world, open its folder, or refresh the list.
 Stop Minecraft before copying, renaming, or deleting a world. Rename changes
-the name shown in Minecraft without moving the save folder.
+the name shown in Minecraft and gives the save folder a matching, unique name.
 
 Open **Data Packs** on a Java instance and select a saved world. Use **Add ZIP…** for
 an archive with `pack.mcmeta` at its root, or use **Browse Modrinth** to install a

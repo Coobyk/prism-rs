@@ -7,7 +7,7 @@ use gpui_kit::component::{
 use gpui_kit::*;
 use prism_core::Instance;
 use prism_core::launch::QuickPlayTarget;
-use prism_core::worlds::{World, WorldDetails};
+use prism_core::worlds::{RenameOutcome, World, WorldDetails};
 use std::{io, path::PathBuf};
 
 enum WorldRow {
@@ -258,11 +258,16 @@ impl InstanceWindow {
             match action {
                 Action::Rename => target
                     .rename(name.as_deref().unwrap())
-                    .map(|()| "World renamed."),
+                    .map(|outcome| match outcome {
+                        RenameOutcome::Renamed => "World renamed.".into(),
+                        RenameOutcome::NameOnly(error) => {
+                            format!("World name changed, but the save folder could not be renamed: {error}")
+                        }
+                    }),
                 Action::Copy => target
                     .copy(name.as_deref().unwrap())
-                    .map(|_| "World copied."),
-                Action::Delete => target.delete().map(|()| "World deleted."),
+                    .map(|_| "World copied.".into()),
+                Action::Delete => target.delete().map(|()| "World deleted.".into()),
             }
         });
         cx.spawn(async move |this, cx| {
@@ -271,7 +276,7 @@ impl InstanceWindow {
                 this.worlds.busy = false;
                 if this.page == Page::Worlds {
                     this.worlds.status = Some(match result {
-                        Ok(Ok(message)) => message.to_string(),
+                        Ok(Ok(message)) => message,
                         Ok(Err(error)) => format!("{} failed: {error}", action.label()),
                         Err(error) => format!("{} failed: {error}", action.label()),
                     });
@@ -483,7 +488,7 @@ impl InstanceWindow {
                             dialog.target.name()
                         ),
                         Action::Rename => format!(
-                            "Enter a new name for {:?}. The save folder will not move.",
+                            "Enter a new name for {:?}. The save folder will also be renamed.",
                             dialog.name
                         ),
                         Action::Copy => format!("Enter a name for the copy of {:?}.", dialog.name),

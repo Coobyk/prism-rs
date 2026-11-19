@@ -63,6 +63,12 @@ pub struct WorldDetails {
     pub last_played: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug)]
+pub enum RenameOutcome {
+    Renamed,
+    NameOnly(io::Error),
+}
+
 pub(crate) fn plain_name(name: &str) -> bool {
     Path::new(name).file_name().and_then(|part| part.to_str()) == Some(name)
         && !name.contains(['/', '\\', ':'])
@@ -212,14 +218,52 @@ impl World {
         })
     }
 
-    pub fn rename(&self, name: &str) -> io::Result<()> {
+    pub fn rename(&self, name: &str) -> io::Result<RenameOutcome> {
         let path = self.world_path()?;
         let bytes = renamed_level(&path, name)?;
         let file = write_level(&path, &bytes)?;
+        let level_stamp = FileStamp::from(&file.as_file().metadata()?);
         self.world_path()?;
         file.persist(path.join(LEVEL_DAT))
             .map_err(|error| error.error)?;
-        Ok(())
+        let updated = Self {
+            level_stamp,
+            ..self.clone()
+        };
+        Ok(match updated.rename_folder(&path, name) {
+            Ok(()) => RenameOutcome::Renamed,
+            Err(error) => RenameOutcome::NameOnly(error),
+        })
+    }
+
+    fn rename_folder(&self, path: &Path, name: &str) -> io::Result<()> {
+        let saves = self.game_root.join("saves");
+        let base = rename_folder_base(name);
+        for index in 0..=9000 {
+            let target = saves.join(if index == 0 {
+                base.clone()
+            } else {
+                format!("{base}({index})")
+            });
+            if target == path {
+                self.world_path()?;
+                return Ok(());
+            }
+            match fs::symlink_metadata(&target) {
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            self.world_path()?;
+            match fs::rename(path, &target) {
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                result => return result,
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "No unique save folder name available",
+        ))
     }
 
     pub fn copy(&self, name: &str) -> io::Result<PathBuf> {
@@ -248,6 +292,38 @@ impl World {
 
 fn invalid_data() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "level.dat has no Data compound")
+}
+
+fn rename_folder_base(name: &str) -> String {
+    let clean: String = name
+        .chars()
+        .filter(|ch| !ch.is_control() && !r#"<>:"/\|?*!"#.contains(*ch))
+        .collect();
+    let clean = clean
+        .trim_start()
+        .trim_end_matches(|ch: char| ch.is_whitespace() || ch == '.');
+    if clean.is_empty() {
+        return "World".into();
+    }
+    let device = clean
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end()
+        .to_ascii_uppercase();
+    if matches!(device.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            device.strip_prefix(prefix).is_some_and(|suffix| {
+                matches!(
+                    suffix,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
+    {
+        return format!("_{clean}");
+    }
+    clean.into()
 }
 
 fn renamed_level(path: &Path, name: &str) -> io::Result<Vec<u8>> {
@@ -420,8 +496,14 @@ mod tests {
         fs::create_dir(source.join("region")).unwrap();
         fs::write(source.join("region/r.0.0.mca"), b"region contents").unwrap();
         let original = World::open(root, "saved-folder").unwrap();
-        original.rename("New 🌍 name").unwrap();
-        let updated = World::open(root, "saved-folder").unwrap();
+        assert!(matches!(
+            original.rename("New 🌍 name").unwrap(),
+            RenameOutcome::Renamed
+        ));
+        assert!(!source.exists());
+        let source = root.join("saves/New 🌍 name");
+        let level = source.join(LEVEL_DAT);
+        let updated = World::open(root, "New 🌍 name").unwrap();
         assert_eq!(updated.details().unwrap().display_name, "New 🌍 name");
         assert!(original.rename("stale").is_err());
         assert!(original.copy("stale").is_err());
@@ -452,6 +534,46 @@ mod tests {
         copied_world.delete().unwrap();
         assert!(!dest.exists());
         assert!(another.is_dir() && source.is_dir());
+    }
+
+    #[test]
+    fn rename_strips_invalid_folder_characters_and_does_not_clobber_existing_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let source = fixture(root, "original", vec![]);
+        let collision = fixture(root, "Oak Ridge", vec![]);
+        let before = fs::read(collision.join(LEVEL_DAT)).unwrap();
+        fs::create_dir(root.join("saves/Oak Ridge(1)")).unwrap();
+        let original = World::open(root, "original").unwrap();
+        assert!(matches!(
+            original.rename("Oak:/ Ridge?*.").unwrap(),
+            RenameOutcome::Renamed
+        ));
+        let updated = World::open(root, "Oak Ridge(2)").unwrap();
+        assert_eq!(updated.details().unwrap().display_name, "Oak:/ Ridge?*.");
+        assert!(!source.exists());
+        assert!(original.delete().is_err());
+        assert_eq!(fs::read(collision.join(LEVEL_DAT)).unwrap(), before);
+        assert!(root.join("saves/Oak Ridge(1)").is_dir());
+        assert_eq!(rename_folder_base("../.."), "World");
+        assert_eq!(rename_folder_base("CON.txt"), "_CON.txt");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn folder_rename_failure_keeps_new_level_name_and_invalidates_old_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fixture(root, "original", vec![]);
+        let original = World::open(root, "original").unwrap();
+        let long_name = "x".repeat(512);
+        assert!(matches!(
+            original.rename(&long_name).unwrap(),
+            RenameOutcome::NameOnly(_)
+        ));
+        assert!(original.delete().is_err());
+        let updated = World::open(root, "original").unwrap();
+        assert_eq!(updated.details().unwrap().display_name, long_name);
     }
 
     #[test]
