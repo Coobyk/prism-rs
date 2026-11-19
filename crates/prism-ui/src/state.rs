@@ -223,7 +223,8 @@ impl App {
                     cx.notify();
                 });
             }
-        }).detach();
+        })
+        .detach();
         let launcher = prism_core::launch::Launcher::new(self.paths.clone(), self.runtime.downloader.clone());
         let downloader = self.runtime.downloader.clone();
         let log = running.log.clone();
