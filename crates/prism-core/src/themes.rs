@@ -182,6 +182,12 @@ impl ThemeCatalog {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned();
+            if id == "default" {
+                catalog
+                    .warnings
+                    .push(format!("{}: reserved icon theme id", directory.display()));
+                continue;
+            }
             let mut name = id.clone();
             if let Ok(index) = std::fs::read_to_string(directory.join("index.theme")) {
                 let mut in_theme = false;
@@ -332,6 +338,13 @@ mod tests {
         assert_eq!(catalog.applications.len(), 4);
         assert_eq!(catalog.warnings.len(), 1);
         assert_eq!(catalog.icons[0].name, "Test Icons");
+        std::fs::create_dir_all(paths.icon_themes_dir().join("default")).unwrap();
+        let reserved = ThemeCatalog::load(&paths);
+        assert_eq!(reserved.icons.len(), 1);
+        assert!(reserved
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("reserved icon theme id")));
         std::fs::create_dir_all(paths.icon_themes_dir().join("unnamed")).unwrap();
         assert_eq!(ThemeCatalog::load(&paths).icons[1].name, "unnamed");
         for name in ["root", "vector", "sized"] {
