@@ -51,6 +51,22 @@ impl Locale {
     }
 
     pub fn resolve(setting: Option<&str>) -> Self {
+        #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+        {
+            let preferred = std::env::var("LANGUAGE").ok();
+            let category = ["LC_ALL", "LC_MESSAGES", "LANG"]
+                .into_iter()
+                .filter_map(|name| std::env::var(name).ok())
+                .find(|value| !value.trim().is_empty());
+            Self::resolve_from(
+                setting,
+                preferred
+                    .iter()
+                    .flat_map(|values| values.split(':'))
+                    .chain(category.as_deref()),
+            )
+        }
+        #[cfg(not(all(unix, not(any(target_vendor = "apple", target_os = "android")))))]
         Self::resolve_from(setting, sys_locale::get_locales())
     }
 
@@ -148,6 +164,32 @@ mod tests {
         assert_eq!(Locale::resolve_from(Some("ja"), system), Locale::Japanese);
         assert_eq!(Locale::resolve_from(Some("invalid"), system), Locale::English);
         assert_eq!(Locale::resolve_from(None, ["nl-NL"]), Locale::English);
+    }
+
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    #[test]
+    fn posix_locale_uses_first_nonempty_category() {
+        const CHILD: &str = "PRISM_RS_TEST_POSIX_LOCALE";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(Locale::resolve(None), Locale::English);
+            return;
+        }
+        for (all, messages) in [("es_ES", "fr_FR"), ("", "es_ES")] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "i18n::tests::posix_locale_uses_first_nonempty_category"])
+                .env(CHILD, "1")
+                .env_remove("LANGUAGE")
+                .env("LC_ALL", all)
+                .env("LC_MESSAGES", messages)
+                .env("LANG", "de_DE")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "LC_ALL={all:?} LC_MESSAGES={messages:?}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
     }
 
     #[cfg(target_os = "linux")]
