@@ -736,6 +736,7 @@ impl SkinsDialog {
 }
 
 fn choice(
+    palette: crate::theme::Palette,
     id: String,
     label: String,
     checked: bool,
@@ -754,14 +755,14 @@ fn choice(
         .rounded_md()
         .border_1()
         .border_color(if checked {
-            rgb(0x789ac6)
+            palette.link
         } else {
-            rgb(0x505050)
+            palette.strong_border
         })
         .bg(if checked {
-            rgb(0x344b69)
+            palette.selection
         } else {
-            rgb(0x292929)
+            palette.panel
         })
         .child(
             div()
@@ -769,11 +770,11 @@ fn choice(
                 .flex_shrink_0()
                 .rounded_full()
                 .border_1()
-                .border_color(rgb(0xb0b0b0))
+                .border_color(palette.secondary_text)
                 .flex()
                 .items_center()
                 .justify_center()
-                .children(checked.then(|| div().size(px(8.)).rounded_full().bg(rgb(0xffffff)))),
+                .children(checked.then(|| div().size(px(8.)).rounded_full().bg(palette.text))),
         )
         .children(thumbnail)
         .child(div().flex_1().min_w_0().child(label))
@@ -782,6 +783,7 @@ fn choice(
 
 impl Render for SkinsDialog {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let removed = !self.account_exists(cx);
         let busy = self.busy || removed || self.app.read(cx).skins.is_none();
         let selected = self.selected_skin(cx);
@@ -811,7 +813,11 @@ impl Render for SkinsDialog {
                 .p_2()
                 .flex_shrink_0()
                 .rounded_md()
-                .bg(if active { rgb(0x3d5a80) } else { rgb(0x2b2b2b) });
+                .bg(if active {
+                    palette.selection
+                } else {
+                    palette.panel
+                });
             if let Some(image) = self.image(&skin, true) {
                 row = row.child(img(ImageSource::Render(image)).w(px(32.)).h(px(64.)));
             }
@@ -834,7 +840,7 @@ impl Render for SkinsDialog {
             .overflow_y_scroll()
             .p_3()
             .rounded_md()
-            .bg(rgb(0x252525))
+            .bg(palette.panel)
             .flex()
             .flex_col()
             .items_center()
@@ -870,6 +876,7 @@ impl Render for SkinsDialog {
                 let name = skin.name.clone();
                 models = models.child(
                     choice(
+                        palette,
                         format!("model-{label}"),
                         label.into(),
                         skin.model == model,
@@ -913,6 +920,7 @@ impl Render for SkinsDialog {
                 }
                 settings = settings.child(
                     choice(
+                        palette,
                         format!("cape-{i}"),
                         alias,
                         skin.cape_id == cape,
@@ -938,8 +946,8 @@ impl Render for SkinsDialog {
             .flex_col()
             .gap_3()
             .p_4()
-            .bg(rgb(0x202020))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.base)
+            .text_color(palette.text)
             .child(div().text_size(px(20.)).child("Manage Skins"));
         if self.busy {
             panel = panel.child("Loading / working…");
@@ -947,12 +955,12 @@ impl Render for SkinsDialog {
         if removed {
             panel = panel.child(
                 div()
-                    .text_color(rgb(0xff8888))
+                    .text_color(palette.error)
                     .child("This Microsoft account has been removed. Close this window."),
             );
         }
         if let Some(error) = &self.error {
-            panel = panel.child(div().text_color(rgb(0xff8888)).child(error.clone()));
+            panel = panel.child(div().text_color(palette.error).child(error.clone()));
         }
         if let Some(notice) = &self.notice {
             panel = panel.child(div().child(notice.clone()));
@@ -976,7 +984,7 @@ impl Render for SkinsDialog {
                             .gap_2()
                             .p_3()
                             .rounded_md()
-                            .bg(rgb(0x252525))
+                            .bg(palette.panel)
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -992,7 +1000,7 @@ impl Render for SkinsDialog {
                     .gap_4()
                     .pt_3()
                     .border_t_1()
-                    .border_color(rgb(0x404040))
+                    .border_color(palette.hover)
                     .child(
                         div()
                             .flex_1()

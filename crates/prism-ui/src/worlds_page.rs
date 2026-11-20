@@ -1,13 +1,13 @@
-use super::{InstanceWindow, Page, datapacks_page::open_folder};
+use super::{datapacks_page::open_folder, InstanceWindow, Page};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::{
     button::Button,
     input::{Input, InputState},
 };
 use gpui_kit::*;
-use prism_core::Instance;
 use prism_core::launch::QuickPlayTarget;
 use prism_core::worlds::{RenameOutcome, World, WorldDetails};
+use prism_core::Instance;
 use std::{io, path::PathBuf};
 
 enum WorldRow {
@@ -290,6 +290,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_worlds_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let Some(list) = &self.worlds.list else {
             return div()
                 .p_3()
@@ -300,9 +301,9 @@ impl InstanceWindow {
         let busy = self.worlds.busy;
         let mut rows = div().flex().flex_col().gap_2().p_3();
         if let Some(error) = &list.error {
-            rows = rows.child(div().text_color(rgb(0xff8787)).child(error.clone()));
+            rows = rows.child(div().text_color(palette.error).child(error.clone()));
         } else if list.rows.is_empty() {
-            rows = rows.child(div().text_color(rgb(0xaaaaaa)).child("No worlds."));
+            rows = rows.child(div().text_color(palette.secondary_text).child("No worlds."));
         }
         for (index, row) in list.rows.iter().enumerate() {
             let folder = row.folder().to_string();
@@ -322,7 +323,7 @@ impl InstanceWindow {
                 description = description.child(
                     div()
                         .text_size(px(12.))
-                        .text_color(rgb(0xbbbbbb))
+                        .text_color(palette.secondary_text)
                         .text_ellipsis()
                         .child(format!("Folder: {folder}")),
                 );
@@ -331,7 +332,7 @@ impl InstanceWindow {
                 description = description.child(
                     div()
                         .text_size(px(12.))
-                        .text_color(rgb(0xbbbbbb))
+                        .text_color(palette.secondary_text)
                         .child(detail),
                 );
             }
@@ -384,7 +385,7 @@ impl InstanceWindow {
                     .gap_2()
                     .px_3()
                     .py_2()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .rounded_md()
                     .child(description)
                     .child(buttons),
@@ -452,6 +453,7 @@ impl InstanceWindow {
         running: bool,
         cx: &Context<Self>,
     ) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let action = dialog.action.label();
         div()
             .id("world-dialog-backdrop")
@@ -470,8 +472,8 @@ impl InstanceWindow {
                     .p_4()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(0x555555))
-                    .bg(rgb(0x2b2b2b))
+                    .border_color(palette.strong_border)
+                    .bg(palette.panel)
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -497,7 +499,7 @@ impl InstanceWindow {
                     .children(
                         dialog
                             .error
-                            .map(|error| div().text_color(rgb(0xff8787)).child(error)),
+                            .map(|error| div().text_color(palette.error).child(error)),
                     )
                     .child(
                         div()

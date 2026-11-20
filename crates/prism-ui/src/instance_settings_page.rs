@@ -435,7 +435,10 @@ impl SettingsForm {
             }
         }
         if let Some(env) = &raw.env {
-            local.env = env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+            local.env = env
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
         }
         local
     }
@@ -556,9 +559,9 @@ impl SettingsForm {
             raw.min_memory_mb = Some(min);
             raw.max_memory_mb = Some(max);
         }
-        let java_was_enabled = baseline.override_java_location.unwrap_or(
-            baseline.java_path.is_some() || baseline.legacy_java_path.is_some(),
-        );
+        let java_was_enabled = baseline
+            .override_java_location
+            .unwrap_or(baseline.java_path.is_some() || baseline.legacy_java_path.is_some());
         if self.overrides[1] != java_was_enabled {
             raw.override_java_location = Some(self.overrides[1]);
         }
@@ -781,6 +784,7 @@ impl SettingsEditor {
     }
 
     pub(crate) fn render(&self, cx: &mut Context<InstanceWindow>) -> AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let mut list = div().flex().flex_col().gap_3().p_4();
         for (group, title) in [
             "Memory",
@@ -799,10 +803,10 @@ impl SettingsEditor {
                 .flex_col()
                 .gap_2()
                 .p_3()
-                .bg(rgb(0x2b2b2b))
+                .bg(palette.panel)
                 .rounded_md()
                 .border_1()
-                .border_color(rgb(0x383838))
+                .border_color(palette.hover)
                 .child(
                     div()
                         .flex()
@@ -820,17 +824,19 @@ impl SettingsEditor {
                                         .size(px(18.))
                                         .rounded(px(4.))
                                         .border_1()
-                                        .border_color(rgb(0x888888))
+                                        .border_color(palette.muted_text)
                                 }))
                                 .child(
                                     Checkbox::new(SharedString::from(format!("override-{group}")))
                                         .label("Override global settings")
                                         .checked(enabled)
-                                        .on_change(cx.listener(move |this, checked: &bool, window, cx| {
-                                            if let Some(editor) = &mut this.settings_editor {
-                                                editor.toggle(group, *checked, window, cx);
-                                            }
-                                        })),
+                                        .on_change(cx.listener(
+                                            move |this, checked: &bool, window, cx| {
+                                                if let Some(editor) = &mut this.settings_editor {
+                                                    editor.toggle(group, *checked, window, cx);
+                                                }
+                                            },
+                                        )),
                                 ),
                         ),
                 );
@@ -844,21 +850,21 @@ impl SettingsEditor {
                             div()
                                 .w(px(200.))
                                 .flex_shrink_0()
-                                .text_color(rgb(0xaaaaaa))
+                                .text_color(palette.secondary_text)
                                 .child(LABELS[i]),
                         )
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .bg(rgb(0x232323))
+                                .bg(palette.window)
                                 .rounded_md()
                                 .child(Input::new(&self.inputs[i]).disabled(!enabled)),
                         ),
                 );
             }
             if group == 4 {
-                section = section.child(div().text_size(px(12.)).text_color(rgb(0x999999))
+                section = section.child(div().text_size(px(12.)).text_color(palette.muted_text)
                     .child("Use $INST_NAME, $INST_ID, $INST_DIR, $INST_MC_DIR, $INST_JAVA and $INST_JAVA_ARGS in shell commands."));
             }
             if group == 5 {
@@ -867,7 +873,7 @@ impl SettingsEditor {
                         .flex()
                         .gap_2()
                         .text_size(px(12.))
-                        .text_color(rgb(0x999999))
+                        .text_color(palette.muted_text)
                         .child(div().w(px(240.)).child("Variable"))
                         .child(div().flex_1().child("Value")),
                 );
@@ -880,7 +886,7 @@ impl SettingsEditor {
                             .child(
                                 div()
                                     .w(px(240.))
-                                    .bg(rgb(0x232323))
+                                    .bg(palette.window)
                                     .rounded_md()
                                     .child(Input::new(key).disabled(!enabled)),
                             )
@@ -888,7 +894,7 @@ impl SettingsEditor {
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .bg(rgb(0x232323))
+                                    .bg(palette.window)
                                     .rounded_md()
                                     .child(Input::new(value).disabled(!enabled)),
                             )
@@ -911,7 +917,7 @@ impl SettingsEditor {
                 if self.env.is_empty() {
                     section = section.child(
                         div()
-                            .text_color(rgb(0x999999))
+                            .text_color(palette.muted_text)
                             .text_size(px(12.))
                             .child("No environment variables."),
                     );
@@ -935,11 +941,11 @@ impl SettingsEditor {
             list = list.child(section);
         }
         div().flex_1().min_h_0().min_w_0().flex().flex_col().text_size(px(13.))
-            .child(div().px_4().py_3().border_b_1().border_color(rgb(0x383838))
+            .child(div().px_4().py_3().border_b_1().border_color(palette.hover)
                 .child(div().font_weight(FontWeight::BOLD).text_size(px(16.)).child("Instance settings"))
-                .child(div().text_size(px(12.)).text_color(rgb(0x999999)).child("Unchecked sections inherit launcher defaults. Changes apply to the next launch.")))
+                .child(div().text_size(px(12.)).text_color(palette.muted_text).child("Unchecked sections inherit launcher defaults. Changes apply to the next launch.")))
             .child(div().id("instance-settings-scroll").flex_1().min_h_0().overflow_y_scroll().child(list))
-            .child(div().px_4().py_3().border_t_1().border_color(rgb(0x383838)).flex().items_center().gap_3()
+            .child(div().px_4().py_3().border_t_1().border_color(palette.hover).flex().items_center().gap_3()
                 .child(Button::new("save-instance-settings").label("Save settings")
                     .on_click(cx.listener(|this, _, _, cx| {
                         if this.app.read(cx).instances.get(&this.instance_id).is_none() {
@@ -959,7 +965,7 @@ impl SettingsEditor {
                         } else if let Some(editor) = &mut this.settings_editor { editor.status = "This instance was deleted.".into(); editor.success = false; }
                         cx.notify();
                     })))
-                .child(div().flex_1().text_size(px(12.)).text_color(if self.success { rgb(0x8bc59a) } else { rgb(0xf0a0a0) }).child(self.status.clone())))
+                .child(div().flex_1().text_size(px(12.)).text_color(if self.success { palette.success } else { palette.error }).child(self.status.clone())))
             .into_any_element()
     }
 }

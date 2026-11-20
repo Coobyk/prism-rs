@@ -250,6 +250,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_managed_pack(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let page = &self.managed_pack;
         let running = self.app.read(cx).is_running(&self.instance_id);
         let current = page.current.as_ref();
@@ -297,7 +298,7 @@ impl InstanceWindow {
                     ),
             )
             .child(
-                div().text_color(rgb(0xaaaaaa)).child(
+                div().text_color(palette.secondary_text).child(
                     current
                         .map(|pack| format!("Modrinth  •  Installed: {}", pack.version))
                         .unwrap_or_default(),
@@ -373,7 +374,7 @@ impl InstanceWindow {
                                     .min_h_0()
                                     .overflow_y_scroll()
                                     .p_3()
-                                    .bg(rgb(0x1a1a1a))
+                                    .bg(palette.base)
                                     .rounded_md()
                                     .text_size(px(13.))
                                     .child(render_changelog(

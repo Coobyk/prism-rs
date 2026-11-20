@@ -32,14 +32,17 @@ impl ApiKey {
     }
 
     pub fn is_valid(self, value: &str) -> bool {
-        !value.is_empty() && match self {
-            Self::CurseForge => reqwest::header::HeaderValue::from_str(value).is_ok(),
-            Self::Imgur => value.bytes().all(|byte| byte.is_ascii_alphanumeric()),
-        }
+        !value.is_empty()
+            && match self {
+                Self::CurseForge => reqwest::header::HeaderValue::from_str(value).is_ok(),
+                Self::Imgur => value.bytes().all(|byte| byte.is_ascii_alphanumeric()),
+            }
     }
 
     fn from_environment(self) -> Option<String> {
-        std::env::var(self.environment()).ok().filter(|value| !value.trim().is_empty())
+        std::env::var(self.environment())
+            .ok()
+            .filter(|value| !value.trim().is_empty())
     }
 
     pub fn has_environment_override(self) -> bool {
@@ -47,7 +50,9 @@ impl ApiKey {
     }
 
     fn resolve(self, settings: &Settings, env: Option<&str>) -> Option<String> {
-        let value = env.map(str::trim).filter(|value| !value.is_empty())
+        let value = env
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
             .or_else(|| settings.get(self.setting()).map(str::trim))?;
         self.is_valid(value).then(|| value.to_owned())
     }
@@ -76,7 +81,8 @@ impl Default for Settings {
         ini.set("ShowConsole", "true");
         ini.set("ConsoleMaxLines", "100000");
         ini.set("Language", "en");
-        ini.set("Theme", "dark");
+        ini.set("ApplicationTheme", "system");
+        ini.set("IconTheme", "default");
         Settings { ini }
     }
 }
@@ -98,7 +104,10 @@ impl Settings {
         } else {
             path.to_path_buf()
         };
-        let parent = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+        let parent = path
+            .parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent)?;
         let mut file = tempfile::NamedTempFile::new_in(parent)?;
         file.write_all(self.ini.serialize().as_bytes())?;
@@ -122,7 +131,10 @@ impl Settings {
     }
 
     pub fn get_int(&self, key: &str, default: i64) -> i64 {
-        self.ini.get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
+        self.ini
+            .get(key)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(default)
     }
 
     pub fn set(&mut self, key: &str, value: impl Into<String>) {

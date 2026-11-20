@@ -354,6 +354,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_version_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let state = &self.version_editor;
         let blocked =
             state.busy || state.dialog.is_some() || self.app.read(cx).is_running(&self.instance_id);
@@ -389,12 +390,12 @@ impl InstanceWindow {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(row("Minecraft", m).child(action(
+                    .child(row(palette, "Minecraft", m).child(action(
                         "version-minecraft",
                         "Change",
                         Edit::Minecraft,
                     )))
-                    .child(row("LWJGL", lwjgl).child(action(
+                    .child(row(palette, "LWJGL", lwjgl).child(action(
                         "version-lwjgl",
                         "Change",
                         Edit::Lwjgl,
@@ -418,7 +419,11 @@ impl InstanceWindow {
                     .into_iter()
                     .find(|kind| kind.loader(String::new()).uid() == uid);
                     has_loader |= kind.is_some();
-                    rows = rows.child(row(kind.map(LoaderKind::name).unwrap_or(uid), version));
+                    rows = rows.child(row(
+                        palette,
+                        kind.map(LoaderKind::name).unwrap_or(uid),
+                        version,
+                    ));
                 }
                 rows = rows.child(
                     div()
@@ -470,7 +475,7 @@ impl InstanceWindow {
                         .child(
                             div()
                                 .text_size(px(12.))
-                                .text_color(rgb(0xaaaaaa))
+                                .text_color(palette.secondary_text)
                                 .child(detail),
                         )
                         .child(action(id, button, Edit::Add(kind)));
@@ -490,7 +495,7 @@ impl InstanceWindow {
                                 }))
                         };
                         rows = rows.child(
-                            row(&entry.name, "")
+                            row(palette, &entry.name, "")
                                 .child(control("Up", Edit::Move(index, -1), position == 0))
                                 .child(control(
                                     "Down",
@@ -529,6 +534,7 @@ impl InstanceWindow {
     }
 
     fn version_dialog(&self, dialog: &Dialog, cx: &Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let edit = dialog.edit;
         let input = dialog.input.clone();
         div()
@@ -547,9 +553,9 @@ impl InstanceWindow {
                     .w(px(410.))
                     .p_4()
                     .rounded_lg()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .border_1()
-                    .border_color(rgb(0x555555))
+                    .border_color(palette.strong_border)
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -602,7 +608,7 @@ impl InstanceWindow {
     }
 }
 
-fn row(name: &str, value: &str) -> Div {
+fn row(palette: crate::theme::Palette, name: &str, value: &str) -> Div {
     div()
         .flex()
         .items_center()
@@ -610,7 +616,7 @@ fn row(name: &str, value: &str) -> Div {
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(rgb(0x2b2b2b))
+        .bg(palette.panel)
         .child(
             div()
                 .flex_1()
@@ -618,5 +624,5 @@ fn row(name: &str, value: &str) -> Div {
                 .text_ellipsis()
                 .child(name.to_owned()),
         )
-        .child(div().text_color(rgb(0x8fb4d9)).child(value.to_owned()))
+        .child(div().text_color(palette.link).child(value.to_owned()))
 }

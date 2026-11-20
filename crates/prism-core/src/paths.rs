@@ -21,7 +21,9 @@ impl Paths {
                 return Paths { root: candidate };
             }
         }
-        Paths { root: dirs_data().join("prismlauncher-rs") }
+        Paths {
+            root: dirs_data().join("prismlauncher-rs"),
+        }
     }
 
     pub fn instances_dir(&self) -> PathBuf {
@@ -30,6 +32,14 @@ impl Paths {
 
     pub fn icons_dir(&self) -> PathBuf {
         self.root.join("icons")
+    }
+
+    pub fn themes_dir(&self) -> PathBuf {
+        self.root.join("themes")
+    }
+
+    pub fn icon_themes_dir(&self) -> PathBuf {
+        self.root.join("iconthemes")
     }
 
     pub fn accounts_file(&self) -> PathBuf {
@@ -73,6 +83,8 @@ impl Paths {
         for dir in [
             self.instances_dir(),
             self.icons_dir(),
+            self.themes_dir(),
+            self.icon_themes_dir(),
             self.cache_dir(),
             self.java_dir(),
             self.logs_dir(),

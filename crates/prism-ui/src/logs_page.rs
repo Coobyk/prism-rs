@@ -424,6 +424,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_logs_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let source = if self.page == Page::Log {
             Source::Console
         } else {
@@ -592,17 +593,17 @@ impl InstanceWindow {
                                 HighlightStyle {
                                     background_color: Some(
                                         if active == Some(hit) {
-                                            rgb(0xf4ae44)
+                                            palette.warning
                                         } else {
-                                            rgb(0x666027)
+                                            palette.warning_bg
                                         }
                                         .into(),
                                     ),
                                     color: Some(
                                         if active == Some(hit) {
-                                            rgb(0x1a1a1a)
+                                            palette.base
                                         } else {
-                                            rgb(0xffffff)
+                                            palette.text
                                         }
                                         .into(),
                                     ),
@@ -621,10 +622,10 @@ impl InstanceWindow {
             .flex_1()
             .min_w_0()
             .min_h_0()
-            .bg(rgb(0x1a1a1a))
+            .bg(palette.base)
             .font_family("monospace")
             .text_size(px(12.))
-            .text_color(rgb(0xcccccc))
+            .text_color(palette.text)
             .into_any_element()
         };
         if source == Source::Console {
@@ -645,7 +646,7 @@ impl InstanceWindow {
             .flex_shrink_0()
             .overflow_y_scroll()
             .border_r_1()
-            .border_color(rgb(0x1c1c1c))
+            .border_color(palette.border)
             .children(
                 self.logs
                     .files
@@ -661,11 +662,11 @@ impl InstanceWindow {
                     .cursor_pointer()
                     .text_ellipsis()
                     .bg(if selected {
-                        rgb(0x3d5a80)
+                        palette.selection
                     } else {
-                        rgb(0x292929)
+                        palette.panel
                     })
-                    .hover(|style| style.bg(rgb(0x333333)))
+                    .hover(|style| style.bg(palette.hover))
                     .child(file.name().to_owned())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.select_log(file.clone(), cx);

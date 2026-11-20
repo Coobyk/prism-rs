@@ -161,6 +161,7 @@ impl ModListDialog {
 
 impl Render for ModListDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let formats = div()
             .flex()
             .flex_wrap()
@@ -219,8 +220,8 @@ impl Render for ModListDialog {
             .flex_col()
             .gap_3()
             .p_4()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.window)
+            .text_color(palette.text)
             .child(
                 div()
                     .font_weight(FontWeight::BOLD)
@@ -235,7 +236,7 @@ impl Render for ModListDialog {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .bg(rgb(0x1a1a1a))
+                    .bg(palette.base)
                     .rounded_md()
                     .p_3()
                     .font_family("monospace")
