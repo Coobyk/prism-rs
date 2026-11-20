@@ -299,16 +299,17 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
 
     runtime.handle().block_on(async {
         let version = mc_version.as_str();
-        println!("Fetching version metadata for {version}…");
-        let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
-        let mut profile = prism_core::profile::LaunchProfile::from_mojang(&vd);
-        if let Some(instance) = &instance {
+        let mut profile = if let Some(instance) = &instance {
             let loader = prism_core::instance::loader_of(instance);
-            profile = launcher
+            launcher
                 .prepare_instance(&mut settings, loader, |message| println!("{message}"))
                 .await
-                .expect("instance preparation failed");
-        }
+                .expect("instance preparation failed")
+        } else {
+            println!("Fetching version metadata for {version}…");
+            let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
+            prism_core::profile::LaunchProfile::from_mojang(&vd)
+        };
         // Version-only preparation can select Fabric via PRISM_RS_FABRIC.
         if let Some(loader_version) = std::env::var("PRISM_RS_FABRIC")
             .ok()
