@@ -19,6 +19,55 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read};
 
+    #[test]
+    fn skins_client_uses_saved_proxy() {
+        if std::env::var_os("PRISM_SKINS_PROXY_CHILD").is_some() {
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                SkinClient::new()
+                    .http
+                    .get("http://skin-proxy.invalid/check")
+                    .timeout(std::time::Duration::from_secs(5))
+                    .send()
+                    .await
+                    .unwrap()
+                    .error_for_status()
+                    .unwrap();
+            });
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (base, handle) = server("200 OK", PROFILE);
+        let paths = Paths {
+            root: root.path().into(),
+        };
+        let mut settings = crate::settings::Settings::default();
+        settings.set("ProxyType", "HTTP");
+        settings.set("ProxyAddr", "127.0.0.1");
+        settings.set("ProxyPort", base.rsplit(':').next().unwrap());
+        settings.save(&paths.global_config()).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "skins::tests::skins_client_uses_saved_proxy",
+                "--nocapture",
+            ])
+            .env("PRISM_SKINS_PROXY_CHILD", "1")
+            .env("PRISM_RS_DATA", root.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(handle
+            .join()
+            .unwrap()
+            .0
+            .starts_with("GET http://skin-proxy.invalid/check HTTP/1.1"));
+    }
+
     #[tokio::test]
     #[ignore = "requires live Minecraft services"]
     async fn skins_live_username_import() {
@@ -411,7 +460,9 @@ impl Default for SkinClient {
 impl SkinClient {
     pub fn new() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: crate::net::configured_http_builder()
+                .build()
+                .expect("failed to build HTTP client"),
             base_url: "https://api.minecraftservices.com".into(),
         }
     }
