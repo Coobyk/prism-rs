@@ -1,4 +1,5 @@
 use crate::{
+    component::Component,
     loaders::Loader,
     worlds::{plain_name, FileStamp},
 };
@@ -91,6 +92,7 @@ pub struct Pack {
     stamp: FileStamp,
     data: Value,
     archives: Vec<Archive>,
+    patches: std::collections::BTreeMap<String, Option<FileStamp>>,
 }
 
 fn invalid(message: &str) -> io::Error {
@@ -140,12 +142,30 @@ impl Pack {
             Some(value) => serde_json::from_value(value.clone())?,
             None => Vec::new(),
         };
+        let mut patches = std::collections::BTreeMap::new();
+        for row in data["components"].as_array().unwrap() {
+            let uid = crate::component::uid(
+                row["uid"]
+                    .as_str()
+                    .ok_or_else(|| invalid("Missing component UID"))?,
+            )?;
+            if patches
+                .insert(
+                    uid.to_owned(),
+                    optional_stamp(&root.join("patches").join(format!("{uid}.json")))?,
+                )
+                .is_some()
+            {
+                return Err(invalid("Duplicate component UID"));
+            }
+        }
         Ok(Self {
             root: root.into(),
             config,
             stamp,
             data,
             archives,
+            patches,
         })
     }
 
@@ -179,9 +199,220 @@ impl Pack {
         &self.archives
     }
 
+    pub fn enabled_components(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.components().filter(|(uid, _)| {
+            !self.data["components"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| {
+                    row["uid"] == *uid && row["disabled"] == true && row["important"] != true
+                })
+        })
+    }
+
+    pub fn is_custom(&self, uid: &str) -> bool {
+        self.patches.get(uid).is_some_and(Option::is_some)
+    }
+
+    pub fn dependency_only(&self, uid: &str) -> bool {
+        self.data["components"].as_array().unwrap().iter()
+            .any(|row| row["uid"] == uid && row["dependencyOnly"] == true)
+    }
+
+    pub fn has_meta(&self, uid: &str) -> bool {
+        matches!(uid, MINECRAFT | LWJGL | LWJGL3) || LOADER_UIDS.contains(&uid)
+    }
+
+    pub fn patch(&self, uid: &str) -> io::Result<Option<Component>> {
+        crate::component::uid(uid)?;
+        self.check()?;
+        if !self.is_custom(uid) {
+            return Ok(None);
+        }
+        let text = fs::read_to_string(self.root.join("patches").join(format!("{uid}.json")))?;
+        Component::parse(&text, Some(uid)).map(Some)
+    }
+
+    pub fn patch_text(&self, uid: &str) -> io::Result<String> {
+        crate::component::uid(uid)?;
+        self.check()?;
+        if !self.is_custom(uid) {
+            return Err(invalid("The component is not customized."));
+        }
+        fs::read_to_string(self.root.join("patches").join(format!("{uid}.json")))
+    }
+
+    pub fn save_patch(mut self, uid: &str, text: &str) -> io::Result<Self> {
+        let component = Component::parse(text, Some(uid))?;
+        component.validate_launch()?;
+        if !self.patches.contains_key(uid) {
+            return Err(invalid("Component no longer exists"));
+        }
+        self.write_component(uid, text.as_bytes(), Vec::new())
+    }
+
+    pub fn customize(mut self, uid: &str, document: &Value) -> io::Result<Self> {
+        if !self.has_meta(uid) || self.is_custom(uid) || !self.patches.contains_key(uid) {
+            return Err(invalid("This component cannot be customized."));
+        }
+        let text = serde_json::to_vec_pretty(document)?;
+        Component::parse(std::str::from_utf8(&text).unwrap(), Some(uid))?.validate_launch()?;
+        self.write_component(uid, &text, Vec::new())
+    }
+
+    pub fn add_empty(self, uid: &str, name: &str) -> io::Result<Self> {
+        let document = json!({"formatVersion":1,"uid":uid,"name":name,"version":"1"});
+        self.import_document(&serde_json::to_string_pretty(&document)?)
+    }
+
+    pub fn import_component(self, source: &Path) -> io::Result<Self> {
+        self.import_document(&fs::read_to_string(source)?)
+    }
+
+    fn import_document(mut self, text: &str) -> io::Result<Self> {
+        let component = Component::parse(text, None)?;
+        component.validate_launch()?;
+        let uid = component.id();
+        if self.patches.contains_key(uid) {
+            return Err(invalid("A component with this UID already exists."));
+        }
+        if optional_stamp(&self.root.join("patches").join(format!("{uid}.json")))?.is_some() {
+            return Err(invalid("A patch with this UID already exists."));
+        }
+        self.patches.insert(uid.to_owned(), None);
+        self.rows().push(json!({"uid":uid,"cachedName":component.0["name"],"cachedVersion":component.0["version"]}));
+        self.write_component(uid, text.as_bytes(), Vec::new())
+    }
+
+    pub fn revert(self, uid: &str) -> io::Result<Self> {
+        if !self.has_meta(uid) || !self.is_custom(uid) {
+            return Err(invalid("This component cannot be reverted."));
+        }
+        let path = self.root.join("patches").join(format!("{uid}.json"));
+        self.commit_files(vec![(path, None)])
+    }
+
+    pub fn remove_component(mut self, uid: &str) -> io::Result<Self> {
+        if self.has_meta(uid) {
+            return Err(invalid("Meta components must be reverted, not removed."));
+        }
+        let component = self
+            .patch(uid)?
+            .ok_or_else(|| invalid("Local component not found"))?;
+        let mut artifacts = component.local_artifacts(&self.root)?;
+        for (other, _) in self.components().filter(|(other, _)| *other != uid) {
+            if let Some(other) = self.patch(other)? {
+                let shared = other.local_artifacts(&self.root)?;
+                artifacts.retain(|path| !shared.contains(path));
+            }
+        }
+        let mut files: Vec<_> = artifacts.into_iter().map(|path| (path, None)).collect();
+        files.push((self.root.join("patches").join(format!("{uid}.json")), None));
+        self.rows().retain(|row| row["uid"] != uid);
+        self.commit_files(files)
+    }
+
+    pub fn install_custom_jar(mut self, source: &Path) -> io::Result<Self> {
+        let (stem, bytes) = jar_source(source)?;
+        let uid = "customjar";
+        let document = json!({"formatVersion":1,"uid":uid,"name":format!("{stem} (custom jar)"),
+            "mainJar":{"name":"custom:customjar:1","MMC-displayname":stem,"MMC-hint":"local"}});
+        if !self.patches.contains_key(uid) {
+            if optional_stamp(&self.root.join("patches/customjar.json"))?.is_some() {
+                return Err(invalid("An unregistered customjar patch already exists."));
+            }
+            self.patches.insert(uid.into(), None);
+            self.rows()
+                .push(json!({"uid":uid,"cachedName":document["name"]}));
+        }
+        let artifact = self.root.join("libraries/customjar-1.jar");
+        self.write_component(
+            uid,
+            &serde_json::to_vec_pretty(&document)?,
+            vec![(artifact, Some(bytes))],
+        )
+    }
+
+    pub fn install_agent(mut self, source: &Path) -> io::Result<Self> {
+        let (stem, bytes) = jar_source(source)?;
+        let id = uuid::Uuid::new_v4();
+        let uid = format!("custom.agent.{id}");
+        let filename = format!("{id}.jar");
+        let document = json!({"formatVersion":1,"uid":uid,"name":format!("{stem} (agent)"),
+            "+agents":[{"name":format!("custom.agents:{id}:1"),"MMC-filename":filename,"MMC-displayname":stem,"MMC-hint":"local"}]});
+        self.patches.insert(uid.clone(), None);
+        self.rows()
+            .push(json!({"uid":uid,"cachedName":document["name"]}));
+        let artifact = self.root.join("libraries").join(filename);
+        self.write_component(
+            &uid,
+            &serde_json::to_vec_pretty(&document)?,
+            vec![(artifact, Some(bytes))],
+        )
+    }
+
+    fn write_component(
+        &mut self,
+        uid: &str,
+        text: &[u8],
+        mut files: Vec<(PathBuf, Option<Vec<u8>>)>,
+    ) -> io::Result<Self> {
+        files.push((
+            self.root.join("patches").join(format!("{uid}.json")),
+            Some(text.to_vec()),
+        ));
+        self.clone().commit_files(files)
+    }
+
+    fn commit_files(mut self, mut files: Vec<(PathBuf, Option<Vec<u8>>)>) -> io::Result<Self> {
+        self.check()?;
+        self.data[EXTRA] = serde_json::to_value(&self.archives)?;
+        files.push((
+            self.root.join(PACK),
+            Some(serde_json::to_vec_pretty(&self.data)?),
+        ));
+        let mut staged = Vec::new();
+        for (path, contents) in &files {
+            let parent = path.parent().unwrap();
+            match fs::create_dir(parent) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            if !fs::symlink_metadata(parent)?.is_dir() {
+                return Err(invalid("Component storage must be a local directory."));
+            }
+            let previous = match optional_stamp(path)? {
+                Some(_) => Some(fs::read(path)?),
+                None => None,
+            };
+            let temp = contents
+                .as_ref()
+                .map(|bytes| -> io::Result<_> {
+                    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+                    file.write_all(bytes)?;
+                    Ok(file)
+                })
+                .transpose()?;
+            staged.push(StagedFile { path: path.clone(), file: temp, previous });
+        }
+        self.check()?;
+        publish_files(staged)?;
+        Self::load(&self.root)
+    }
+
     pub fn set_minecraft(mut self, version: &str) -> io::Result<Self> {
         let version = version_id(version)?;
+        if self.version(MINECRAFT) == Some(version) {
+            self.check()?;
+            return Ok(self);
+        }
         self.upsert(MINECRAFT, version);
+        if self.is_custom(MINECRAFT) {
+            let patch = self.root.join("patches").join(format!("{MINECRAFT}.json"));
+            return self.commit_files(vec![(patch, None)]);
+        }
         self.save()
     }
 
@@ -194,6 +425,19 @@ impl Pack {
             let other = if uid == LWJGL { LWJGL3 } else { LWJGL };
             self.rows().retain(|row| row["uid"] != other);
             self.upsert(uid, version);
+            for row in self.rows().iter_mut().filter(|row| row["uid"] == uid) {
+                row.as_object_mut().unwrap().remove("dependencyOnly");
+            }
+            let rows = self.rows();
+            if let (Some(lwjgl), Some(minecraft)) = (
+                rows.iter().position(|row| row["uid"] == uid),
+                rows.iter().position(|row| row["uid"] == MINECRAFT),
+            ) {
+                if lwjgl < minecraft {
+                    let row = rows.remove(lwjgl);
+                    rows.insert(minecraft, row);
+                }
+            }
         } else {
             self.rows()
                 .retain(|row| !matches!(row["uid"].as_str(), Some(LWJGL | LWJGL3)));
@@ -330,6 +574,19 @@ impl Pack {
                 "The instance changed. Reload Version and try again.",
             ));
         }
+        for (uid, expected) in &self.patches {
+            let dir = self.root.join("patches");
+            if let Ok(meta) = fs::symlink_metadata(&dir) {
+                if !meta.is_dir() {
+                    return Err(invalid("Patches must be a local directory."));
+                }
+            }
+            if optional_stamp(&dir.join(format!("{uid}.json")))? != *expected {
+                return Err(io::Error::other(
+                    "The component changed. Reload Version and try again.",
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -343,6 +600,69 @@ impl Pack {
         file.persist(self.root.join(PACK))?;
         Self::load(&self.root)
     }
+}
+
+struct StagedFile {
+    path: PathBuf,
+    file: Option<tempfile::NamedTempFile>,
+    previous: Option<Vec<u8>>,
+}
+
+fn publish_files(mut staged: Vec<StagedFile>) -> io::Result<()> {
+    for index in 0..staged.len() {
+        let entry = &mut staged[index];
+        let result = match entry.file.take() {
+            Some(file) => file.persist(&entry.path).map(|_| ()).map_err(|e| e.error),
+            None => match fs::remove_file(&entry.path) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                result => result,
+            },
+        };
+        if let Err(error) = result {
+            for entry in staged[..index].iter().rev() {
+                let rollback = match &entry.previous {
+                    Some(bytes) => (|| -> io::Result<()> {
+                        let mut file = tempfile::NamedTempFile::new_in(entry.path.parent().unwrap())?;
+                        file.write_all(bytes)?;
+                        file.persist(&entry.path)?;
+                        Ok(())
+                    })(),
+                    None => fs::remove_file(&entry.path),
+                };
+                if let Err(rollback) = rollback {
+                    return Err(io::Error::other(format!("{error}; rollback failed: {rollback}")));
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn optional_stamp(path: &Path) -> io::Result<Option<FileStamp>> {
+    match stamp(path) {
+        Ok(stamp) => Ok(Some(stamp)),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+fn jar_source(source: &Path) -> io::Result<(String, Vec<u8>)> {
+    if !source
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jar"))
+    {
+        return Err(invalid("Select a .jar file."));
+    }
+    let name = source
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid("Select a named JAR."))?
+        .to_owned();
+    let bytes = fs::read(source)?;
+    zip::ZipArchive::new(std::io::Cursor::new(&bytes))
+        .map_err(|_| invalid("The selected file is not a valid JAR archive."))?;
+    Ok((name, bytes))
 }
 
 #[cfg(test)]
@@ -393,6 +713,232 @@ mod tests {
             jar.write_all(content.as_bytes()).unwrap();
         }
         jar.finish().unwrap();
+    }
+
+    #[test]
+    fn local_components_round_trip_reject_duplicates_and_stale_edits() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let pack = Pack::load(root.path())
+            .unwrap()
+            .add_empty("local.test", "Test")
+            .unwrap();
+        let text = pack.patch_text("local.test").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap(),
+            json!({"formatVersion":1,"uid":"local.test","name":"Test","version":"1"})
+        );
+        assert!(pack.clone().add_empty("local.test", "Duplicate").is_err());
+        assert!(pack.clone().add_empty("../bad", "Bad").is_err());
+        assert!(pack.clone().save_patch("local.test", "").is_err());
+        assert!(pack
+            .clone()
+            .save_patch("local.test", &text.replace("local.test", "other"))
+            .is_err());
+        let saved = pack
+            .clone()
+            .save_patch("local.test", &text.replace("Test", "Changed"))
+            .unwrap();
+        assert!(pack.save_patch("local.test", &text).is_err());
+        let saved = saved.remove_component("local.test").unwrap();
+        assert!(!saved.is_custom("local.test"));
+        assert!(!root.path().join("patches/local.test.json").exists());
+    }
+
+    #[test]
+    fn customize_revert_and_deleted_instance_guard() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let doc =
+            json!({"uid":MINECRAFT,"version":"1.20.4","formatVersion":1,"mainClass":"custom.Main"});
+        let pack = Pack::load(root.path())
+            .unwrap()
+            .customize(MINECRAFT, &doc)
+            .unwrap();
+        assert!(pack.is_custom(MINECRAFT));
+        assert_eq!(pack.patch(MINECRAFT).unwrap().unwrap().0, doc);
+        let pack = pack.revert(MINECRAFT).unwrap();
+        assert_eq!(pack.version(MINECRAFT), Some("1.20.4"));
+        assert!(!pack.is_custom(MINECRAFT));
+        fs::remove_file(root.path().join("instance.cfg")).unwrap();
+        assert!(pack.add_empty("test", "Deleted").is_err());
+    }
+
+    #[test]
+    fn changing_minecraft_reverts_the_customized_document() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let document = json!({"uid":MINECRAFT,"version":"1.20.4","formatVersion":1,"mainClass":"custom.Main"});
+        let pack = Pack::load(root.path()).unwrap().customize(MINECRAFT, &document).unwrap();
+        assert!(pack.clone().set_minecraft("../bad").is_err());
+        assert!(pack.is_custom(MINECRAFT));
+        let pack = pack.set_minecraft("1.20.1").unwrap();
+        assert_eq!(pack.version(MINECRAFT), Some("1.20.1"));
+        assert!(!pack.is_custom(MINECRAFT));
+        assert!(!root.path().join("patches/net.minecraft.json").exists());
+        assert!(pack.components().any(|(uid, _)| uid == "custom.unknown"));
+    }
+
+    #[test]
+    fn unchanged_minecraft_version_preserves_the_customized_patch() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let document = json!({"uid":MINECRAFT,"version":"1.20.4","formatVersion":1,"mainClass":"custom.Main"});
+        let pack = Pack::load(root.path()).unwrap().customize(MINECRAFT, &document).unwrap();
+        let before = fs::read(root.path().join(PACK)).unwrap();
+        let patch = pack.patch_text(MINECRAFT).unwrap();
+        let pack = pack.set_minecraft("1.20.4").unwrap();
+        assert!(pack.is_custom(MINECRAFT));
+        assert_eq!(pack.patch_text(MINECRAFT).unwrap(), patch);
+        assert_eq!(fs::read(root.path().join(PACK)).unwrap(), before);
+        fs::remove_file(root.path().join("instance.cfg")).unwrap();
+        assert!(pack.set_minecraft("1.20.4").is_err());
+    }
+
+    #[test]
+    fn explicit_lwjgl_selection_clears_dependency_only() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let mut data: Value = serde_json::from_reader(fs::File::open(root.path().join(PACK)).unwrap()).unwrap();
+        data["components"].as_array_mut().unwrap().push(json!({"uid":LWJGL3,"version":"3.3.1","dependencyOnly":true,"opaque":true}));
+        fs::write(root.path().join(PACK), data.to_string()).unwrap();
+        let pack = Pack::load(root.path()).unwrap();
+        assert!(pack.dependency_only(LWJGL3));
+        let pack = pack.set_lwjgl(LWJGL3, Some("3.3.3")).unwrap();
+        assert!(!pack.dependency_only(LWJGL3));
+        assert_eq!(pack.lwjgl(), Some((LWJGL3, "3.3.3")));
+        assert_eq!(pack.data["components"].as_array().unwrap().last().unwrap()["opaque"], true);
+        assert!(pack.set_lwjgl(LWJGL3, None).unwrap().lwjgl().is_none());
+    }
+
+    #[test]
+    fn installers_match_upstream_and_remove_unshared_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let source = root.path().join("sample.jar");
+        write_jar(&source, &[("test", "data")]);
+        let bytes = fs::read(&source).unwrap();
+        let pack = Pack::load(root.path())
+            .unwrap()
+            .install_custom_jar(&source)
+            .unwrap()
+            .install_agent(&source)
+            .unwrap();
+        assert_eq!(
+            fs::read(root.path().join("libraries/customjar-1.jar")).unwrap(),
+            bytes
+        );
+        let main = pack.patch("customjar").unwrap().unwrap();
+        assert_eq!(
+            main.0,
+            json!({"formatVersion":1,"uid":"customjar","name":"sample (custom jar)","mainJar":{"name":"custom:customjar:1","MMC-displayname":"sample","MMC-hint":"local"}})
+        );
+        let agent_uid = pack
+            .components()
+            .find(|(uid, _)| uid.starts_with("custom.agent."))
+            .unwrap()
+            .0
+            .to_owned();
+        let agent = pack.patch(&agent_uid).unwrap().unwrap();
+        let id = agent_uid.strip_prefix("custom.agent.").unwrap();
+        assert_eq!(
+            agent.0,
+            json!({"formatVersion":1,"uid":agent_uid,"name":"sample (agent)","+agents":[{"name":format!("custom.agents:{id}:1"),"MMC-filename":format!("{id}.jar"),"MMC-displayname":"sample","MMC-hint":"local"}]})
+        );
+        assert_eq!(
+            fs::read(root.path().join(format!("libraries/{id}.jar"))).unwrap(),
+            bytes
+        );
+        let pack = pack.install_custom_jar(&source).unwrap();
+        assert_eq!(
+            pack.components()
+                .filter(|(uid, _)| *uid == "customjar")
+                .count(),
+            1
+        );
+        let pack = pack
+            .remove_component(&agent_uid)
+            .unwrap()
+            .remove_component("customjar")
+            .unwrap();
+        assert!(!root.path().join(format!("libraries/{id}.jar")).exists());
+        assert!(!root.path().join("libraries/customjar-1.jar").exists());
+        assert!(!pack.is_custom("customjar"));
+    }
+
+    #[test]
+    fn failed_install_does_not_publish_a_partial_component() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let source = root.path().join("source.jar");
+        write_jar(&source, &[("test", "data")]);
+        let pack = Pack::load(root.path()).unwrap();
+        fs::write(root.path().join("patches"), "not a directory").unwrap();
+        assert!(pack.install_custom_jar(&source).is_err());
+        assert!(!root.path().join("libraries/customjar-1.jar").exists());
+        fs::remove_file(root.path().join("patches")).unwrap();
+        fs::write(&source, "not a jar").unwrap();
+        assert!(Pack::load(root.path())
+            .unwrap()
+            .install_agent(&source)
+            .is_err());
+    }
+
+    #[test]
+    fn publication_failure_rolls_back_replacements_and_new_artifacts() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = root.path().join("existing.json");
+        let added = root.path().join("added.jar");
+        let blocked = root.path().join("blocked.json");
+        fs::write(&existing, "original").unwrap();
+        fs::create_dir(&blocked).unwrap();
+        let staged = [(&existing, Some(b"original".to_vec())), (&added, None), (&blocked, None)]
+            .into_iter().map(|(path, previous)| {
+                let mut file = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+                file.write_all(b"replacement").unwrap();
+                StagedFile { path: path.clone(), file: Some(file), previous }
+            }).collect();
+        assert!(publish_files(staged).is_err());
+        assert_eq!(fs::read_to_string(existing).unwrap(), "original");
+        assert!(!added.exists());
+        assert!(blocked.is_dir());
+    }
+
+    #[test]
+    fn malformed_patch_can_be_opened_and_repaired() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let pack = Pack::load(root.path()).unwrap().add_empty("local.broken", "Broken").unwrap();
+        let text = pack.patch_text("local.broken").unwrap();
+        fs::write(root.path().join("patches/local.broken.json"), "{broken").unwrap();
+        let pack = Pack::load(root.path()).unwrap();
+        assert_eq!(pack.patch_text("local.broken").unwrap(), "{broken");
+        assert!(pack.patch("local.broken").is_err());
+        let pack = pack.save_patch("local.broken", &text).unwrap();
+        assert_eq!(pack.patch("local.broken").unwrap().unwrap().id(), "local.broken");
+    }
+
+    #[test]
+    fn disabled_components_are_not_resolved_and_import_keeps_source_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let source = root.path().join("source.json");
+        let text = "{\"formatVersion\":1,\"uid\":\"local.import\",\"name\":\"Imported\",\"version\":\"1\"}\n";
+        fs::write(&source, text).unwrap();
+        let mut pack = Pack::load(root.path())
+            .unwrap()
+            .import_component(&source)
+            .unwrap();
+        assert_eq!(pack.patch_text("local.import").unwrap(), text);
+        for row in pack.rows() {
+            if row["uid"] == "local.import" {
+                row["disabled"] = json!(true);
+            }
+        }
+        let pack = pack.save().unwrap();
+        assert!(!pack
+            .enabled_components()
+            .any(|(uid, _)| uid == "local.import"));
     }
 
     #[test]

@@ -41,8 +41,8 @@ pub struct CurseForgeMetadata {
     pub author: String,
 }
 
-fn collect(root: &Path, game: &Path, out: &mut Vec<PathBuf>) -> Result<(), ExportError> {
-    collect_directory(root, game, out, &mut BTreeSet::new())?;
+fn collect(root: &Path, game: &Path, out: &mut Vec<PathBuf>, excluded: Option<&Path>) -> Result<(), ExportError> {
+    collect_directory(root, game, out, &mut BTreeSet::new(), excluded)?;
     out.sort();
     Ok(())
 }
@@ -52,6 +52,7 @@ fn collect_directory(
     game: &Path,
     out: &mut Vec<PathBuf>,
     ancestors: &mut BTreeSet<PathBuf>,
+    excluded: Option<&Path>,
 ) -> Result<(), ExportError> {
     let canonical = root.canonicalize()?;
     if !ancestors.insert(canonical.clone()) {
@@ -66,7 +67,8 @@ fn collect_directory(
         let path = entry.path();
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if matches!(name.as_ref(), ".DS_Store" | "thumbs.db" | "Thumbs.db")
+        if excluded == Some(path.as_path())
+            || matches!(name.as_ref(), ".DS_Store" | "thumbs.db" | "Thumbs.db")
             || (root == game
                 && matches!(
                     name.as_ref(),
@@ -86,7 +88,7 @@ fn collect_directory(
             Err(error) => return Err(error.into()),
         };
         if kind.is_dir() {
-            collect_directory(&path, game, out, ancestors)?;
+            collect_directory(&path, game, out, ancestors, excluded)?;
         } else if kind.is_file() {
             out.push(path);
         }
@@ -143,7 +145,7 @@ pub fn export_zip(instance: &Instance, output: &Path) -> Result<(), ExportError>
         return Err(ExportError::HorizonInstance);
     }
     let mut files = Vec::new();
-    collect(&instance.root, &instance.game_root(), &mut files)?;
+    collect(&instance.root, &instance.game_root(), &mut files, Some(&instance.root.join("libraries/.component-cache")))?;
     files.retain(|path| {
         path.parent() != Some(&instance.root)
             || !path.file_name().is_some_and(Instance::is_launch_state_file)
@@ -201,7 +203,7 @@ where
     let dependencies = pack_dependencies(instance)?;
     let game = instance.game_root();
     let mut paths = Vec::new();
-    collect(&game, &game, &mut paths)?;
+    collect(&game, &game, &mut paths, None)?;
     paths.retain(|path| !path.is_dir());
     let mut hashes = BTreeMap::new();
     for path in &paths {
@@ -388,7 +390,7 @@ where
 
     let game = instance.game_root();
     let mut paths = Vec::new();
-    collect(&game, &game, &mut paths)?;
+    collect(&game, &game, &mut paths, None)?;
     paths.retain(|path| !path.is_dir() && !path.starts_with(game.join("mods/.index")));
     let mut hashes = BTreeMap::new();
     for path in &paths {
@@ -742,6 +744,25 @@ mod tests {
         assert!(!imported.game_root().join("crash-reports").exists());
         assert!(export_zip(&f.1, &output).is_err());
         assert!(export_zip(&f.1, &f.1.root.join("bad.zip")).is_err());
+    }
+
+    #[test]
+    fn prism_export_omits_only_the_instance_component_download_cache() {
+        let f = Fixture::new();
+        for relative in ["libraries/.component-cache/org/example/client.jar", "libraries/customjar-1.jar",
+            "libraries/agent.jar", "jarmods/mod.jar", "patches/customjar.json", "minecraft/config/.component-cache/keep.txt"] {
+            let path = f.1.root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"data").unwrap();
+        }
+        let output = f.0.root.join("components.zip");
+        export_zip(&f.1, &output).unwrap();
+        let mut zip = zip::ZipArchive::new(File::open(output).unwrap()).unwrap();
+        assert!(!zip.file_names().any(|name| name.starts_with("libraries/.component-cache")));
+        for relative in ["libraries/customjar-1.jar", "libraries/agent.jar", "jarmods/mod.jar",
+            "patches/customjar.json", "minecraft/config/.component-cache/keep.txt"] {
+            assert!(zip.by_name(relative).is_ok(), "{relative}");
+        }
     }
 
     #[test]

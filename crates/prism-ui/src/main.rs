@@ -268,7 +268,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
         }
     };
     paths.ensure().expect("failed to create data dirs");
-    let settings = if let Some(instance) = &instance {
+    let mut settings = if let Some(instance) = &instance {
         prism_core::launch::LaunchSettings::for_instance(instance, &paths)
     } else {
         prism_core::launch::LaunchSettings {
@@ -300,48 +300,17 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
 
     runtime.handle().block_on(async {
         let version = mc_version.as_str();
-        println!("Fetching version metadata for {version}…");
-        let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
-        let mut profile = prism_core::profile::LaunchProfile::from_mojang(&vd);
-        if let Some(instance) = &instance {
+        let mut profile = if let Some(instance) = &instance {
             let loader = prism_core::instance::loader_of(instance);
-            match &loader {
-                prism_core::loaders::Loader::None => {}
-                prism_core::loaders::Loader::Forge { .. }
-                    if prism_core::modplatform::technic::apply_forge_patch(
-                        &mut profile, &settings.instance_dir, &settings.game_dir, &loader,
-                    ).expect("Technic Forge profile could not be read") => {}
-                prism_core::loaders::Loader::Forge { .. }
-                | prism_core::loaders::Loader::NeoForge { .. } => {
-                    launcher.prepare_files(&profile, &settings)
-                        .await.expect("vanilla prepare failed");
-                    let versions = settings.game_dir.join("versions").join(version);
-                    std::fs::create_dir_all(&versions).unwrap();
-                    std::fs::copy(
-                        launcher.client_jar_path(version),
-                        versions.join(format!("{version}.jar")),
-                    ).unwrap();
-                    let overlay = prism_core::loaders::ensure_forge_installed(
-                        &settings.java_path,
-                        &loader,
-                        version,
-                        &settings.game_dir,
-                        &runtime.downloader,
-                    )
-                    .await
-                    .expect("loader installation failed");
-                    profile.apply_loader(&overlay);
-                }
-                _ => {
-                    let overlay = prism_core::loaders::fetch_loader_profile(
-                        &runtime.downloader.client(), &loader, version,
-                    )
-                    .await
-                    .expect("loader profile fetch failed");
-                    profile.apply_loader(&overlay);
-                }
-            }
-        }
+            launcher
+                .prepare_instance(&mut settings, loader, |message| println!("{message}"))
+                .await
+                .expect("instance preparation failed")
+        } else {
+            println!("Fetching version metadata for {version}…");
+            let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
+            prism_core::profile::LaunchProfile::from_mojang(&vd)
+        };
         // Version-only preparation can select Fabric via PRISM_RS_FABRIC.
         if let Some(loader_version) = std::env::var("PRISM_RS_FABRIC")
             .ok()
@@ -358,10 +327,6 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 .expect("loader profile fetch failed");
                 profile.apply_loader(&lvd);
             }
-        }
-        if instance.is_some() {
-            prism_core::modplatform::atlauncher::apply_launch(&settings.instance_dir, &mut profile)
-                .expect("ATLauncher launch metadata failed");
         }
         println!(
             "mainClass: {}\nlibraries: {} (+{} natives)\nassets: {}\njava: {:?}",
