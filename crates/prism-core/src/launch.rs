@@ -1299,6 +1299,39 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn activating_lwjgl_before_minecraft_prepares_the_selected_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths { root: dir.path().into() };
+        let instance = crate::InstanceList::create(&paths, "LWJGL", "default", "1.20.1").unwrap();
+        std::fs::write(instance.root.join("mmc-pack.json"), serde_json::json!({"formatVersion":1,"components":[
+            {"uid":"org.lwjgl3","version":"3.3.1","dependencyOnly":true,"opaque":true},
+            {"uid":"net.minecraft","version":"1.20.1","important":true}
+        ]}).to_string()).unwrap();
+        Pack::load(&instance.root).unwrap().customize(version_components::MINECRAFT,
+            &serde_json::json!({"uid":"net.minecraft","formatVersion":1,"version":"1.20.1","mainClass":"Main",
+                "mainJar":{"name":"custom:client:1","MMC-hint":"local"},
+                "libraries":[{"name":"org.lwjgl:lwjgl:3.3.1","MMC-hint":"local"}]}))
+            .unwrap().set_lwjgl(version_components::LWJGL3, Some("3.3.3")).unwrap();
+        std::fs::create_dir_all(instance.root.join("libraries")).unwrap();
+        std::fs::write(instance.root.join("libraries/client-1.jar"), b"client").unwrap();
+        let metadata = paths.metadata_dir().join("org.lwjgl3");
+        std::fs::create_dir_all(&metadata).unwrap();
+        std::fs::write(metadata.join("3.3.3.json"), serde_json::json!({"uid":"org.lwjgl3","version":"3.3.3","libraries":[{"name":"org.lwjgl:lwjgl:3.3.3"}]}).to_string()).unwrap();
+        let library = paths.libraries_dir().join(meta::maven_path("org.lwjgl:lwjgl:3.3.3"));
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(library, b"lwjgl").unwrap();
+        let mut settings = LaunchSettings::for_instance(&instance, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let profile = launcher.prepare_instance(&mut settings, Loader::None, |_| {}).await.unwrap();
+        assert_eq!(profile.libraries.len(), 1);
+        assert_eq!(profile.libraries[0].spec, "org.lwjgl:lwjgl:3.3.3");
+        let pack = Pack::load(&instance.root).unwrap();
+        assert_eq!(pack.components().map(|(uid, _)| uid).collect::<Vec<_>>(), ["net.minecraft", "org.lwjgl3"]);
+        assert!(!pack.dependency_only(version_components::LWJGL3));
+        let data: serde_json::Value = serde_json::from_reader(std::fs::File::open(instance.root.join("mmc-pack.json")).unwrap()).unwrap();
+        assert_eq!(data["components"][1]["opaque"], true);
+    }
+    #[tokio::test]
     async fn prepare_revalidates_cached_artifacts_after_checksum_edits() {
         use sha1::{Digest, Sha1};
         use std::io::{Read, Write};

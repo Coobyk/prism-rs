@@ -428,6 +428,16 @@ impl Pack {
             for row in self.rows().iter_mut().filter(|row| row["uid"] == uid) {
                 row.as_object_mut().unwrap().remove("dependencyOnly");
             }
+            let rows = self.rows();
+            if let (Some(lwjgl), Some(minecraft)) = (
+                rows.iter().position(|row| row["uid"] == uid),
+                rows.iter().position(|row| row["uid"] == MINECRAFT),
+            ) {
+                if lwjgl < minecraft {
+                    let row = rows.remove(lwjgl);
+                    rows.insert(minecraft, row);
+                }
+            }
         } else {
             self.rows()
                 .retain(|row| !matches!(row["uid"].as_str(), Some(LWJGL | LWJGL3)));
