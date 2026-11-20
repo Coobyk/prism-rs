@@ -6,6 +6,7 @@ use gpui_kit::{
     component::{
         button::Button,
         input::{Input, InputEvent, InputState, Textarea, TextareaState},
+        ActiveTheme,
     },
     *,
 };
@@ -282,7 +283,7 @@ impl Render for Editor {
                     .child(
                         Textarea::new(&self.text)
                             .h(relative(1.))
-                            .font_family("monospace")
+                            .font_family(cx.theme().mono_font_family.clone())
                             .disabled(self.busy || !self.ready),
                     )
             }))
