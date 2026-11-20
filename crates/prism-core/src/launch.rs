@@ -1123,7 +1123,7 @@ impl Launcher {
         let mut jvm_done_library_path = false;
         if let Some(args) = &profile.modern_arguments {
             let features = Default::default();
-            for arg in &args.jvm {
+            for arg in args.jvm.iter().chain(args.default_user_jvm.iter().filter(|_| settings.extra_jvm_args.is_empty())) {
                 match arg {
                     meta::ArgValue::Str(s) => command.push(substitute(s)),
                     meta::ArgValue::Conditional { value, rules } => {
@@ -1296,6 +1296,33 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 #[cfg(test)]
 mod tests {
     #[tokio::test]
+    async fn customize_supports_official_version_rules_and_default_user_jvm() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths { root: dir.path().into() };
+        let instance = crate::InstanceList::create(&paths, "Official", "default", "26.1.2").unwrap();
+        let mut settings = LaunchSettings::for_instance(&instance, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let cache = launcher.paths.metadata_dir().join("net.minecraft");
+        std::fs::create_dir_all(&cache).unwrap();
+        for version in ["26.1.2", "1.16.5"] {
+            let document = serde_json::json!({"id":version,"mainClass":"Main","arguments":{
+                "default-user-jvm":["-XX:+UseZGC"],
+                "jvm":[{"rules":[{"action":"allow","os":{"name":"windows","version":"^10\\."}}],"value":"-Dos.version.rule=true"}],
+                "game":["--username","${auth_player_name}"]
+            }});
+            std::fs::write(cache.join(format!("{version}.json")), document.to_string()).unwrap();
+            let patch = launcher.component_document(version_components::MINECRAFT, version).await.unwrap();
+            let mut profile = LaunchProfile::default();
+            crate::component::Component(patch).apply(&mut profile, &instance.root).unwrap();
+            settings.extra_jvm_args.clear();
+            assert!(launcher.build_command(&settings, None, &profile).command.iter().any(|arg| arg == "-XX:+UseZGC"));
+            settings.extra_jvm_args = vec!["-XX:+UseG1GC".into()];
+            let command = launcher.build_command(&settings, None, &profile).command;
+            assert!(!command.iter().any(|arg| arg == "-XX:+UseZGC"));
+            assert!(command.iter().any(|arg| arg == "-XX:+UseG1GC"));
+        }
+    }
+    #[tokio::test]
     async fn prepare_uses_installer_local_libraries_without_download_urls() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths { root: dir.path().into() };
@@ -1438,6 +1465,7 @@ mod tests {
         let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
         let mut profile = LaunchProfile::default();
         profile.modern_arguments = Some(meta::Arguments {
+            default_user_jvm: Vec::new(),
             jvm: vec![],
             game: [
                 ("singleplayer", "Singleplayer"),

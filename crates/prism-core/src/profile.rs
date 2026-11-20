@@ -209,6 +209,7 @@ impl LaunchProfile {
             let base = self.modern_arguments.get_or_insert_with(Default::default);
             base.jvm.extend(loader_args.jvm.iter().cloned());
             base.game.extend(loader_args.game.iter().cloned());
+            base.default_user_jvm.extend(loader_args.default_user_jvm.iter().cloned());
         }
         if let Some(arguments) = &loader_vd.minecraft_arguments {
             self.legacy_arguments = Some(arguments.clone());

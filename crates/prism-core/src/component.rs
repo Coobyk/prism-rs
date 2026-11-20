@@ -141,7 +141,7 @@ impl Component {
                 return Err(invalid("arguments must be an object"));
             }
             for (key, args) in arguments.as_object().unwrap() {
-                if !["jvm", "game"].contains(&key.as_str()) {
+                if !["jvm", "game", "default-user-jvm"].contains(&key.as_str()) {
                     return Err(invalid(format!("Unsupported argument kind {key}")));
                 }
                 let args = args
@@ -270,6 +270,7 @@ impl Component {
                 .get_or_insert_with(Default::default);
             target.jvm.extend(args.jvm);
             target.game.extend(args.game);
+            target.default_user_jvm.extend(args.default_user_jvm);
         }
         if let Some(java) = data.java_version {
             profile.java_component = Some(java.component);
@@ -418,17 +419,15 @@ fn validate_rules(value: &Value) -> io::Result<()> {
             }
         }
         if let Some(os) = rule.get("os") {
-            if os.get("version").is_some() {
-                return Err(invalid(
-                    "OS-version rules are not supported in component patches.",
-                ));
-            }
             if !os.is_object()
                 || os.as_object().unwrap().iter().any(|(key, value)| {
-                    !["name", "arch"].contains(&key.as_str()) || !value.is_string()
+                    !["name", "arch", "version"].contains(&key.as_str()) || !value.is_string()
                 })
             {
                 return Err(invalid("Invalid OS rule"));
+            }
+            if let Some(pattern) = os.get("version").and_then(Value::as_str) {
+                regex::Regex::new(pattern).map_err(|_| invalid("Invalid OS-version rule regex"))?;
             }
         }
         if let Some(features) = rule.get("features") {
@@ -736,7 +735,7 @@ mod tests {
             json!({"+traits":["legacyLaunch"]}),
             json!({"+jvmArgs":"not an array"}),
             json!({"requires":[{"uid":"other"}]}),
-            json!({"arguments":{"jvm":[{"rules":[{"action":"allow","os":{"version":".*"}}],"value":"-Dtest"}]}}),
+            json!({"arguments":{"jvm":[{"rules":[{"action":"allow","os":{"version":"["}}],"value":"-Dtest"}]}}),
             json!({"libraries":[{"name":"group:lib:1","MMC-hint":"native"}]}),
             json!({"libraries":[{"name":"group:lib:1","downloads":{"artifact":{"url":"https://example.invalid/lib.jar","path":"../lib.jar"}}}]}),
             json!({"+agents":[{"name":"custom:agent:1","argument":42}]}),

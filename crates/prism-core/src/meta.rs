@@ -72,6 +72,7 @@ pub struct VersionData {
 pub struct Arguments {
     pub game: Vec<ArgValue>,
     pub jvm: Vec<ArgValue>,
+    pub default_user_jvm: Vec<ArgValue>,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +99,7 @@ pub enum RuleAction {
 pub struct RuleOs {
     pub name: Option<String>,
     pub arch: Option<String>,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +178,11 @@ impl VersionData {
             for v in args.get("jvm").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
                 if let Some(a) = parse_arg_value(v) {
                     arguments.jvm.push(a);
+                }
+            }
+            for v in args.get("default-user-jvm").and_then(|v| v.as_array()).unwrap_or(&vec![]) {
+                if let Some(a) = parse_arg_value(v) {
+                    arguments.default_user_jvm.push(a);
                 }
             }
             out.arguments = Some(arguments);
@@ -265,6 +272,7 @@ fn parse_rule(r: &serde_json::Value) -> Option<Rule> {
     let os = r["os"].as_object().map(|o| RuleOs {
         name: o.get("name").and_then(|v| v.as_str()).map(String::from),
         arch: o.get("arch").and_then(|v| v.as_str()).map(String::from),
+        version: o.get("version").and_then(|v| v.as_str()).map(String::from),
     });
     let features = r["features"].as_object().map(|f| {
         f.iter()
@@ -345,7 +353,10 @@ fn rules_allow_on(
                     .as_deref()
                     .map(|a| a == arch)
                     .unwrap_or(true);
-                name_ok && arch_ok
+                let version_ok = os.version.as_deref().is_none_or(|pattern| {
+                    os_version_matches(pattern, os_version())
+                });
+                name_ok && arch_ok && version_ok
             }
             (None, Some(features_req)) => features_req
                 .iter()
@@ -366,6 +377,33 @@ fn rules_allow_on(
         }
     }
     allowed && !vetoed
+}
+
+fn os_version_matches(pattern: &str, version: &str) -> bool {
+    !version.is_empty() && regex::Regex::new(pattern).is_ok_and(|regex| regex.is_match(version))
+}
+
+fn os_version() -> &'static str {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(|| {
+        let (command, args): (&str, &[&str]) = if cfg!(windows) {
+            ("cmd", &["/C", "ver"])
+        } else if cfg!(target_os = "macos") {
+            ("sw_vers", &["-productVersion"])
+        } else {
+            ("uname", &["-r"])
+        };
+        let output = std::process::Command::new(command).args(args).output().ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            .unwrap_or_default();
+        if cfg!(windows) {
+            regex::Regex::new(r"\d+\.\d+\.\d+").unwrap().find(&output)
+                .map(|version| version.as_str().to_owned()).unwrap_or_default()
+        } else {
+            output
+        }
+    })
 }
 
 /// Split a Gradle specifier into (group, artifact, version, classifier).
@@ -418,6 +456,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn os_version_rules_preserve_and_match_the_version_regex() {
+        let data = VersionData::from_json(&serde_json::json!({"arguments":{"jvm":[{
+            "rules":[{"action":"allow","os":{"name":"windows","version":"^10\\."}}],
+            "value":"-Dos.version.rule=true"
+        }]}})).unwrap();
+        let arguments = data.arguments.unwrap();
+        let ArgValue::Conditional { rules, .. } = &arguments.jvm[0] else { panic!("conditional argument") };
+        let pattern = rules[0].os.as_ref().unwrap().version.as_deref().unwrap();
+        assert!(os_version_matches(pattern, "10.0.19045"));
+        assert!(!os_version_matches(pattern, "6.1.7601"));
+        assert!(!os_version_matches(pattern, ""));
+        assert!(!os_version_matches("[", "10.0"));
+    }
+
+    #[test]
     fn maven_paths() {
         assert_eq!(
             maven_path("com.mojang:brigadier:1.0.18"),
@@ -464,13 +517,13 @@ mod tests {
     fn os_rules() {
         let rules = vec![Rule {
             action: RuleAction::Allow,
-            os: Some(RuleOs { name: Some("linux".into()), arch: None }),
+            os: Some(RuleOs { name: Some("linux".into()), arch: None, version: None }),
             features: None,
         }];
         assert!(rules_allow(&rules, &Default::default()));
         let rules = vec![Rule {
             action: RuleAction::Allow,
-            os: Some(RuleOs { name: Some("windows".into()), arch: None }),
+            os: Some(RuleOs { name: Some("windows".into()), arch: None, version: None }),
             features: None,
         }];
         assert!(!rules_allow(&rules, &Default::default()));
