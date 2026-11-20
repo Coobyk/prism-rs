@@ -1,9 +1,10 @@
 use crate::{
     instance_window::managed_pack_page::changelog_markdown, main_window::MainWindow, state::App,
+    theme::Button,
 };
 use gpui_kit::base::Disableable;
 use gpui_kit::component::{
-    button::{Button, ButtonVariants},
+    button::ButtonVariants,
     input::{Input, InputState},
     text::TextView,
 };
@@ -193,6 +194,7 @@ impl TechnicWindow {
     }
 
     fn render_pack(&self, pack: &Modpack, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let builds = pack.builds.iter().enumerate().map(|(index, build)| {
             let label = if build == &pack.recommended && pack.builds.len() > 1 {
                 format!("{build} (recommended)")
@@ -254,7 +256,8 @@ impl TechnicWindow {
                     .overflow_y_scroll()
                     .p_3()
                     .rounded_md()
-                    .bg(rgb(0x1a1a1a))
+                    .bg(palette.base)
+                    .text_color(palette.base_text)
                     .child(
                         TextView::markdown(
                             "technic-description",
@@ -287,6 +290,7 @@ impl TechnicWindow {
 
 impl Render for TechnicWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let results = self.results.iter().enumerate().map(|(index, listing)| {
             let slug = listing.slug.clone();
             div()
@@ -297,10 +301,10 @@ impl Render for TechnicWindow {
                 .rounded_md()
                 .text_sm()
                 .when(self.selected.as_ref() == Some(&slug), |row| {
-                    row.bg(rgb(0x355478))
+                    row.bg(palette.selection)
                 })
                 .when(!self.busy, |row| {
-                    row.cursor_pointer().hover(|row| row.bg(rgb(0x344357)))
+                    row.cursor_pointer().hover(|row| row.bg(palette.hover))
                 })
                 .on_click(cx.listener(move |this, _, _, cx| this.select(slug.clone(), cx)))
                 .child(listing.name.clone())
@@ -311,8 +315,8 @@ impl Render for TechnicWindow {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xeeeeee))
+            .bg(palette.window)
+            .text_color(palette.text)
             .child(
                 div()
                     .text_xl()
@@ -354,7 +358,7 @@ impl Render for TechnicWindow {
                             .overflow_y_scroll()
                             .p_1()
                             .rounded_md()
-                            .bg(rgb(0x292929))
+                            .bg(palette.panel)
                             .children(results),
                     )
                     .children(self.pack.as_ref().map(|pack| self.render_pack(pack, cx))),

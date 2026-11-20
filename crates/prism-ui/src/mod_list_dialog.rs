@@ -1,5 +1,6 @@
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -161,6 +162,7 @@ impl ModListDialog {
 
 impl Render for ModListDialog {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let formats = div()
             .flex()
             .flex_wrap()
@@ -219,8 +221,8 @@ impl Render for ModListDialog {
             .flex_col()
             .gap_3()
             .p_4()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.window)
+            .text_color(palette.text)
             .child(
                 div()
                     .font_weight(FontWeight::BOLD)
@@ -235,7 +237,8 @@ impl Render for ModListDialog {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .bg(rgb(0x1a1a1a))
+                    .bg(palette.base)
+                    .text_color(palette.base_text)
                     .rounded_md()
                     .p_3()
                     .font_family("monospace")

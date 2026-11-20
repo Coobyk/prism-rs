@@ -19,6 +19,7 @@ mod skins_dialog;
 mod shortcut;
 mod state;
 mod technic_window;
+mod theme;
 
 use gpui_kit::*;
 use prism_core::launch::QuickPlayTarget;
@@ -126,19 +127,15 @@ fn main() {
     }
 
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(theme::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
 
-            // Dark mode for all gpui-component widgets (inputs, buttons, dialogs).
-            gpui_kit::component::theme::Theme::change(
-                gpui_kit::component::theme::ThemeMode::Dark,
-                None,
-                cx,
-            );
+            theme::init(cx);
 
             let app = cx.new(|_| App::new());
             gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                theme::observe(window, cx);
                 cx.new(|cx| main_window::MainWindow::new(app.clone(), window, cx))
             })
             .expect("failed to open main window");

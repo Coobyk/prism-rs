@@ -34,6 +34,14 @@ impl Paths {
         self.root.join("icons")
     }
 
+    pub fn themes_dir(&self) -> PathBuf {
+        self.root.join("themes")
+    }
+
+    pub fn icon_themes_dir(&self) -> PathBuf {
+        self.root.join("iconthemes")
+    }
+
     pub fn accounts_file(&self) -> PathBuf {
         self.root.join("accounts.json")
     }
@@ -110,6 +118,8 @@ impl Paths {
         for dir in [
             self.instances_dir(),
             self.icons_dir(),
+            self.themes_dir(),
+            self.icon_themes_dir(),
             self.cache_dir(),
             self.java_dir(),
             self.logs_dir(),

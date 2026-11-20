@@ -1,9 +1,10 @@
 //! Global launcher preferences persisted in `prismlauncher.cfg`.
 
 use crate::state::App;
-use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
+use crate::theme::Button;
+use gpui_kit::base::{Disableable, Selectable};
 use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use prism_core::horizon::LAUNCHER_PATH_SETTING;
@@ -15,7 +16,50 @@ enum Page {
     General,
     Proxy,
     ApiKeys,
+    Appearance,
     Tools,
+}
+
+#[derive(Clone)]
+struct ThemeChoice {
+    id: String,
+    name: String,
+}
+
+impl SelectItem for ThemeChoice {
+    type Value = String;
+    fn title(&self) -> SharedString {
+        self.name.clone().into()
+    }
+    fn value(&self) -> &String {
+        &self.id
+    }
+}
+
+type ThemeSelect = SelectState<Vec<ThemeChoice>>;
+
+fn choices(cx: &gpui::App, icons: bool) -> Vec<ThemeChoice> {
+    let catalog = crate::theme::catalog(cx);
+    if icons {
+        std::iter::once(ThemeChoice {
+            id: "default".into(),
+            name: "Default".into(),
+        })
+        .chain(catalog.icons.iter().map(|t| ThemeChoice {
+            id: t.id.clone(),
+            name: t.name.clone(),
+        }))
+        .collect()
+    } else {
+        catalog
+            .applications
+            .iter()
+            .map(|t| ThemeChoice {
+                id: t.id.clone(),
+                name: t.name.clone(),
+            })
+            .collect()
+    }
 }
 
 pub struct SettingsWindow {
@@ -37,6 +81,8 @@ pub struct SettingsWindow {
     imgur_id: gpui::Entity<InputState>,
     detected_java: String,
     status: String,
+    themes: Entity<ThemeSelect>,
+    icon_themes: Entity<ThemeSelect>,
     tools: Entity<crate::external_tools_page::ExternalToolsPage>,
 }
 
@@ -44,6 +90,53 @@ impl SettingsWindow {
     pub fn new(app: gpui::Entity<App>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config_path = app.read(cx).paths.global_config();
         let cfg = Settings::load(&config_path);
+
+        let themes = cx.new(|cx| SelectState::new(choices(cx, false), None, window, cx));
+        let icon_themes = cx.new(|cx| SelectState::new(choices(cx, true), None, window, cx));
+        for (state, icons) in [(&themes, false), (&icon_themes, true)] {
+            let (theme, icon) = crate::theme::selected(cx);
+            let id = if icons { icon } else { theme }.to_owned();
+            state.update(cx, |state, cx| state.set_selected_value(&id, window, cx));
+            cx.subscribe_in(
+                state,
+                window,
+                move |this, _, event: &SelectEvent<Vec<ThemeChoice>>, window, cx| {
+                    if let SelectEvent::Confirm(Some(id)) = event {
+                        let paths = this.app.read(cx).paths.clone();
+                        let key = if icons {
+                            "IconTheme"
+                        } else {
+                            "ApplicationTheme"
+                        };
+                        this.status = match crate::theme::persist(&paths, key, id) {
+                            Ok(()) => {
+                                if icons {
+                                    crate::theme::select_icons(id, cx);
+                                } else {
+                                    crate::theme::select(id, window.appearance(), cx);
+                                }
+                                "Appearance saved.".into()
+                            }
+                            Err(error) => {
+                                let (theme, icon) = crate::theme::selected(cx);
+                                let id = if icons { icon } else { theme }.to_owned();
+                                let state = if icons {
+                                    &this.icon_themes
+                                } else {
+                                    &this.themes
+                                };
+                                state.update(cx, |state, cx| {
+                                    state.set_selected_value(&id, window, cx)
+                                });
+                                error
+                            }
+                        };
+                        cx.notify();
+                    }
+                },
+            )
+            .detach();
+        }
 
         let mk = |placeholder: &str, value: String, window: &mut Window, cx: &mut Context<Self>| {
             let state = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
@@ -62,6 +155,8 @@ impl SettingsWindow {
             tools: cx
                 .new(|cx| crate::external_tools_page::ExternalToolsPage::new(&cfg, window, cx)),
             app,
+            themes,
+            icon_themes,
             min_mem: mk("512", cfg.get_or("MinMemAlloc", "512"), window, cx),
             max_mem: mk("4096", cfg.get_or("MaxMemAlloc", "4096"), window, cx),
             java_path: mk("(auto-detect)", cfg.get_or("JavaPath", ""), window, cx),
@@ -115,6 +210,7 @@ impl SettingsWindow {
         let mut cfg = Settings::load(&config_path);
         let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
         match self.page {
+            Page::Appearance => return Ok(()),
             Page::Tools => self.tools.read(cx).save(&mut cfg, cx),
             Page::General => {
                 let args = value(&self.jvm_args);
@@ -185,10 +281,42 @@ impl SettingsWindow {
         }
         Ok(())
     }
+
+    fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let paths = self.app.read(cx).paths.clone();
+        self.status = crate::theme::reload(&paths, window.appearance(), cx).unwrap_or_else(|e| e);
+        for (state, icons) in [(&self.themes, false), (&self.icon_themes, true)] {
+            let items = choices(cx, icons);
+            let (theme, icon) = crate::theme::selected(cx);
+            let id = if icons { icon } else { theme }.to_owned();
+            state.update(cx, |state, cx| {
+                state.set_items(items, window, cx);
+                state.set_selected_value(&id, window, cx);
+            });
+        }
+        cx.notify();
+    }
+
+    fn open_theme_folder(&mut self, icons: bool, cx: &mut Context<Self>) {
+        let paths = &self.app.read(cx).paths;
+        let path = if icons {
+            paths.icon_themes_dir()
+        } else {
+            paths.themes_dir()
+        };
+        self.status = match std::fs::create_dir_all(&path)
+            .and_then(|_| crate::instance_window::datapacks_page::open_folder(&path))
+        {
+            Ok(()) => String::new(),
+            Err(e) => format!("Could not open folder: {e}"),
+        };
+        cx.notify();
+    }
 }
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let row = |label: &str, input: &gpui::Entity<InputState>| {
             div()
                 .flex()
@@ -198,7 +326,7 @@ impl Render for SettingsWindow {
                     div()
                         .w(px(220.))
                         .text_size(px(13.))
-                        .text_color(rgb(0xaaaaaa))
+                        .text_color(palette.secondary_text)
                         .child(label.to_string()),
                 )
                 .child(div().w(px(280.)).child(Input::new(input)))
@@ -207,10 +335,75 @@ impl Render for SettingsWindow {
         let label = |text: &'static str| {
             div()
                 .text_size(px(12.))
-                .text_color(rgb(0x8fb4d9))
+                .text_color(palette.link)
                 .child(text)
         };
+        let appearance_row = |label: &'static str, state: &Entity<ThemeSelect>| {
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .w(px(220.))
+                        .flex_shrink_0()
+                        .text_size(px(13.))
+                        .text_color(palette.secondary_text)
+                        .child(label),
+                )
+                .child(
+                    div().w(px(280.)).child(
+                        Select::new(state)
+                            .w_full()
+                            .menu_width(px(280.))
+                            .accessibility_label(label),
+                    ),
+                )
+        };
         let body = match self.page {
+            Page::Appearance => {
+                let folders = div()
+                    .flex()
+                    .gap_2()
+                    .mt_2()
+                    .child(
+                        Button::new("themes-folder")
+                            .label("Open Themes Folder")
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.open_theme_folder(false, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("icon-themes-folder")
+                            .label("Open Icon Themes Folder")
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.open_theme_folder(true, cx)),
+                            ),
+                    )
+                    .child(Button::new("reload-themes").label("Reload").on_click(
+                        cx.listener(|this, _, window, cx| this.reload_themes(window, cx)),
+                    ));
+                let hint = format!(
+                    "Custom themes: {}/<name>/theme.json (PrismLauncher format).",
+                    self.app.read(cx).paths.themes_dir().display()
+                );
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(appearance_row("Theme", &self.themes))
+                    .child(appearance_row("Icon theme", &self.icon_themes))
+                    .child(folders)
+                    .child(div().text_size(px(12.)).text_color(palette.secondary_text).child(hint))
+                    .child(
+                        div().text_size(px(12.)).text_color(palette.muted_text).child(
+                            "Changes apply and save immediately. Qt stylesheets (QSS) are not supported.",
+                        ),
+                    )
+                    .children(crate::theme::catalog(cx).warnings.iter().map(|warning| {
+                        div().text_size(px(12.)).text_color(palette.warning).child(warning.clone())
+                    }))
+            }
             Page::Tools => div().child(self.tools.clone()),
             Page::General => div()
                 .flex()
@@ -262,7 +455,7 @@ impl Render for SettingsWindow {
                     };
                     div()
                         .text_size(px(12.))
-                        .text_color(rgb(0x8fb4d9))
+                        .text_color(palette.link)
                         .child(format!("{mode}: {}", key.environment()))
                 };
                 div()
@@ -281,8 +474,8 @@ impl Render for SettingsWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.window)
+            .text_color(palette.text)
             .p_4()
             .gap_3()
             .child(
@@ -291,20 +484,21 @@ impl Render for SettingsWindow {
                     .font_weight(FontWeight::BOLD)
                     .child("Settings"),
             )
-            .child(div().h(px(1.)).bg(rgb(0x1c1c1c)))
+            .child(div().h(px(1.)).bg(palette.border))
             .child(
                 div().flex().gap_2().children(
                     [
                         (Page::General, "General & Java"),
                         (Page::Proxy, "Proxy"),
                         (Page::ApiKeys, "API Keys"),
+                        (Page::Appearance, "Appearance"),
                         (Page::Tools, "External Tools"),
                     ]
                     .into_iter()
                     .map(|(page, name)| {
                         Button::new(name)
                             .label(name)
-                            .disabled(self.page == page)
+                            .selected(self.page == page)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.page = page;
                                 this.status.clear();
@@ -329,12 +523,13 @@ impl Render for SettingsWindow {
                     .child(
                         Button::new("apply-settings")
                             .label("Apply")
+                            .disabled(self.page == Page::Appearance)
                             .on_click(cx.listener(Self::apply)),
                     )
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(0x8fb4d9))
+                            .text_color(palette.link)
                             .child(self.status.clone()),
                     ),
             )

@@ -1,13 +1,13 @@
 use crate::about_dialog;
-use gpui_kit::component::button::{Button, ButtonVariant};
+use crate::theme::Icon;
+use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use prism_core::Paths;
 
-pub(crate) fn button(paths: Paths) -> impl IntoElement {
-    Button::new("help")
-        .label("Help")
+pub(crate) fn button(paths: Paths, cx: &App) -> impl IntoElement {
+    crate::theme::button("help", Icon::Help, "Help", cx)
         .dropdown_caret(true)
         .dropdown_menu(move |menu, _, _| {
             let paths = paths.clone();

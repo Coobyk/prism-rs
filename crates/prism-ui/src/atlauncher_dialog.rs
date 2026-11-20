@@ -1,11 +1,12 @@
 use crate::{
     dialogs::{finish_create, CreateInstanceState},
     main_window::MainWindow,
+    theme::Button,
 };
 use gpui_kit::{
     base::Disableable,
     component::{
-        button::{Button, ButtonVariants},
+        button::ButtonVariants,
         checkbox::Checkbox,
         input::{Input, InputEvent, InputState},
         text::TextView,
@@ -250,6 +251,7 @@ pub fn render(
     _: &mut Window,
     cx: &mut Context<MainWindow>,
 ) -> AnyElement {
+    let palette = crate::theme::Palette::get(cx);
     let d = dialog.atlauncher.as_mut().unwrap();
     let query = d.query.read(cx).value().to_lowercase();
     let busy = d.installing || d.warning.is_some();
@@ -266,7 +268,7 @@ pub fn render(
         body = body.child(div().text_lg().child(p.name.clone())).child(
             div()
                 .text_sm()
-                .text_color(rgb(0xb8b8b8))
+                .text_color(palette.base_secondary_text)
                 .child("Pack version"),
         );
         let mut versions = div().flex().flex_wrap().gap_1();
@@ -291,7 +293,7 @@ pub fn render(
         body = body.child(
             div()
                 .text_sm()
-                .text_color(rgb(0xb8b8b8))
+                .text_color(palette.base_secondary_text)
                 .child("About this pack · scroll to read more"),
         );
         body = body.child(
@@ -299,7 +301,8 @@ pub fn render(
                 .id("atl-description-scroll")
                 .max_h(px(160.))
                 .p_3()
-                .bg(rgb(0x282828))
+                .bg(palette.panel)
+                .text_color(palette.panel_text)
                 .rounded_md()
                 .flex_shrink_0()
                 .overflow_y_scroll()
@@ -311,7 +314,7 @@ pub fn render(
                 .iter()
                 .filter(|e| e.client && e.optional && !e.hidden && !e.library)
                 .count();
-            body = body.child(div().text_sm().text_color(rgb(0xb8b8b8)).child(format!(
+            body = body.child(div().text_sm().text_color(palette.base_secondary_text).child(format!(
                     "Minecraft {} · Optional mods selected: {}",
                     m.minecraft,
                     m.mods
@@ -329,7 +332,7 @@ pub fn render(
             if optional_count == 0 {
                 body = body.child(
                     div()
-                        .text_color(rgb(0xb8b8b8))
+                        .text_color(palette.base_secondary_text)
                         .child("No optional mods. All required client mods will be installed."),
                 );
             } else {
@@ -415,7 +418,8 @@ pub fn render(
                     .colours
                     .get(&e.colour)
                     .and_then(|s| u32::from_str_radix(s.trim_start_matches('#'), 16).ok())
-                    .unwrap_or(0xeeeeee);
+                    .map(|value| Hsla::from(rgb(value)))
+                    .unwrap_or(palette.text);
                 body = body.child(
                     div()
                         .relative()
@@ -427,13 +431,13 @@ pub fn render(
                                 .size(px(18.))
                                 .rounded(px(4.))
                                 .border_1()
-                                .border_color(rgb(0x888888))
+                                .border_color(palette.base_muted_text)
                         }))
                         .child(
                             Checkbox::new(SharedString::from(format!("atl-mod-{i}")))
                                 .accessibility_label(e.name.clone())
                                 .checked(checked)
-                                .child(div().text_color(rgb(colour)).child(e.name.clone()))
+                                .child(div().text_color(colour).child(e.name.clone()))
                                 .disabled(busy)
                                 .on_click(cx.listener(
                                     move |this: &mut MainWindow, _: &bool, _, cx| {
@@ -454,7 +458,7 @@ pub fn render(
                         div()
                             .pl_6()
                             .text_sm()
-                            .text_color(rgb(0xb8b8b8))
+                            .text_color(palette.base_secondary_text)
                             .child(details.join(" · ")),
                     );
                 }
@@ -468,7 +472,7 @@ pub fn render(
         }
     } else {
         body = body.child(div().text_lg().child("Choose a pack"))
-            .child(div().text_color(rgb(0xb8b8b8)).child("Browse public ATLauncher packs or search by name. Select a pack to see its versions and optional mods."));
+            .child(div().text_color(palette.base_secondary_text).child("Browse public ATLauncher packs or search by name. Select a pack to see its versions and optional mods."));
     }
     let mut packs = div()
         .id("atl-packs-list")
@@ -510,7 +514,7 @@ pub fn render(
         packs = packs.child(
             div()
                 .p_2()
-                .text_color(rgb(0xb8b8b8))
+                .text_color(palette.base_secondary_text)
                 .child("No packs match your search."),
         );
     }
@@ -518,7 +522,7 @@ pub fn render(
         body = body.child("Loading ATLauncher…");
     }
     if d.installing {
-        body = body.child(div().p_3().border_1().border_color(rgb(0x777777)).rounded_md().child("Installing… Downloading and verifying pack files. This may take a few minutes."));
+        body = body.child(div().p_3().border_1().border_color(palette.base_muted_text).rounded_md().child("Installing… Downloading and verifying pack files. This may take a few minutes."));
     }
     if let Some((name, warning)) = d.warning.clone() {
         body = body.child(rich("atl-warning", warning)).child(
@@ -562,7 +566,8 @@ pub fn render(
         .h(px(760.))
         .max_w(relative(0.94))
         .max_h(relative(0.90))
-        .bg(rgb(0x202020))
+        .bg(palette.base)
+        .text_color(palette.base_text)
         .p_4()
         .rounded_lg()
         .flex()
@@ -600,7 +605,7 @@ pub fn render(
                         .flex_col()
                         .gap_2()
                         .child(Input::new(&d.query))
-                        .child(div().text_sm().text_color(rgb(0xb8b8b8)).child(format!(
+                        .child(div().text_sm().text_color(palette.base_secondary_text).child(format!(
                             "{count} public {}",
                             if count == 1 { "pack" } else { "packs" }
                         )))
@@ -611,7 +616,7 @@ pub fn render(
         .children(
             d.error
                 .as_ref()
-                .map(|e| div().text_color(rgb(0xff6666)).child(e.clone())),
+                .map(|e| div().text_color(palette.error).child(e.clone())),
         )
         .child(
             div()

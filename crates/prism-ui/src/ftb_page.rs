@@ -1,6 +1,7 @@
 use crate::state::App as LauncherApp;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
@@ -363,14 +364,15 @@ impl FtbPage {
 
 impl Render for FtbPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let mut panel = div()
             .size_full()
             .p_5()
             .flex()
             .flex_col()
             .gap_4()
-            .bg(rgb(0x242424))
-            .text_color(rgb(0xeeeeee))
+            .bg(palette.alternate)
+            .text_color(palette.base_text)
             .font_family(cx.theme().font_family.clone())
             .text_size(px(13.))
             .child(
@@ -388,11 +390,14 @@ impl Render for FtbPage {
                                 "FTB Modpacks"
                             }),
                     )
-                    .child(muted(if self.local {
-                        "Bring your worlds, settings and playtime into Prism."
-                    } else {
-                        "Discover your next adventure. Install a pack directly from Feed The Beast."
-                    })),
+                    .child(muted(
+                        palette,
+                        if self.local {
+                            "Bring your worlds, settings and playtime into Prism."
+                        } else {
+                            "Discover your next adventure. Install a pack directly from Feed The Beast."
+                        },
+                    )),
             );
         if self.local {
             panel = panel.child(
@@ -400,7 +405,7 @@ impl Render for FtbPage {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .child(muted("FTB APP INSTANCES DIRECTORY"))
+                    .child(muted(palette, "FTB APP INSTANCES DIRECTORY"))
                     .child(
                         div()
                             .flex()
@@ -424,7 +429,7 @@ impl Render for FtbPage {
                     ),
             );
         } else {
-            let mut sorts = div().flex().gap_2().items_center().child(muted("Sort by"));
+            let mut sorts = div().flex().gap_2().items_center().child(muted(palette, "Sort by"));
             for (sort, label, id) in [
                 (Sort::Plays, "Plays", "ftb-plays"),
                 (Sort::Installs, "Installs", "ftb-installs"),
@@ -476,7 +481,8 @@ impl Render for FtbPage {
             .flex_shrink_0()
             .h_full()
             .rounded_md()
-            .bg(rgb(0x202020))
+            .bg(palette.base)
+            .text_color(palette.base_text)
             .overflow_y_scroll();
         if self.local {
             for (i, instance) in self
@@ -488,6 +494,7 @@ impl Render for FtbPage {
                 let path = instance.path.clone();
                 list = list.child(
                     row(
+                        palette,
                         ("ftb-local", i),
                         self.selected_local.as_ref() == Some(&path),
                     )
@@ -503,11 +510,14 @@ impl Render for FtbPage {
                                     .text_ellipsis()
                                     .child(plain(&instance.name)),
                             )
-                            .child(muted(format!(
-                                "Minecraft {} · {}",
-                                instance.minecraft,
-                                local_loader(instance)
-                            ))),
+                            .child(muted(
+                                palette,
+                                format!(
+                                    "Minecraft {} · {}",
+                                    instance.minecraft,
+                                    local_loader(instance)
+                                ),
+                            )),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.busy {
@@ -527,12 +537,12 @@ impl Render for FtbPage {
                         .flex_shrink_0()
                         .rounded_md()
                         .overflow_hidden()
-                        .bg(rgb(0x343434))
+                        .bg(palette.hover)
                         .children(self.artwork.get(&id).map(|path| {
                             img(path.clone()).size_full().object_fit(ObjectFit::Cover)
                         }));
                 list = list.child(
-                    row(("ftb-pack", id), self.selected == Some(id))
+                    row(palette, ("ftb-pack", id), self.selected == Some(id))
                         .child(icon)
                         .child(
                             div()
@@ -547,7 +557,7 @@ impl Render for FtbPage {
                                         .text_ellipsis()
                                         .child(plain(&pack.name)),
                                 )
-                                .child(muted(format!("{} plays", count(pack.plays)))),
+                                .child(muted(palette, format!("{} plays", count(pack.plays)))),
                         )
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if this.busy {
@@ -587,15 +597,18 @@ impl Render for FtbPage {
                         .whitespace_normal()
                         .child(plain(&pack.synopsis)),
                 )
-                .child(muted(format!(
-                    "By {}",
-                    pack.authors
-                        .iter()
-                        .map(|a| plain(&a.name))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )))
-                .child(div().text_color(rgb(0xc5d7e8)).child(format!(
+                .child(muted(
+                    palette,
+                    format!(
+                        "By {}",
+                        pack.authors
+                            .iter()
+                            .map(|a| plain(&a.name))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                ))
+                .child(div().text_color(palette.base_secondary_text).child(format!(
                     "{} plays  ·  {} installs",
                     count(pack.plays),
                     count(pack.installs)
@@ -607,9 +620,9 @@ impl Render for FtbPage {
                             .px_2()
                             .py_1()
                             .rounded_md()
-                            .bg(rgb(0x30363c))
+                            .bg(palette.selection)
                             .text_size(px(11.))
-                            .text_color(rgb(0xb4c6d6))
+                            .text_color(palette.base_secondary_text)
                             .child(plain(&tag.name))
                     }),
                 ));
@@ -632,11 +645,12 @@ impl Render for FtbPage {
                 .gap_1()
                 .p_1()
                 .rounded_md()
-                .bg(rgb(0x202020));
+                .bg(palette.base)
+                .text_color(palette.base_text);
             for version in versions {
                 let id = version.id;
                 picker = picker.child(
-                    row(("ftb-version", id), self.version == Some(id))
+                    row(palette, ("ftb-version", id), self.version == Some(id))
                         .py_2()
                         .child(
                             div()
@@ -646,13 +660,14 @@ impl Render for FtbPage {
                                 .child(plain(&version.name)),
                         )
                         .child(div().w(px(64.)).flex_shrink_0().child(muted(
+                            palette,
                             if version.release_type.is_empty() {
                                 "Release".into()
                             } else {
                                 plain(&version.release_type)
                             },
                         )))
-                        .child(muted(target_label(&version.targets)))
+                        .child(muted(palette, target_label(&version.targets)))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if !this.busy {
                                 this.version = Some(id);
@@ -663,6 +678,7 @@ impl Render for FtbPage {
                 );
             }
             detail = detail.child(picker).child(muted(
+                palette,
                 "A new instance will be created. Your existing instances are not changed.",
             ));
         }
@@ -673,7 +689,7 @@ impl Render for FtbPage {
         {
             detail = detail.child(div().text_size(px(24.)).font_weight(FontWeight::BOLD).whitespace_normal().child(plain(&instance.name)))
                 .child(format!("Minecraft {}  ·  Pack version {}", instance.minecraft, instance.version))
-                .child(muted(local_loader(instance)))
+                .child(muted(palette, local_loader(instance)))
                 .child(div().whitespace_normal().child(instance.path.display().to_string()))
                 .child(div().whitespace_normal().child("Copies worlds, mods, settings, JVM arguments and playtime into a new instance. Your FTB App installation stays untouched."));
         }
@@ -690,11 +706,14 @@ impl Render for FtbPage {
                             "Find your next modpack"
                         }),
                 )
-                .child(muted(if self.local {
-                    "Choose an FTB App instance from the list to see its details."
-                } else {
-                    "Search the catalog, then choose a pack and version to install."
-                }));
+                .child(muted(
+                    palette,
+                    if self.local {
+                        "Choose an FTB App instance from the list to see its details."
+                    } else {
+                        "Search the catalog, then choose a pack and version to install."
+                    },
+                ));
         }
         panel
             .child(
@@ -713,14 +732,14 @@ impl Render for FtbPage {
                     .gap_4()
                     .pt_3()
                     .border_t_1()
-                    .border_color(rgb(0x3a3a3a))
+                    .border_color(palette.hover)
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .whitespace_normal()
                             .text_size(px(12.))
-                            .text_color(rgb(0xa9c7df))
+                            .text_color(palette.link)
                             .child(self.status.clone()),
                     )
                     .child(
@@ -747,14 +766,14 @@ impl Render for FtbPage {
     }
 }
 
-fn muted(text: impl Into<SharedString>) -> Div {
+fn muted(palette: crate::theme::Palette, text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(12.))
-        .text_color(rgb(0xa5a9af))
+        .text_color(palette.base_muted_text)
         .child(text.into())
 }
 
-fn row(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
+fn row(palette: crate::theme::Palette, id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -765,8 +784,19 @@ fn row(id: impl Into<ElementId>, selected: bool) -> Stateful<Div> {
         .flex_shrink_0()
         .rounded_md()
         .cursor_pointer()
-        .bg(rgb(if selected { 0x354453 } else { 0x202020 }))
-        .hover(|style| style.bg(rgb(if selected { 0x3b4c5e } else { 0x2c2f33 })))
+        .bg(if selected {
+            palette.selection
+        } else {
+            palette.base
+        })
+        .text_color(if selected { palette.text } else { palette.base_text })
+        .hover(|style| {
+            style.bg(if selected {
+                palette.selection
+            } else {
+                palette.hover
+            })
+        })
 }
 
 fn count(value: u64) -> String {

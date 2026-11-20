@@ -1,8 +1,6 @@
+use crate::theme::Button;
 use gpui_kit::{
-    component::{
-        button::Button,
-        input::{Input, InputState},
-    },
+    component::input::{Input, InputState},
     *,
 };
 use prism_core::{settings::Settings, tools::Tool};
@@ -42,11 +40,12 @@ impl ExternalToolsPage {
 
 impl Render for ExternalToolsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(div().text_size(px(12.)).text_color(rgb(0x8fb4d9)).child(
+            .child(div().text_size(px(12.)).text_color(palette.link).child(
                 "External Tools · Apply to save paths. Profilers attach after Minecraft starts.",
             ))
             .children(Tool::ALL.into_iter().enumerate().map(|(index, tool)| {

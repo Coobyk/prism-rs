@@ -76,7 +76,8 @@ impl Default for Settings {
         ini.set("ShowConsole", "true");
         ini.set("ConsoleMaxLines", "100000");
         ini.set("Language", "en");
-        ini.set("Theme", "dark");
+        ini.set("ApplicationTheme", "system");
+        ini.set("IconTheme", "default");
         ini.set("JProfilerPath", "");
         ini.set("JProfilerPort", "42042");
         ini.set("MCEditPath", "");

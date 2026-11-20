@@ -3,8 +3,8 @@
 //! MSALoginDialog.
 
 use crate::state::App;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use std::sync::Arc;
 
@@ -153,6 +153,7 @@ impl AccountsWindow {
 
 impl Render for AccountsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         self.poll_login(cx);
         if self.name_input.is_none() {
             self.name_input = Some(cx.new(|cx| {
@@ -178,7 +179,7 @@ impl Render for AccountsWindow {
                     .gap_2()
                     .px_3()
                     .py_2()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .rounded_md()
                     .child(
                         div()
@@ -197,7 +198,7 @@ impl Render for AccountsWindow {
                             .child(
                                 div()
                                     .text_size(px(10.))
-                                    .text_color(rgb(0x888888))
+                                    .text_color(palette.muted_text)
                                     .child(match account.account_type {
                                         prism_core::auth::AccountType::Msa => "Microsoft".to_string(),
                                         prism_core::auth::AccountType::Offline => "Offline".to_string(),
@@ -253,7 +254,7 @@ impl Render for AccountsWindow {
                 div()
                     .m_2()
                     .p_3()
-                    .bg(rgb(0x24424d))
+                    .bg(palette.selection)
                     .rounded_md()
                     .flex()
                     .flex_col()
@@ -296,7 +297,7 @@ impl Render for AccountsWindow {
                     .px_3()
                     .py_1()
                     .text_size(px(12.))
-                    .text_color(rgb(0x8fb4d9))
+                    .text_color(palette.link)
                     .child(status),
             )
             .child(div().id("accounts-list").flex_1().overflow_y_scroll().child(list));
@@ -305,8 +306,8 @@ impl Render for AccountsWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.window)
+            .text_color(palette.text)
             .child(panel)
     }
 }

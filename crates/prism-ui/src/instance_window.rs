@@ -3,8 +3,8 @@
 //! + instance pages.
 
 use crate::state::{App, InstanceRunState};
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 use prism_core::loaders::Loader;
@@ -17,7 +17,7 @@ use prism_core::{Instance, InstanceKind};
 use std::collections::{HashMap, HashSet};
 
 #[path = "datapacks_page.rs"]
-mod datapacks_page;
+pub(super) mod datapacks_page;
 use datapacks_page::DataPacksPage;
 #[path = "logs_page.rs"]
 mod logs_page;
@@ -529,9 +529,17 @@ impl InstanceWindow {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let inst = self.instance(cx);
         let running = self.app.read(cx).is_running(&self.instance_id);
-        let mut col = div().w(px(170.)).flex_shrink_0().flex().flex_col().bg(rgb(0x2b2b2b)).border_r_1().border_color(rgb(0x1c1c1c));
+        let mut col = div()
+            .w(px(240.))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .bg(palette.panel)
+            .border_r_1()
+            .border_color(palette.border);
         col = col
             .child(
                 div()
@@ -542,21 +550,47 @@ impl InstanceWindow {
                     .text_ellipsis()
                     .child(inst.name.clone()),
             )
-            .child(div().h(px(1.)).bg(rgb(0x1c1c1c)));
+            .child(div().h(px(1.)).bg(palette.border));
 
         for page in Page::all().into_iter().filter(|page| {
             page.available(inst.is_horizon()) && (*page != Page::ManagedPack || self.managed_pack.available)
         }) {
             let active = self.page.sidebar_page() == page;
             let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
+            let icon = match page {
+                Page::Log | Page::OtherLogs => crate::theme::Icon::Log,
+                Page::Worlds => crate::theme::Icon::Worlds,
+                Page::Screenshots => crate::theme::Icon::Screenshots,
+                Page::Notes => crate::theme::Icon::Notes,
+                Page::Mods | Page::ModUpdates => crate::theme::Icon::Mods,
+                Page::ResourcePacks => crate::theme::Icon::ResourcePacks,
+                Page::ShaderPacks => crate::theme::Icon::ShaderPacks,
+                Page::Settings => crate::theme::Icon::InstanceSettings,
+                Page::Version => crate::theme::Icon::Version,
+                Page::ManagedPack => crate::theme::Icon::Packages,
+                Page::DataPacks => crate::theme::Icon::DataPacks,
+                Page::Servers => crate::theme::Icon::Servers,
+                Page::BrowseMods
+                | Page::BrowseCurseForge
+                | Page::BrowseResourcePacks
+                | Page::BrowseShaderPacks
+                | Page::BrowseDataPacks => crate::theme::Icon::BrowseMods,
+            };
             col = col.child(
                 div()
                     .id(SharedString::from(format!("page-{:?}", page)))
                     .px_3()
                     .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .text_size(px(13.))
-                    .bg(if active { rgb(0x3d5a80) } else { rgba(0x00000000) })
-                    .hover(|s| s.bg(rgb(0x333333)))
+                    .bg(if active {
+                        palette.selection
+                    } else {
+                        palette.transparent
+                    })
+                    .hover(|s| s.bg(palette.hover))
                     .on_click(cx.listener(move |this, _ev, _window, cx| {
                         if this.page != page {
                             this.worlds.on_navigation();
@@ -578,7 +612,13 @@ impl InstanceWindow {
                         this.page = page;
                         cx.notify();
                     }))
-                    .child(label),
+                    .child(
+                        div()
+                            .size(px(16.))
+                            .flex_shrink_0()
+                            .child(crate::theme::icon(icon, cx)),
+                    )
+                    .child(div().min_w_0().truncate().child(label)),
             );
         }
 
@@ -587,8 +627,12 @@ impl InstanceWindow {
                 .px_3()
                 .py_2()
                 .child(
-                    Button::new("iw-launch")
-                        .label(if running { "Running…" } else { "Launch" })
+                    crate::theme::button(
+                        "iw-launch",
+                        crate::theme::Icon::Launch,
+                        if running { "Running…" } else { "Launch" },
+                        cx,
+                    )
                         .disabled(running)
                         .on_click(cx.listener(|this, _ev, _window, cx| {
                             let id = this.instance_id.clone();
@@ -620,6 +664,7 @@ impl InstanceWindow {
     }
 
     fn page_header(&self, cx: &Context<Self>, subtitle: String) -> Div {
+        let palette = crate::theme::Palette::get(cx);
         let inst = self.instance(cx);
         div()
             .flex()
@@ -629,18 +674,19 @@ impl InstanceWindow {
             .px_3()
             .py_2()
             .border_b_1()
-            .border_color(rgb(0x1c1c1c))
+            .border_color(palette.border)
             .child(
                 div()
                     .flex()
                     .flex_col()
                     .min_w_0()
                     .child(div().text_ellipsis().text_size(px(15.)).font_weight(FontWeight::BOLD).child(inst.name))
-                    .child(div().text_ellipsis().text_size(px(11.)).text_color(rgb(0x888888)).child(subtitle)),
+                    .child(div().text_ellipsis().text_size(px(11.)).text_color(palette.muted_text).child(subtitle)),
             )
     }
 
     fn render_resources_page(&self, cx: &mut Context<Self>, rtype: ResourceType) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let inst = self.instance(cx);
         let folder = inst.game_root().join(rtype.folder());
         let resources: Vec<LocalResource> = prism_core::resources::scan_folder(&folder, rtype);
@@ -649,7 +695,7 @@ impl InstanceWindow {
         if resources.is_empty() {
             list = list.child(
                 div()
-                    .text_color(rgb(0x777777))
+                    .text_color(palette.muted_text)
                     .child(format!("No files in {}", folder.display())),
             );
         }
@@ -666,7 +712,7 @@ impl InstanceWindow {
                     .gap_2()
                     .px_3()
                     .py_2()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .rounded_md()
                     .child(
                         div()
@@ -681,7 +727,7 @@ impl InstanceWindow {
                             .child(
                                 div()
                                     .text_size(px(10.))
-                                    .text_color(rgb(0x888888))
+                                    .text_color(palette.muted_text)
                                     .child(format!("{} {} {}", r.file_name, version, loader)),
                             ),
                     )
@@ -760,6 +806,7 @@ impl InstanceWindow {
     }
 
     fn render_mod_browser(&self, cx: &mut Context<Self>, provider: Browser) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let inst = self.instance(cx);
         let app = self.app.read(cx);
         let target = BrowserTarget::new(&inst, app);
@@ -798,7 +845,7 @@ impl InstanceWindow {
             return panel.child(div().p_3().child("Select an existing world on the Data Packs page.")).into_any_element();
         }
         if let Some(message) = provider.prerequisite(&target.loader, self.app.read(cx).curseforge_configured) {
-            return panel.child(div().p_3().text_color(rgb(0x8fb4d9)).child(message)).into_any_element();
+            return panel.child(div().p_3().text_color(palette.link).child(message)).into_any_element();
         }
 
         let search_row = div().flex().gap_2().p_2().items_center()
@@ -822,7 +869,7 @@ impl InstanceWindow {
                     .px_3()
                     .text_size(px(12.))
                     .text_ellipsis()
-                    .text_color(rgb(0x8fb4d9))
+                    .text_color(palette.link)
                     .child(status.clone()),
             );
         }
@@ -849,7 +896,7 @@ impl InstanceWindow {
                     .gap_2()
                     .px_3()
                     .py_2()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .rounded_md()
                     .child(
                         div()
@@ -861,7 +908,7 @@ impl InstanceWindow {
                             .child(
                                 div()
                                     .text_size(px(10.))
-                                    .text_color(rgb(0x888888))
+                                    .text_color(palette.muted_text)
                                     .text_ellipsis()
                                     .child(description.to_owned()),
                             ),
@@ -870,7 +917,7 @@ impl InstanceWindow {
                         div()
                             .flex_shrink_0()
                             .text_size(px(10.))
-                            .text_color(rgb(0x666666))
+                            .text_color(palette.muted_text)
                             .child(format!("{downloads} downloads")),
                     )
                     .child(
@@ -894,6 +941,7 @@ impl InstanceWindow {
     }
 
     fn render_mod_updates(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let updates = &self.mod_updates;
         let running = self.app.read(cx).is_running(&self.instance_id);
         let subtitle = updates.target.as_ref()
@@ -917,10 +965,10 @@ impl InstanceWindow {
             let row = update.clone();
             list = list.child(
                 div().flex().flex_shrink_0().items_center().gap_3().px_3().py_2()
-                    .rounded_md().bg(rgb(0x2b2b2b))
+                    .rounded_md().bg(palette.panel)
                     .child(div().min_w_0().flex_1().flex().flex_col()
                         .child(div().text_ellipsis().child(update.title.clone()))
-                        .child(div().text_ellipsis().text_size(px(11.)).text_color(rgb(0xaaaaaa))
+                        .child(div().text_ellipsis().text_size(px(11.)).text_color(palette.secondary_text)
                             .child(format!("{} → {} · {}", update.current_version, update.new_version, update.provider))))
                     .child(div().flex_shrink_0().child(Button::new(SharedString::from(format!("update-{}", update.installed_filename())))
                         .label("Update")
@@ -929,20 +977,21 @@ impl InstanceWindow {
             );
         }
         if updates.report.locked > 0 || updates.report.unmatched > 0 {
-            list = list.child(div().text_size(px(12.)).text_color(rgb(0xaaaaaa))
+            list = list.child(div().text_size(px(12.)).text_color(palette.secondary_text)
                 .child(format!("Skipped: {} locked, {} without a provider match.", updates.report.locked, updates.report.unmatched)));
         }
         for warning in &updates.report.warnings {
-            list = list.child(div().text_size(px(12.)).text_color(rgb(0xd8b17c)).child(warning.clone()));
+            list = list.child(div().text_size(px(12.)).text_color(palette.warning).child(warning.clone()));
         }
         div().min_w_0().min_h_0().flex_1().flex().flex_col()
             .child(header)
-            .child(div().px_3().pt_3().text_size(px(13.)).text_color(rgb(0x8fb4d9)).child(updates.status.clone()))
+            .child(div().px_3().pt_3().text_size(px(13.)).text_color(palette.link).child(updates.status.clone()))
             .child(list)
             .into_any_element()
     }
 
     fn render_notes_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let notes = self.instance(cx).notes;
         div()
             .flex_1()
@@ -956,7 +1005,7 @@ impl InstanceWindow {
                     .flex_1()
                     .m_3()
                     .p_3()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .rounded_md()
                     .text_size(px(13.))
                     .child(if notes.is_empty() { "No notes yet.".to_string() } else { notes }),
@@ -1052,6 +1101,7 @@ impl InstanceWindow {
     }
 
     fn render_servers_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let running = self.servers_running(cx);
         let mut panel = div().flex_1().flex().flex_col().min_h_0().child(
             self.page_header(
@@ -1087,9 +1137,9 @@ impl InstanceWindow {
                     .px_3()
                     .py_2()
                     .bg(if selected == Some(i) {
-                        rgb(0x3d5a80)
+                        palette.selection
                     } else {
-                        rgb(0x2b2b2b)
+                        palette.panel
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.select_server(Some(i), window, cx)
@@ -1225,6 +1275,7 @@ impl InstanceWindow {
 
 impl Render for InstanceWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         if !self.page.available(self.instance(cx).is_horizon()) {
             self.page = Page::Log;
         }
@@ -1286,8 +1337,8 @@ impl Render for InstanceWindow {
         div()
             .size_full()
             .flex()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.window)
+            .text_color(palette.text)
             .child(self.render_sidebar(cx))
             .child(self.render_page(cx))
     }

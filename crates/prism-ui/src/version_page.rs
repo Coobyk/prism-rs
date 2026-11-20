@@ -1,9 +1,7 @@
 use super::{InstanceWindow, Page};
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::{
-    button::Button,
-    input::{Input, InputState},
-};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 use prism_core::{
     launch::Launcher,
@@ -616,6 +614,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_version_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let state = &self.version_editor;
         let blocked =
             state.busy || state.dialog.is_some() || self.app.read(cx).is_running(&self.instance_id);
@@ -664,7 +663,7 @@ impl InstanceWindow {
                     let subtitle = labels.and_then(|labels| labels.subtitle.as_deref()).unwrap_or(uid);
                     let custom = pack.is_custom(uid);
                     let reason = if uid == MINECRAFT { state.customize_reason.clone() } else { Some("Equivalent component JSON unavailable".into()) };
-                    let mut controls = component_row(name, subtitle, version, custom,
+                    let mut controls = component_row(palette, name, subtitle, version, custom,
                         (!custom && !lwjgl).then_some(reason.as_deref()).flatten());
                     let edit = if uid == MINECRAFT { Some(Edit::Minecraft) } else if lwjgl { Some(Edit::Lwjgl) } else { kind.map(Edit::SetLoader) };
                     if let Some(edit) = edit {
@@ -749,7 +748,7 @@ impl InstanceWindow {
                         .child(
                             div()
                                 .text_size(px(12.))
-                                .text_color(rgb(0xaaaaaa))
+                                .text_color(palette.secondary_text)
                                 .child(detail),
                         )
                         .child(action(id, button, Edit::Add(kind)));
@@ -769,7 +768,7 @@ impl InstanceWindow {
                                 }))
                         };
                         rows = rows.child(
-                            row(&entry.name, "")
+                            row(palette, &entry.name, "")
                                 .child(control("Up", Edit::Move(index, -1), position == 0))
                                 .child(control(
                                     "Down",
@@ -807,9 +806,9 @@ impl InstanceWindow {
             .children(state.confirmation.as_ref().map(|(_, action)| {
                 let revert = matches!(action, ComponentAction::Revert);
                 div().absolute().inset_0().size_full().occlude()
-                    .bg(black().opacity(0.5)).flex().items_center().justify_center()
-                    .child(div().w(px(410.)).p_4().rounded_lg().bg(rgb(0x2b2b2b))
-                        .border_1().border_color(rgb(0x555555)).flex().flex_col().gap_3()
+                    .bg(palette.overlay).flex().items_center().justify_center()
+                    .child(div().w(px(410.)).p_4().rounded_lg().bg(palette.panel)
+                        .border_1().border_color(palette.strong_border).flex().flex_col().gap_3()
                         .child(div().font_weight(FontWeight::BOLD).child(if revert { "Revert component?" } else { "Remove component?" }))
                         .child(if revert { "This permanently deletes the local patch and restores the metadata component." } else { "This permanently deletes the component patch and its unshared local artifacts." })
                         .child(div().flex().justify_end().gap_2()
@@ -830,6 +829,7 @@ impl InstanceWindow {
     }
 
     fn version_dialog(&self, dialog: &Dialog, cx: &Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let edit = dialog.edit;
         let input = dialog.input.clone();
         div()
@@ -839,7 +839,7 @@ impl InstanceWindow {
             .left_0()
             .size_full()
             .occlude()
-            .bg(black().opacity(0.5))
+            .bg(palette.overlay)
             .flex()
             .items_center()
             .justify_center()
@@ -848,9 +848,9 @@ impl InstanceWindow {
                     .w(px(410.))
                     .p_4()
                     .rounded_lg()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .border_1()
-                    .border_color(rgb(0x555555))
+                    .border_color(palette.strong_border)
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -931,19 +931,19 @@ fn local_jar_subtitle(uid: &str, document: &serde_json::Value) -> Option<String>
     })
 }
 
-fn component_row(name: &str, subtitle: &str, version: &str, custom: bool, reason: Option<&str>) -> Div {
-    div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(rgb(0x2b2b2b))
+fn component_row(palette: crate::theme::Palette, name: &str, subtitle: &str, version: &str, custom: bool, reason: Option<&str>) -> Div {
+    div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(palette.panel)
         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
             .child(div().flex().items_center().gap_2()
                 .child(div().min_w_0().text_ellipsis().child(name.to_owned()))
-                .children(custom.then(|| div().text_size(px(11.)).text_color(rgb(0xaaaaaa)).child("custom"))))
-            .child(div().text_size(px(12.)).text_color(rgb(0xaaaaaa)).text_ellipsis()
+                .children(custom.then(|| div().text_size(px(11.)).text_color(palette.secondary_text).child("custom"))))
+            .child(div().text_size(px(12.)).text_color(palette.secondary_text).text_ellipsis()
                 .child(if subtitle.is_empty() { "Provided by Minecraft".to_owned() } else { subtitle.to_owned() }))
-            .children(reason.map(|reason| div().text_size(px(11.)).text_color(rgb(0xaaaaaa)).text_ellipsis().child(reason.to_owned()))))
-        .child(div().flex_shrink_0().text_color(rgb(0x8fb4d9)).child(version.to_owned()))
+            .children(reason.map(|reason| div().text_size(px(11.)).text_color(palette.secondary_text).text_ellipsis().child(reason.to_owned()))))
+        .child(div().flex_shrink_0().text_color(palette.link).child(version.to_owned()))
 }
 
-fn row(name: &str, value: &str) -> Div {
+fn row(palette: crate::theme::Palette, name: &str, value: &str) -> Div {
     div()
         .flex()
         .items_center()
@@ -951,7 +951,7 @@ fn row(name: &str, value: &str) -> Div {
         .px_3()
         .py_2()
         .rounded_md()
-        .bg(rgb(0x2b2b2b))
+        .bg(palette.panel)
         .child(
             div()
                 .flex_1()
@@ -959,7 +959,7 @@ fn row(name: &str, value: &str) -> Div {
                 .text_ellipsis()
                 .child(name.to_owned()),
         )
-        .child(div().text_color(rgb(0x8fb4d9)).child(value.to_owned()))
+        .child(div().text_color(palette.link).child(value.to_owned()))
 }
 
 #[cfg(test)]

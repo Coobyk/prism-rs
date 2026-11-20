@@ -1,9 +1,9 @@
 use gpui_kit::base::StyledExt as _;
-use gpui_kit::component::button::Button;
+use crate::theme::{Button, Palette};
 use gpui_kit::component::link::Link;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::tab::{Tab, TabBar};
-use gpui_kit::component::{ActiveTheme as _, WindowExt as _};
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 
 const SOURCE: &str = "https://github.com/Coobyk/prism-rs";
@@ -14,8 +14,10 @@ const LICENSE: &str = include_str!("../../../LICENSE");
 
 pub(crate) fn open(window: &mut Window, cx: &mut App) {
     let content = cx.new(|_| AboutDialog { selected_tab: 0 });
-    window.open_dialog(cx, move |dialog, _, _| {
+    window.open_dialog(cx, move |dialog, _, cx| {
         dialog
+            .bg(Palette::get(cx).window)
+            .text_color(Palette::get(cx).text)
             .title("About prism-rs")
             .width(px(540.))
             .overlay_closable(false)
@@ -45,6 +47,7 @@ impl Render for AboutDialog {
         let body_height = (window.viewport_size().height - px(200.)).clamp(px(80.), px(290.));
 
         div()
+            .text_color(Palette::get(cx).text)
             .flex()
             .flex_col()
             .gap_3()
@@ -86,7 +89,7 @@ fn overview(cx: &App) -> Div {
                 .flex_col()
                 .gap_1()
                 .child(div().text_xl().font_semibold().child("prism-rs"))
-                .child(div().text_color(cx.theme().muted_foreground).child(
+                .child(div().text_color(Palette::get(cx).secondary_text).child(
                     "A Minecraft launcher inspired by Prism Launcher, built in Rust and GPUI.",
                 )),
         )

@@ -1,9 +1,7 @@
 use super::InstanceWindow;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::{
-    button::Button,
-    input::{Input, InputState},
-};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 use prism_core::screenshots::{imgur_client_id, upload_to_imgur, Screenshot, IMGUR_CLIENT_ID_ENV};
 use std::{io::Cursor, path::PathBuf, sync::Arc};
@@ -270,6 +268,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_screenshots_page(&self, cx: &mut Context<Self>) -> AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let page = &self.screenshots;
         let selected = page.selected.is_some();
         let actions_disabled = page.busy || page.loading || page.dialog.is_some();
@@ -320,7 +319,7 @@ impl InstanceWindow {
                             .object_fit(ObjectFit::Contain)
                             .into_any_element(),
                         None => div()
-                            .text_color(rgb(0xaaaaaa))
+                            .text_color(palette.secondary_text)
                             .child("Preview unavailable")
                             .into_any_element(),
                     };
@@ -330,7 +329,11 @@ impl InstanceWindow {
                         .w(px(204.))
                         .p_2()
                         .rounded_md()
-                        .bg(if active { rgb(0x3d5a80) } else { rgb(0x2b2b2b) })
+                        .bg(if active {
+                            palette.selection
+                        } else {
+                            palette.panel
+                        })
                         .child(
                             div()
                                 .flex()
@@ -338,7 +341,8 @@ impl InstanceWindow {
                                 .justify_center()
                                 .w_full()
                                 .h(px(114.))
-                                .bg(rgb(0x191919))
+                                .bg(palette.base)
+                                .text_color(palette.base_text)
                                 .child(preview),
                         )
                         .child(
@@ -426,6 +430,7 @@ impl InstanceWindow {
         dialog: &Dialog,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let (title, message) = if dialog.missing_key {
             ("Imgur client ID required", format!("Add a client ID in Settings → API Keys or set {IMGUR_CLIENT_ID_ENV}. No screenshot was sent."))
         } else {
@@ -467,8 +472,8 @@ impl InstanceWindow {
                     .p_4()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(0x555555))
-                    .bg(rgb(0x2b2b2b))
+                    .border_color(palette.strong_border)
+                    .bg(palette.panel)
                     .flex()
                     .flex_col()
                     .gap_3()

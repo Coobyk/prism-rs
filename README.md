@@ -195,8 +195,10 @@ Working today:
   in `curseforge-missing-files.txt`; automatic resolution uses the configured CurseForge key.
   FTB provenance is recorded, but FTB updates are not connected to the Modrinth-only updater.
 - ATLauncher: browse and install public ATLauncher packs from Add Instance.
+- Themes: Settings > Appearance picks System/Dark/Bright or a custom PrismLauncher-format
+  `themes/<name>/theme.json` (colors only, no QSS), plus icon themes from `iconthemes/<name>/`.
 
-Not yet at parity (tracked in the issue tracker of your heart): themes/translations,
+Not yet at parity (tracked in the issue tracker of your heart): translations,
 updater and per-instance console window options. External tools include JProfiler,
 JVisualVM (also via `launch <instance-id> --profiler <jprofiler|jvisualvm>`), and MCEdit.
 

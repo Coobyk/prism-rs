@@ -9,9 +9,9 @@
 
 use crate::dialogs::{CreateInstanceState, PromptState};
 use crate::state::{format_play_time, App, InstanceRunState};
+use crate::theme::{Button, Icon};
 use gpui_kit::base::{Disableable, InteractiveElementExt};
-use gpui_kit::component::button::{Button, DropdownButton};
-use gpui_kit::component::menu::PopupMenuItem;
+use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
 use gpui_kit::*;
 
 pub struct MainWindow {
@@ -62,6 +62,7 @@ impl MainWindow {
     // -- toolbar ------------------------------------------------------------
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         div()
             .id("main-toolbar")
             .flex()
@@ -69,35 +70,45 @@ impl MainWindow {
             .gap_1()
             .px_2()
             .h(px(40.))
-            .bg(rgb(0x2b2b2b))
+            .bg(palette.panel)
             .border_b_1()
-            .border_color(rgb(0x1c1c1c))
+            .border_color(palette.border)
             .child(
-                Button::new("add-instance")
-                    .label("+ Add Instance")
+                crate::theme::button("add-instance", Icon::New, "Add Instance", cx)
                     .on_click(cx.listener(Self::on_add_instance)),
             )
             .child(
-                Button::new("import-instance")
-                    .label("Import")
+                crate::theme::button("import-instance", Icon::Import, "Import", cx)
                     .on_click(cx.listener(Self::on_import)),
             )
             .child(
-                Button::new("import-technic")
-                    .label("Technic Packs")
+                crate::theme::button("import-technic", Icon::Packages, "Technic Packs", cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         crate::technic_window::open(this.app.clone(), cx.entity().downgrade(), cx);
                     })),
             )
-            .child(toolbar_separator())
-            .child(Button::new("folders").label("Folders").on_click(cx.listener(Self::on_view_instances_folder)))
-            .child(Button::new("settings").label("Settings").on_click(cx.listener(Self::on_open_settings)))
-            .child(crate::help_menu::button(self.app.read(cx).paths.clone()))
-            .child(Button::new("check-updates").label("Check for Updates").on_click(|_, _, _| {}))
+            .child(toolbar_separator(palette))
             .child(
-                Button::new("accounts")
-                    .label(self.accounts_button_label(cx))
-                    .on_click(cx.listener(Self::on_open_accounts)),
+                crate::theme::button("folders", Icon::Folder, "Folders", cx)
+                    .on_click(cx.listener(Self::on_view_instances_folder)),
+            )
+            .child(
+                crate::theme::button("settings", Icon::Settings, "Settings", cx)
+                    .on_click(cx.listener(Self::on_open_settings)),
+            )
+            .child(crate::help_menu::button(self.app.read(cx).paths.clone(), cx))
+            .child(
+                crate::theme::button("check-updates", Icon::Update, "Check for Updates", cx)
+                    .on_click(|_, _, _| {}),
+            )
+            .child(
+                crate::theme::button(
+                    "accounts",
+                    Icon::Accounts,
+                    self.accounts_button_label(cx),
+                    cx,
+                )
+                .on_click(cx.listener(Self::on_open_accounts)),
             )
     }
 
@@ -177,6 +188,7 @@ impl MainWindow {
     // -- instance grid ------------------------------------------------------
 
     fn render_instance_grid(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let instances: Vec<(String, String, Option<String>)> = {
             let app = self.app.read(cx);
             app.instances
@@ -193,7 +205,7 @@ impl MainWindow {
                 .flex()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(0x888888))
+                .text_color(palette.muted_text)
                 .child("Add an instance to get started")
                 .into_any_element();
         }
@@ -220,7 +232,7 @@ impl MainWindow {
             if !group.is_empty() {
                 container = container.child(
                     div()
-                        .text_color(rgb(0xaaaaaa))
+                        .text_color(palette.secondary_text)
                         .text_size(px(13.))
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(group.clone()),
@@ -237,6 +249,7 @@ impl MainWindow {
     }
 
     fn render_instance_tile(&self, id: String, name: String, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let app = self.app.clone();
         let selected = {
             let app = app.read(cx);
@@ -245,7 +258,11 @@ impl MainWindow {
         let running = app.read(cx).is_running(&id);
         let horizon = app.read(cx).instances.get(&id).is_some_and(|inst| inst.is_horizon());
         let icon = app.read(cx).instances.get(&id).and_then(|inst| app.read(cx).instance_icon_path(inst));
-        let tile_bg = if selected { rgb(0x3d5a80) } else { rgb(0x2b2b2b) };
+        let tile_bg = if selected {
+            palette.selection
+        } else {
+            palette.panel
+        };
         let id2 = id.clone();
 
         div()
@@ -258,7 +275,7 @@ impl MainWindow {
             .w(px(110.))
             .rounded_md()
             .bg(tile_bg)
-            .hover(|s| s.bg(rgb(0x353535)))
+            .hover(|s| s.bg(palette.hover))
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 let id = id.clone();
                 this.app.update(cx, |app, _| {
@@ -282,13 +299,13 @@ impl MainWindow {
                 div()
                     .size(px(64.))
                     .rounded_md()
-                    .bg(rgb(0x1e4d2b))
+                    .bg(palette.success_bg)
                     .flex()
                     .items_center()
                     .justify_center()
                     .text_size(px(28.))
                     .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0x9fdcb8))
+                    .text_color(palette.success)
                     .children(icon.clone().map(|path| img(path).size(px(64.))))
                     .child(if icon.is_some() {
                         String::new()
@@ -311,6 +328,7 @@ impl MainWindow {
     // -- sidebar ------------------------------------------------------------
 
     fn render_instance_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let app = self.app.read(cx);
         let selected = app.selected.clone();
         let name = selected
@@ -333,14 +351,14 @@ impl MainWindow {
         let selected2 = selected.clone();
         let _ = selected2;
         let sidebar = div()
-            .w(px(if horizon { 184. } else { 160. }))
+            .w(px(if horizon { 224. } else { 200. }))
             .flex()
             .flex_col()
             .gap_1()
             .p_2()
-            .bg(rgb(0x2b2b2b))
+            .bg(palette.panel)
             .border_l_1()
-            .border_color(rgb(0x1c1c1c))
+            .border_color(palette.border)
             .child(
                 div()
                     .text_size(px(14.))
@@ -351,69 +369,77 @@ impl MainWindow {
             .child(
                 div()
                     .text_size(px(11.))
-                    .text_color(rgb(0x888888))
+                    .text_color(palette.muted_text)
                     .child(if group.is_empty() { "No group" } else { group.as_str() }.to_string()),
             )
-            .child(toolbar_separator())
-            .child(self.sidebar_button("rename", "Rename", enabled).on_click(cx.listener(Self::on_rename)))
-            .child(self.sidebar_button("change-icon", "Change Icon", enabled).on_click(cx.listener(|this, _, _, cx| {
+            .child(div().w_full().h(px(1.)).my_1().bg(palette.strong_border))
+            .child(self.sidebar_button(cx, "rename", "Rename", enabled).on_click(cx.listener(Self::on_rename)))
+            .child(self.sidebar_button(cx, "change-icon", "Change Icon", enabled).on_click(cx.listener(|this, _, _, cx| {
                 if let Some(inst) = this.app.read(cx).selected_instance() {
                     this.icon_picker = Some(crate::dialogs::IconPickerDialog::new(inst, &this.app.read(cx).paths.icons_dir()));
                     cx.notify();
                 }
             })))
-            .child(toolbar_separator())
+            .child(div().w_full().h(px(1.)).my_1().bg(palette.strong_border))
             .child(
-                DropdownButton::new("launch-options")
+                div()
+                    .flex()
                     .w_full()
-                    .button(
-                        self.sidebar_button("launch", "Launch", enabled && !is_running)
+                    .child(
+                        self.sidebar_button(cx, "launch", "Launch", enabled && !is_running)
                             .flex_1()
-                            .on_click(cx.listener(Self::on_launch)),
+                            .on_click(cx.listener(Self::on_launch))
+                            .rounded_r_none(),
                     )
-                    .disabled(!enabled || is_running)
-                    .dropdown_menu({
-                        let app = self.app.clone();
-                        move |mut menu, _, cx| {
-                            let settings = prism_core::settings::Settings::load(
-                                &app.read(cx).paths.global_config(),
-                            );
-                            for tool in [
-                                prism_core::tools::Tool::JProfiler,
-                                prism_core::tools::Tool::JVisualVM,
-                            ] {
-                                let valid = !horizon && tool.check(&tool.path(&settings)).is_ok();
-                                let app = app.clone();
-                                let label = if valid {
-                                    format!("Launch with {}", tool.name())
-                                } else {
-                                    format!(
-                                        "{} — not set up; Settings → External Tools",
-                                        tool.name()
-                                    )
-                                };
-                                menu =
-                                    menu.item(PopupMenuItem::new(label).disabled(!valid).on_click(
-                                        move |_, _, cx| {
-                                            app.update(cx, |app, cx| {
-                                                if let Some(id) = app.selected.clone() {
-                                                    app.start_launch_profiled(
-                                                        &id,
-                                                        None,
-                                                        Some(tool),
-                                                        cx,
-                                                    );
-                                                }
-                                            });
-                                        },
-                                    ));
-                            }
-                            menu
-                        }
-                    }),
+                    .child(
+                        Button::new("launch-options")
+                            .label("▾")
+                            .accessibility_label("Launch options")
+                            .rounded_l_none()
+                            .disabled(!enabled || is_running)
+                            .dropdown_menu_with_anchor(Anchor::TopRight, {
+                                let app = self.app.clone();
+                                move |mut menu, _, cx| {
+                                    let settings = prism_core::settings::Settings::load(
+                                        &app.read(cx).paths.global_config(),
+                                    );
+                                    for tool in [
+                                        prism_core::tools::Tool::JProfiler,
+                                        prism_core::tools::Tool::JVisualVM,
+                                    ] {
+                                        let valid = !horizon && tool.check(&tool.path(&settings)).is_ok();
+                                        let app = app.clone();
+                                        let label = if valid {
+                                            format!("Launch with {}", tool.name())
+                                        } else {
+                                            format!(
+                                                "{} — not set up; Settings → External Tools",
+                                                tool.name()
+                                            )
+                                        };
+                                        menu =
+                                            menu.item(PopupMenuItem::new(label).disabled(!valid).on_click(
+                                                move |_, _, cx| {
+                                                    app.update(cx, |app, cx| {
+                                                        if let Some(id) = app.selected.clone() {
+                                                            app.start_launch_profiled(
+                                                                &id,
+                                                                None,
+                                                                Some(tool),
+                                                                cx,
+                                                            );
+                                                        }
+                                                    });
+                                                },
+                                            ));
+                                    }
+                                    menu
+                                }
+                            }),
+                    ),
             )
             .children((!horizon).then(|| {
-                self.sidebar_button("quick-play", "Quick Play…", enabled && !is_running)
+                self.sidebar_button(cx, "quick-play", "Quick Play…", enabled && !is_running)
                     .on_click(cx.listener(|this, _, window, cx| {
                         let app = this.app.read(cx);
                         if let Some(inst) = app
@@ -429,21 +455,21 @@ impl MainWindow {
                     }))
             }))
             .children((!horizon).then(|| {
-                self.sidebar_button("kill", "Kill", is_running)
+                self.sidebar_button(cx, "kill", "Kill", is_running)
                     .on_click(cx.listener(Self::on_kill))
             }))
-            .child(toolbar_separator())
+            .child(div().w_full().h(px(1.)).my_1().bg(palette.strong_border))
             .child(
-                self.sidebar_button("edit", "Edit", enabled)
+                self.sidebar_button(cx, "edit", "Edit", enabled)
                     .on_click(cx.listener(Self::on_edit)),
             )
             .child(
-                self.sidebar_button("change-group", "Change Group", enabled)
+                self.sidebar_button(cx, "change-group", "Change Group", enabled)
                     .on_click(cx.listener(Self::on_change_group)),
             )
-            .child(self.sidebar_button("view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
+            .child(self.sidebar_button(cx, "view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
             .child(
-                self.sidebar_button("export", "Export", enabled && !horizon)
+                self.sidebar_button(cx, "export", "Export", enabled && !horizon)
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(instance) = this.app.read(cx).selected_instance()
                             .filter(|instance| !instance.is_horizon())
@@ -462,7 +488,7 @@ impl MainWindow {
                         }
                     })),
             )
-            .child(self.sidebar_button("copy", "Copy", enabled && !horizon).on_click(cx.listener(|this, _, window, cx| {
+            .child(self.sidebar_button(cx, "copy", "Copy", enabled && !horizon).on_click(cx.listener(|this, _, window, cx| {
                 if let Some(instance) = this.app.read(cx).selected_instance().filter(|i| !i.is_horizon()).cloned() {
                     let prompt = PromptState::new(crate::dialogs::PromptKind::Copy, instance.id, format!("{} (Copy)", instance.name), window, cx);
                     prompt.copy_group.as_ref().unwrap().update(cx, |input, cx| input.set_value(instance.group.unwrap_or_default(), window, cx));
@@ -472,6 +498,7 @@ impl MainWindow {
             })))
             .child(
                 self.sidebar_button(
+                    cx,
                     "delete",
                     if horizon { "Remove from Prism" } else { "Delete" },
                     enabled && !(horizon && is_running),
@@ -480,14 +507,37 @@ impl MainWindow {
             );
         #[cfg(target_os = "linux")]
         let sidebar = sidebar.child(
-            self.sidebar_button("shortcut", "Create Shortcut", enabled)
+            self.sidebar_button(cx, "shortcut", "Create Shortcut", enabled)
                 .on_click(cx.listener(Self::on_create_shortcut)),
         );
         sidebar
     }
 
-    fn sidebar_button(&self, id: &str, label: &str, enabled: bool) -> Button {
-        let mut btn = Button::new(SharedString::from(format!("sb-{id}"))).label(label);
+    fn sidebar_button(&self, cx: &gpui::App, id: &str, label: &str, enabled: bool) -> Button {
+        let key = match id {
+            "view-folder" => Icon::Folder,
+            "kill" => Icon::Kill,
+            "edit" => Icon::Edit,
+            "change-icon" => Icon::ChangeIcon,
+            "change-group" => Icon::Group,
+            "quick-play" | "launch" => Icon::Launch,
+            "rename" => Icon::Rename,
+            "export" => Icon::Export,
+            "copy" => Icon::Copy,
+            "delete" => Icon::Delete,
+            "shortcut" => Icon::Shortcut,
+            _ => {
+                return Button::new(SharedString::from(format!("sb-{id}")))
+                    .label(label.to_owned())
+                    .disabled(!enabled)
+            }
+        };
+        let mut btn = crate::theme::button(
+            SharedString::from(format!("sb-{id}")),
+            key,
+            label.to_owned(),
+            cx,
+        );
         if !enabled {
             btn = btn.disabled(true);
         }
@@ -630,6 +680,7 @@ impl MainWindow {
     // -- console ------------------------------------------------------------
 
     fn render_console(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let selected = self.app.read(cx).selected.clone();
         let mut lines: Vec<String> = Vec::new();
         let run_state = InstanceRunState::Idle;
@@ -649,8 +700,9 @@ impl MainWindow {
             .flex_col()
             .h(px(220.))
             .border_t_1()
-            .border_color(rgb(0x1c1c1c))
-            .bg(rgb(0x1a1a1a))
+            .border_color(palette.border)
+            .bg(palette.base)
+            .text_color(palette.base_text)
             .child(
                 div()
                     .flex()
@@ -658,7 +710,8 @@ impl MainWindow {
                     .justify_between()
                     .px_2()
                     .h(px(26.))
-                    .bg(rgb(0x242424))
+                    .bg(palette.alternate)
+                    .text_color(palette.base_text)
                     .child(div().text_size(px(12.)).child("Console"))
                     .child(
                         div()
@@ -680,7 +733,7 @@ impl MainWindow {
                     .p_2()
                     .font_family("monospace")
                     .text_size(px(11.))
-                    .text_color(rgb(0xcccccc))
+                    .text_color(palette.base_text)
                     .children(
                         lines
                             .iter()
@@ -696,6 +749,7 @@ impl MainWindow {
     // -- bottom bars ---------------------------------------------------------
 
     fn render_bottom_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let description = self.app.read(cx).status_description();
         let total_played: u64 = self
             .app
@@ -717,7 +771,7 @@ impl MainWindow {
             .flex()
             .flex_col()
             .border_t_1()
-            .border_color(rgb(0x1c1c1c))
+            .border_color(palette.border)
             .child(
                 // News toolbar
                 div()
@@ -727,9 +781,9 @@ impl MainWindow {
                     .h(px(26.))
                     .px_2()
                     .gap_2()
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .text_size(px(12.))
-                    .text_color(rgb(0x99aabb))
+                    .text_color(palette.muted_text)
                     .child("News")
                     .child(latest_news)
                     .child(div().flex_1())
@@ -743,9 +797,10 @@ impl MainWindow {
                     .h(px(22.))
                     .px_2()
                     .gap_4()
-                    .bg(rgb(0x242424))
+                    .bg(palette.alternate)
+                    .text_color(palette.base_text)
                     .text_size(px(11.))
-                    .text_color(rgb(0x999999))
+                    .text_color(palette.base_muted_text)
                     .child(description)
                     .child(div().flex_1())
                     .child(format!("Total play time: {}", format_play_time(total_played))),
@@ -755,6 +810,7 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         self.poll_manifest(cx);
         // Keep state fresh while instances run.
         if self.app.read(cx).running.values().any(|r| {
@@ -793,7 +849,7 @@ impl Render for MainWindow {
                     .left(px(16.))
                     .px_3()
                     .py_2()
-                    .bg(rgb(0x2f4f2f))
+                    .bg(palette.success_bg)
                     .rounded_md()
                     .text_size(px(12.))
                     .child(msg.clone())
@@ -804,10 +860,19 @@ impl Render for MainWindow {
             .size_full()
             .flex()
             .flex_col()
-            .bg(rgb(0x232323))
-            .text_color(rgb(0xdddddd))
+            .bg(palette.window)
+            .text_color(palette.text)
             .relative()
             .child(self.render_toolbar(cx))
+            .children(crate::theme::catalog(cx).warnings.iter().map(|warning| {
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(12.))
+                    .bg(palette.warning_bg)
+                    .text_color(palette.warning)
+                    .child(warning.clone())
+            }))
             .child(
                 div()
                     .flex_1()
@@ -826,6 +891,6 @@ impl Render for MainWindow {
     }
 }
 
-fn toolbar_separator() -> impl IntoElement {
-    div().w(px(1.)).h(px(24.)).mx_1().bg(rgb(0x444444))
+fn toolbar_separator(palette: crate::theme::Palette) -> impl IntoElement {
+    div().w(px(1.)).h(px(24.)).mx_1().bg(palette.strong_border)
 }

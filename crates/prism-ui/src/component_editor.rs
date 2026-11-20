@@ -1,10 +1,10 @@
+use crate::theme::Button;
 use super::InstanceWindow;
 use crate::state::App as LauncherApp;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     base::Disableable,
     component::{
-        button::Button,
         input::{Input, InputEvent, InputState, Textarea, TextareaState},
         ActiveTheme,
     },
@@ -211,6 +211,7 @@ impl Editor {
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let adding = self.uid.is_none();
         let identifier = self.identifier.read(cx).value().to_string();
         let invalid = if adding {
@@ -238,15 +239,15 @@ impl Render for Editor {
             .flex()
             .flex_col()
             .gap_3()
-            .bg(rgb(0x232323))
+            .bg(palette.window)
             .when(adding, |dialog| {
                 dialog
-                    .bg(rgb(0x2b2b2b))
+                    .bg(palette.panel)
                     .border_1()
-                    .border_color(rgb(0x555555))
+                    .border_color(palette.strong_border)
                     .rounded_lg()
             })
-            .text_color(rgb(0xdddddd))
+            .text_color(palette.text)
             .child(
                 div().font_weight(FontWeight::BOLD).child(
                     self.uid
@@ -263,14 +264,14 @@ impl Render for Editor {
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(0xaaaaaa))
+                            .text_color(palette.secondary_text)
                             .child("Name"),
                     )
                     .child(Input::new(&self.name).disabled(self.busy || !self.ready))
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(0xaaaaaa))
+                            .text_color(palette.secondary_text)
                             .child("UID"),
                     )
                     .child(Input::new(&self.identifier).disabled(self.busy || !self.ready))
@@ -291,9 +292,9 @@ impl Render for Editor {
                 div()
                     .text_size(px(12.))
                     .text_color(if invalid.is_some() || message.starts_with("Could not") {
-                        rgb(0xf0a0a0)
+                        palette.error
                     } else {
-                        rgb(0xaaaaaa)
+                        palette.secondary_text
                     })
                     .child(message)
             }))
@@ -333,7 +334,7 @@ impl Render for Editor {
                     .inset_0()
                     .size_full()
                     .occlude()
-                    .bg(black().opacity(0.5))
+                    .bg(palette.overlay)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -342,9 +343,9 @@ impl Render for Editor {
                             .w(px(410.))
                             .p_4()
                             .rounded_lg()
-                            .bg(rgb(0x2b2b2b))
+                            .bg(palette.panel)
                             .border_1()
-                            .border_color(rgb(0x555555))
+                            .border_color(palette.strong_border)
                             .flex()
                             .flex_col()
                             .gap_3()

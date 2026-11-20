@@ -1,6 +1,6 @@
 use super::{Browser, BrowserTarget, InstanceWindow, Page};
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use prism_core::datapacks::{DataPack, World};
 use prism_core::modplatform::modrinth::{ModrinthApi, SearchResult};
@@ -273,6 +273,7 @@ impl InstanceWindow {
     }
 
     pub(super) fn render_datapacks(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let palette = crate::theme::Palette::get(cx);
         let app = self.app.read(cx);
         let mut page = div()
             .flex_1()
@@ -316,7 +317,7 @@ impl InstanceWindow {
                 div()
                     .px_3()
                     .py_1()
-                    .text_color(rgb(0x8fb4d9))
+                    .text_color(palette.link)
                     .child("Minecraft is running; data packs are read-only."),
             );
         }
@@ -340,8 +341,12 @@ impl InstanceWindow {
                     .rounded_md()
                     .cursor_pointer()
                     .text_ellipsis()
-                    .bg(if active { rgb(0x3d5a80) } else { rgb(0x2b2b2b) })
-                    .hover(|style| style.bg(rgb(0x384b60)))
+                    .bg(if active {
+                        palette.selection
+                    } else {
+                        palette.panel
+                    })
+                    .hover(|style| style.bg(palette.hover))
                     .child(name.clone())
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if this.datapacks.select(name.clone()) {
@@ -364,7 +369,7 @@ impl InstanceWindow {
             .gap_2()
             .p_2()
             .border_r_1()
-            .border_color(rgb(0x1c1c1c))
+            .border_color(palette.border)
             .child(div().font_weight(FontWeight::BOLD).child("Worlds"))
             .child(world_list);
         let mut packs_panel = div()
@@ -429,7 +434,7 @@ impl InstanceWindow {
             if !self.datapacks.status.is_empty() {
                 packs_panel = packs_panel.child(
                     div()
-                        .text_color(rgb(0xff9999))
+                        .text_color(palette.error)
                         .child(self.datapacks.status.clone()),
                 );
             }
@@ -437,7 +442,7 @@ impl InstanceWindow {
                 Some((_, Ok(packs))) if packs.is_empty() => {
                     packs_panel = packs_panel.child(
                         div()
-                            .text_color(rgb(0xaaaaaa))
+                            .text_color(palette.secondary_text)
                             .child("No data packs installed in this world."),
                     );
                 }
@@ -468,7 +473,7 @@ impl InstanceWindow {
                                 .px_2()
                                 .py_1()
                                 .rounded_md()
-                                .bg(rgb(0x2b2b2b))
+                                .bg(palette.panel)
                                 .child(
                                     div()
                                         .flex_1()
@@ -479,7 +484,7 @@ impl InstanceWindow {
                                         .child(
                                             div()
                                                 .text_size(px(11.))
-                                                .text_color(rgb(0xaaaaaa))
+                                                .text_color(palette.secondary_text)
                                                 .child(if disabled_in_world {
                                                     "Disabled in world · manage in Minecraft"
                                                 } else if enabled {
@@ -523,14 +528,14 @@ impl InstanceWindow {
                 Some((_, Err(error))) => {
                     packs_panel = packs_panel.child(
                         div()
-                            .text_color(rgb(0xff9999))
+                            .text_color(palette.error)
                             .child(format!("Could not list data packs: {error}")),
                     );
                 }
                 None => {
                     packs_panel = packs_panel.child(
                         div()
-                            .text_color(rgb(0xaaaaaa))
+                            .text_color(palette.secondary_text)
                             .child("Refresh to load this world's data packs."),
                     );
                 }
@@ -551,7 +556,7 @@ impl InstanceWindow {
     }
 }
 
-pub(super) fn open_folder(path: &std::path::Path) -> io::Result<()> {
+pub(crate) fn open_folder(path: &std::path::Path) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     let command = "explorer";
     #[cfg(target_os = "macos")]

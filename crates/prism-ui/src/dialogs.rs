@@ -2,8 +2,9 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
+use crate::theme::Button;
 use gpui_kit::base::{Disableable, Selectable};
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -82,6 +83,7 @@ impl IconPickerDialog {
     }
 
     pub fn render(&self, cx: &mut Context<MainWindow>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let mut grid = div()
             .id("icon-grid")
             .flex()
@@ -102,9 +104,9 @@ impl IconPickerDialog {
                 .p_2()
                 .rounded_md()
                 .bg(if selected {
-                    rgb(0x3d5a80)
+                    palette.selection
                 } else {
-                    rgb(0x353535)
+                    palette.hover
                 })
                 .flex()
                 .flex_col()
@@ -116,13 +118,13 @@ impl IconPickerDialog {
                     div()
                         .size(px(64.))
                         .rounded_md()
-                        .bg(rgb(0x1e4d2b))
+                        .bg(palette.success_bg)
                         .flex()
                         .items_center()
                         .justify_center()
                         .text_size(px(28.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0x9fdcb8))
+                        .text_color(palette.success)
                         .child(self.initial.clone()),
                 ),
             };
@@ -145,9 +147,9 @@ impl IconPickerDialog {
             .w(px(560.))
             .p_4()
             .rounded_lg()
-            .bg(rgb(0x2b2b2b))
+            .bg(palette.panel)
             .border_1()
-            .border_color(rgb(0x444444))
+            .border_color(palette.strong_border)
             .flex()
             .flex_col()
             .gap_3()
@@ -157,7 +159,7 @@ impl IconPickerDialog {
             .children(
                 self.error
                     .as_ref()
-                    .map(|error| div().text_color(rgb(0xff8888)).child(error.clone())),
+                    .map(|error| div().text_color(palette.error).child(error.clone())),
             )
             .child(
                 div()
@@ -308,13 +310,14 @@ impl QuickPlayState {
     }
 
     pub fn render(&self, cx: &mut Context<MainWindow>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let mut panel = div()
             .id("quick-play-dialog")
             .w(px(440.))
-            .bg(rgb(0x2b2b2b))
+            .bg(palette.panel)
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0x444444))
+            .border_color(palette.strong_border)
             .p_4()
             .flex()
             .flex_col()
@@ -329,7 +332,8 @@ impl QuickPlayState {
         let mut tabs = div()
             .flex()
             .p_1()
-            .bg(rgb(0x242424))
+            .bg(palette.alternate)
+            .text_color(palette.base_text)
             .rounded_md();
         for (multiplayer, label) in [(false, "Singleplayer"), (true, "Multiplayer")] {
             tabs = tabs.child(
@@ -340,11 +344,11 @@ impl QuickPlayState {
                     .rounded_sm()
                     .text_center()
                     .bg(if multiplayer == self.multiplayer {
-                        rgb(0x3d5a80)
+                        palette.selection
                     } else {
-                        rgba(0x00000000)
+                        palette.transparent
                     })
-                    .hover(|style| style.bg(rgb(0x333333)))
+                    .hover(|style| style.bg(palette.hover))
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if let Some(dialog) = &mut this.quick_play {
@@ -376,7 +380,7 @@ impl QuickPlayState {
             if self.worlds.is_empty() {
                 list = list.child(
                     div()
-                        .text_color(rgb(0x777777))
+                        .text_color(palette.muted_text)
                         .child("No worlds in this instance yet."),
                 );
             }
@@ -388,11 +392,11 @@ impl QuickPlayState {
                         .px_3()
                         .py_2()
                         .rounded_md()
-                        .bg(rgb(if self.selected.as_ref() == Some(&world) {
-                            0x3d5a80
+                        .bg(if self.selected.as_ref() == Some(&world) {
+                            palette.selection
                         } else {
-                            0x333333
-                        }))
+                            palette.hover
+                        })
                         .child(world.clone())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if let Some(dialog) = &mut this.quick_play {
@@ -409,7 +413,7 @@ impl QuickPlayState {
             panel = panel.child(
                 div()
                     .text_size(px(12.))
-                    .text_color(rgb(0xff6666))
+                    .text_color(palette.error)
                     .child(error.clone()),
             );
         }
@@ -520,6 +524,7 @@ impl CreateInstanceState {
         window: &mut Window,
         cx: &mut Context<MainWindow>,
     ) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         if self.atlauncher.is_some() {
             return crate::atlauncher_dialog::render(self, window, cx);
         }
@@ -558,10 +563,10 @@ impl CreateInstanceState {
             .id("create-dialog")
             .w(px(560.))
             .h(px(520.))
-            .bg(rgb(0x2b2b2b))
+            .bg(palette.panel)
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0x444444))
+            .border_color(palette.strong_border)
             .p_4()
             .flex()
             .flex_col()
@@ -635,7 +640,8 @@ impl CreateInstanceState {
                 .flex_col()
                 .gap_y_0p5()
                 .overflow_y_scroll()
-                .bg(rgb(0x242424))
+                .bg(palette.alternate)
+                .text_color(palette.base_text)
                 .rounded_md()
                 .p_1();
             for (id, vtype) in &version_rows {
@@ -650,8 +656,12 @@ impl CreateInstanceState {
                         .py_1()
                         .rounded_sm()
                         .text_size(px(12.))
-                        .bg(if is_selected { rgb(0x3d5a80) } else { rgba(0x00000000) })
-                        .hover(|s| s.bg(rgb(0x333333)))
+                        .bg(if is_selected {
+                            palette.selection
+                        } else {
+                            palette.transparent
+                        })
+                        .hover(|s| s.bg(palette.hover))
                         .on_click(cx.listener(move |this: &mut MainWindow, _ev, _window, cx| {
                             if let Some(d) = this.create_dialog.as_mut() {
                                 d.selected_version = Some(id2.clone());
@@ -662,7 +672,7 @@ impl CreateInstanceState {
                         .child(
                             div()
                                 .text_size(px(10.))
-                                .text_color(rgb(0x888888))
+                                .text_color(palette.muted_text)
                                 .child(vtype.clone()),
                         ),
                 );
@@ -671,7 +681,7 @@ impl CreateInstanceState {
         }
 
         if let Some(e) = &self.error {
-            panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
+            panel = panel.child(div().text_size(px(12.)).text_color(palette.error).child(e.clone()));
         }
 
         panel = panel.child(
@@ -680,7 +690,7 @@ impl CreateInstanceState {
                 .justify_end()
                 .gap_2()
                 .child(
-                    gpui_kit::component::button::Button::new("cancel")
+                    Button::new("cancel")
                         .label("Cancel")
                         .disabled(self.creating)
                         .on_click(cx.listener(|this: &mut MainWindow, _ev, _window, cx| {
@@ -689,7 +699,7 @@ impl CreateInstanceState {
                         })),
                 )
                 .child(
-                    gpui_kit::component::button::Button::new("ok")
+                    Button::new("ok")
                         .label(if self.creating { "Creating…" } else { "OK" })
                         .disabled(self.creating)
                         .on_click(cx.listener(confirm_create)),
@@ -873,6 +883,7 @@ impl PromptState {
     }
 
     pub fn render(&self, window: &mut Window, cx: &mut Context<MainWindow>) -> impl IntoElement {
+        let palette = crate::theme::Palette::get(cx);
         let title = match self.kind {
             PromptKind::Rename => "Rename Instance",
             PromptKind::ChangeGroup => "Change Group",
@@ -900,10 +911,10 @@ impl PromptState {
         let mut panel = div()
             .id("prompt-dialog")
             .w(px(if self.kind == PromptKind::Export { 440. } else { 380. }))
-            .bg(rgb(0x2b2b2b))
+            .bg(palette.panel)
             .rounded_lg()
             .border_1()
-            .border_color(rgb(0x444444))
+            .border_color(palette.strong_border)
             .p_4()
             .flex()
             .flex_col()
@@ -964,7 +975,7 @@ impl PromptState {
         }
 
         if let Some(e) = &self.error {
-            panel = panel.child(div().text_size(px(12.)).text_color(rgb(0xff6666)).child(e.clone()));
+            panel = panel.child(div().text_size(px(12.)).text_color(palette.error).child(e.clone()));
         }
 
         panel = panel.child(
