@@ -356,7 +356,12 @@ impl InstanceWindow {
         };
         let mut note = String::new();
         let initial = match edit {
-            Edit::Minecraft => pack.version(MINECRAFT),
+            Edit::Minecraft => {
+                if pack.is_custom(MINECRAFT) {
+                    note = "Changing Minecraft version discards its customized component patch.".into();
+                }
+                pack.version(MINECRAFT)
+            }
             Edit::Lwjgl => {
                 note = "Leave blank to use Minecraft’s default LWJGL version.".into();
                 pack.lwjgl().map(|(_, version)| version).or(Some(""))

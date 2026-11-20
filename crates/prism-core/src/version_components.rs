@@ -405,6 +405,10 @@ impl Pack {
     pub fn set_minecraft(mut self, version: &str) -> io::Result<Self> {
         let version = version_id(version)?;
         self.upsert(MINECRAFT, version);
+        if self.is_custom(MINECRAFT) {
+            let patch = self.root.join("patches").join(format!("{MINECRAFT}.json"));
+            return self.commit_files(vec![(patch, None)]);
+        }
         self.save()
     }
 
@@ -741,6 +745,21 @@ mod tests {
         assert!(!pack.is_custom(MINECRAFT));
         fs::remove_file(root.path().join("instance.cfg")).unwrap();
         assert!(pack.add_empty("test", "Deleted").is_err());
+    }
+
+    #[test]
+    fn changing_minecraft_reverts_the_customized_document() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let document = json!({"uid":MINECRAFT,"version":"1.20.4","formatVersion":1,"mainClass":"custom.Main"});
+        let pack = Pack::load(root.path()).unwrap().customize(MINECRAFT, &document).unwrap();
+        assert!(pack.clone().set_minecraft("../bad").is_err());
+        assert!(pack.is_custom(MINECRAFT));
+        let pack = pack.set_minecraft("1.20.1").unwrap();
+        assert_eq!(pack.version(MINECRAFT), Some("1.20.1"));
+        assert!(!pack.is_custom(MINECRAFT));
+        assert!(!root.path().join("patches/net.minecraft.json").exists());
+        assert!(pack.components().any(|(uid, _)| uid == "custom.unknown"));
     }
 
     #[test]
