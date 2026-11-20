@@ -662,7 +662,6 @@ impl Launcher {
     }
 
     pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
-        let libraries_dir = self.paths.libraries_dir();
         if profile.component_main_jar.is_none() {
             self.ensure_client_jar(&profile.minecraft_version).await?;
         }
@@ -688,7 +687,7 @@ impl Launcher {
                     )
                 })?;
             }
-            if dest.exists() || queued.contains(&dest) {
+            if queued.contains(&dest) || (dest.exists() && lib.sha1.is_none()) {
                 continue;
             }
             if let Some(url) = &lib.url {
@@ -698,7 +697,11 @@ impl Launcher {
                     req = req.with_sha1(sha1.clone());
                 }
                 requests.push(req);
-            } else if !dest.exists() {
+            } else if dest.exists() {
+                if let Some(sha1) = &lib.sha1 {
+                    Downloader::verify_sha1(&dest, sha1)?;
+                }
+            } else {
                 return Err(std::io::Error::other(format!(
                     "Missing library {}: {}",
                     lib.spec,
@@ -1295,6 +1298,46 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn prepare_revalidates_cached_artifacts_after_checksum_edits() {
+        use sha1::{Digest, Sha1};
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths { root: dir.path().into() };
+        let instance = crate::InstanceList::create(&paths, "Cache", "default", "1.20.1").unwrap();
+        let settings = LaunchSettings::for_instance(&instance, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let client = launcher.client_jar_path("1.20.1");
+        std::fs::create_dir_all(client.parent().unwrap()).unwrap();
+        std::fs::write(client, b"client").unwrap();
+        let cached = instance.root.join("libraries/artifact.jar");
+        std::fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        std::fs::write(&cached, b"old jar").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/artifact.jar", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            connection.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut request = [0; 4096];
+            connection.read(&mut request).unwrap();
+            connection.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nnew jar").unwrap();
+        });
+        let mut profile = LaunchProfile {
+            minecraft_version: "1.20.1".into(),
+            component_artifacts: vec![crate::profile::ResolvedLibrary {
+                spec: "test:artifact:1".into(), path: cached.clone(), url: Some(url),
+                sha1: Some(hex::encode(Sha1::digest(b"new jar"))), native: false,
+            }],
+            ..Default::default()
+        };
+        launcher.prepare_files(&profile, &settings).await.unwrap();
+        server.join().unwrap();
+        assert_eq!(std::fs::read(&cached).unwrap(), b"new jar");
+        launcher.prepare_files(&profile, &settings).await.unwrap();
+        profile.component_artifacts[0].url = None;
+        profile.component_artifacts[0].sha1 = Some(hex::encode(Sha1::digest(b"different jar")));
+        assert!(launcher.prepare_files(&profile, &settings).await.unwrap_err().to_string().contains("checksum mismatch"));
+    }
     #[test]
     fn jvm_only_overlays_preserve_legacy_game_arguments() {
         let dir = tempfile::tempdir().unwrap();
