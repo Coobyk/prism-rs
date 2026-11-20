@@ -302,6 +302,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn skins_long_duplicate_names_survive_reload() {
+        for name in ["a".repeat(100), "é".repeat(100)] {
+            let root = tempfile::tempdir().unwrap();
+            let paths = Paths {
+                root: root.path().into(),
+            };
+            let mut library = SkinLibrary::load(&paths).unwrap();
+            let bytes = png(64, 64);
+            for _ in 0..12 {
+                let skin = library
+                    .import_bytes(&name, &bytes, SkinModel::Slim, None)
+                    .unwrap();
+                assert!(skin.name.chars().count() <= 100);
+                assert_eq!(sanitized(&skin.name), skin.name);
+            }
+            let renamed = library.rename(&name, &name).unwrap();
+            assert!(renamed.chars().count() <= 100);
+            let loaded = SkinLibrary::load(&paths).unwrap();
+            assert_eq!(loaded.list().len(), 12);
+            assert!(loaded
+                .list()
+                .iter()
+                .all(|skin| skin.model == SkinModel::Slim));
+            assert_eq!(
+                loaded
+                    .list()
+                    .iter()
+                    .map(|s| s.name.clone())
+                    .collect::<std::collections::HashSet<_>>()
+                    .len(),
+                12
+            );
+        }
+    }
+
     #[tokio::test]
     async fn skins_api_upload_capes_profile_and_errors() {
         let dir = tempfile::tempdir().unwrap();
@@ -824,7 +860,9 @@ impl SkinLibrary {
             || self.index.skins.iter().any(|s| s.name == candidate)
         {
             n += 1;
-            candidate = format!("{base}{n}");
+            let suffix = n.to_string();
+            let stem: String = base.chars().take(100 - suffix.len()).collect();
+            candidate = format!("{stem}{suffix}");
         }
         candidate
     }
