@@ -679,7 +679,7 @@ impl Launcher {
             .chain(profile.component_artifacts.iter())
             .chain(profile.component_main_jar.iter())
         {
-            let dest = libraries_dir.join(&lib.path);
+            let dest = self.library_path(settings, &lib.path);
             if lib.path.is_absolute() && lib.url.is_none() {
                 crate::component::check_local(&dest).map_err(|e| {
                     std::io::Error::new(
@@ -760,7 +760,7 @@ impl Launcher {
         let natives_dir = profile.natives_override.clone().unwrap_or_else(|| settings.game_dir.join("bin"));
         tokio::fs::create_dir_all(&natives_dir).await?;
         for native in &profile.natives {
-            let jar = libraries_dir.join(&native.path);
+            let jar = self.library_path(settings, &native.path);
             if jar.exists() {
                 extract_natives(&jar, &natives_dir)?;
             }
@@ -770,6 +770,15 @@ impl Launcher {
 
     pub fn client_jar_path(&self, version: &str) -> PathBuf {
         self.paths.cache_dir().join("versions").join(version).join(format!("{version}.jar"))
+    }
+
+    fn library_path(&self, settings: &LaunchSettings, path: &Path) -> PathBuf {
+        let installed = settings.game_dir.join("libraries").join(path);
+        if installed.exists() {
+            installed
+        } else {
+            self.paths.libraries_dir().join(path)
+        }
     }
 
     /// Resolve the game and loader, select Java, and prepare the files for an installed instance.
@@ -1026,14 +1035,7 @@ impl Launcher {
         let mut classpath: Vec<String> = profile
             .classpath()
             .iter()
-            .map(|p| {
-                let in_instance = settings.game_dir.join("libraries").join(p);
-                if in_instance.exists() {
-                    in_instance.to_string_lossy().to_string()
-                } else {
-                    libraries_dir.join(p).to_string_lossy().to_string()
-                }
-            })
+            .map(|p| self.library_path(settings, p).to_string_lossy().to_string())
             .collect();
         classpath.push(client_jar.to_string_lossy().to_string());
         classpath.extend(profile.extra_classpath.iter().map(|path| path.to_string_lossy().into_owned()));
@@ -1293,6 +1295,35 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn prepare_uses_installer_local_libraries_without_download_urls() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths { root: dir.path().into() };
+        let instance = crate::InstanceList::create(&paths, "Forge", "default", "1.7.10").unwrap();
+        let settings = LaunchSettings::for_instance(&instance, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let relative = PathBuf::from("org/legacy/forge/1.7.10/forge.jar");
+        let installed = settings.game_dir.join("libraries").join(&relative);
+        std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        std::fs::write(&installed, b"installed library").unwrap();
+        let client = launcher.client_jar_path("1.7.10");
+        std::fs::create_dir_all(client.parent().unwrap()).unwrap();
+        std::fs::write(client, b"client").unwrap();
+        let profile = LaunchProfile {
+            minecraft_version: "1.7.10".into(),
+            libraries: vec![crate::profile::ResolvedLibrary {
+                spec: "org.legacy:forge:1.7.10".into(), path: relative.clone(),
+                url: None, sha1: None, native: false,
+            }],
+            ..Default::default()
+        };
+        launcher.prepare_files(&profile, &settings).await.unwrap();
+        let command = launcher.build_command(&settings, None, &profile).command;
+        assert!(command.iter().any(|arg| arg.contains(installed.to_str().unwrap())));
+        assert!(!launcher.paths.libraries_dir().join(relative).exists());
+        std::fs::remove_file(installed).unwrap();
+        assert!(launcher.prepare_files(&profile, &settings).await.unwrap_err().to_string().contains("Missing library"));
+    }
     use super::*;
 
     #[cfg(unix)]
