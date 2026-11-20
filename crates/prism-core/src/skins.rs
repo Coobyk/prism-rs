@@ -268,6 +268,41 @@ mod tests {
     const PROFILE: &[u8] = br#"{"id":"uuid","name":"Player","skins":[{"id":"texture","state":"ACTIVE","url":"https://example.com/texture","variant":"SLIM"}],"capes":[{"id":"cape","alias":"Cape","url":"https://example.com/cape","state":"ACTIVE"}]}"#;
 
     #[tokio::test]
+    async fn skins_untrusted_sources_upload_saved_png() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: root.path().into(),
+        };
+        let mut library = SkinLibrary::load(&paths).unwrap();
+        let bytes = png(64, 64);
+        let (source, download) = server("200 OK", &bytes);
+        let mut skin = library.import_url("download", &source).await.unwrap();
+        download.join().unwrap();
+        assert_eq!(skin.url, None);
+        assert_eq!(skin.texture_id, None);
+        accounts(&paths.accounts_file(), AccountType::Msa);
+        let file = library.path(&skin.name).unwrap();
+        for url in [
+            None,
+            Some("https://expired.example/skin.png?signature=old"),
+            Some("https://textures.minecraft.net.evil/texture/id"),
+            Some("ftp://textures.minecraft.net/texture/id"),
+        ] {
+            skin.url = url.map(str::to_owned);
+            let (base, upload) = server("200 OK", PROFILE);
+            let mut client = SkinClient::new();
+            client.base_url = base;
+            client
+                .upload_skin(&paths.accounts_file(), "account", &skin, &file)
+                .await
+                .unwrap();
+            let (headers, body) = upload.join().unwrap();
+            assert!(headers.to_ascii_lowercase().contains("multipart/form-data"));
+            assert!(body.windows(bytes.len()).any(|part| part == bytes));
+        }
+    }
+
+    #[tokio::test]
     async fn skins_api_upload_capes_profile_and_errors() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("accounts.json");
@@ -301,7 +336,7 @@ mod tests {
             AccountList::load(&path).accounts[0].skin_url.as_deref(),
             Some("https://example.com/texture")
         );
-        skin.url = Some("https://example.com/known".into());
+        skin.url = Some("https://textures.minecraft.net/texture/known".into());
         let (base, handle) = server("200 OK", PROFILE);
         client.base_url = base;
         client
@@ -312,7 +347,7 @@ mod tests {
         assert!(headers.starts_with("POST /minecraft/profile/skins "));
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-            serde_json::json!({"variant":"slim","url":"https://example.com/known"})
+            serde_json::json!({"variant":"slim","url":"https://textures.minecraft.net/texture/known"})
         );
         let (base, handle) = server("204 No Content", b"");
         client.base_url = base;
@@ -541,7 +576,7 @@ impl SkinClient {
     ) -> Result<MinecraftProfile, SkinError> {
         let token = self.token(accounts_path, account_id).await?;
         let request = self.request(reqwest::Method::POST, "/minecraft/profile/skins", &token);
-        let request = if let Some(url) = skin.url.as_ref().filter(|u| !u.is_empty()) {
+        let request = if let Some(url) = skin.url.as_ref().filter(|u| is_mojang_texture_url(u)) {
             request.json(&serde_json::json!({"variant": skin.model.variant(), "url": url}))
         } else {
             let bytes = fs::read(file)?;
@@ -711,6 +746,19 @@ fn sanitized(name: &str) -> String {
     }
 }
 
+fn is_mojang_texture_url(url: &str) -> bool {
+    reqwest::Url::parse(url).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host_str() == Some("textures.minecraft.net")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url
+                .path()
+                .strip_prefix("/texture/")
+                .is_some_and(|id| !id.is_empty() && !id.contains('/'))
+    })
+}
+
 impl SkinLibrary {
     pub fn load(paths: &Paths) -> Result<Self, SkinError> {
         let dir = paths.skins_dir();
@@ -799,6 +847,7 @@ impl SkinLibrary {
         url: Option<String>,
     ) -> Result<Skin, SkinError> {
         validate_png(bytes)?;
+        let url = url.filter(|url| is_mojang_texture_url(url));
         let skin = Skin {
             name: self.unique_name(name),
             model,
