@@ -8,6 +8,7 @@ mod cli_launch;
 mod dialogs;
 mod ftb_page;
 mod help_menu;
+mod i18n;
 mod instance_lock;
 mod instance_window;
 mod instance_settings_page;

@@ -197,12 +197,16 @@ Working today:
 - ATLauncher: browse and install public ATLauncher packs from Add Instance.
 - Themes: Settings > Appearance picks System/Dark/Bright or a custom PrismLauncher-format
   `themes/<name>/theme.json` (colors only, no QSS), plus icon themes from `iconthemes/<name>/`.
+- Translations: Settings > Language changes the main window and launcher settings
+  immediately. English, Deutsch, Français and 日本語 are bundled; unlocalized
+  text remains in English. Choose System default to follow the system locale.
 
-Not yet at parity (tracked in the issue tracker of your heart): translations,
-updater and per-instance console window options. External tools include JProfiler,
+Not yet at parity (tracked in the issue tracker of your heart): updater and
+per-instance console window options. External tools include JProfiler,
 JVisualVM (also via `launch <instance-id> --profiler <jprofiler|jvisualvm>`), and MCEdit.
 
 ## License
 
 MIT (see LICENSE). The original PrismLauncher is GPL-3.0; this is a clean-room reimplementation in
 a different language, following its feature set and file formats for interoperability.
+The [bundled translations](crates/prism-ui/src/translations/) include Apache-2.0 material.

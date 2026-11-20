@@ -63,42 +63,45 @@ impl MainWindow {
 
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = crate::theme::Palette::get(cx);
+        let locale = self.app.read(cx).locale;
         div()
             .id("main-toolbar")
             .flex()
+            .flex_wrap()
             .items_center()
             .gap_1()
             .px_2()
-            .h(px(40.))
+            .min_h(px(40.))
+            .py_1()
             .bg(palette.panel)
             .border_b_1()
             .border_color(palette.border)
             .child(
-                crate::theme::button("add-instance", Icon::New, "Add Instance", cx)
+                crate::theme::button("add-instance", Icon::New, locale.text("Add Instance"), cx)
                     .on_click(cx.listener(Self::on_add_instance)),
             )
             .child(
-                crate::theme::button("import-instance", Icon::Import, "Import", cx)
+                crate::theme::button("import-instance", Icon::Import, locale.text("Import"), cx)
                     .on_click(cx.listener(Self::on_import)),
             )
             .child(
-                crate::theme::button("import-technic", Icon::Packages, "Technic Packs", cx)
+                crate::theme::button("import-technic", Icon::Packages, locale.text("Technic Packs"), cx)
                     .on_click(cx.listener(|this, _, _, cx| {
                         crate::technic_window::open(this.app.clone(), cx.entity().downgrade(), cx);
                     })),
             )
             .child(toolbar_separator(palette))
             .child(
-                crate::theme::button("folders", Icon::Folder, "Folders", cx)
+                crate::theme::button("folders", Icon::Folder, locale.text("Folders"), cx)
                     .on_click(cx.listener(Self::on_view_instances_folder)),
             )
             .child(
-                crate::theme::button("settings", Icon::Settings, "Settings", cx)
+                crate::theme::button("settings", Icon::Settings, locale.text("Settings"), cx)
                     .on_click(cx.listener(Self::on_open_settings)),
             )
-            .child(crate::help_menu::button(self.app.read(cx).paths.clone(), cx))
+            .child(crate::help_menu::button(self.app.read(cx).paths.clone(), locale, cx))
             .child(
-                crate::theme::button("check-updates", Icon::Update, "Check for Updates", cx)
+                crate::theme::button("check-updates", Icon::Update, locale.text("Check for Updates"), cx)
                     .on_click(|_, _, _| {}),
             )
             .child(
@@ -139,7 +142,7 @@ impl MainWindow {
         let app = self.app.read(cx);
         match app.accounts.active_account() {
             Some(acc) => format!("👤 {}", acc.player_name),
-            None => "Accounts".to_string(),
+            None => self.app.read(cx).locale.text("Accounts").to_owned(),
         }
     }
 
@@ -206,7 +209,7 @@ impl MainWindow {
                 .items_center()
                 .justify_center()
                 .text_color(palette.muted_text)
-                .child("Add an instance to get started")
+                .child(self.app.read(cx).locale.text("Add an instance to get started"))
                 .into_any_element();
         }
 
@@ -331,6 +334,7 @@ impl MainWindow {
         let palette = crate::theme::Palette::get(cx);
         let app = self.app.read(cx);
         let selected = app.selected.clone();
+        let locale = app.locale;
         let name = selected
             .as_deref()
             .and_then(|id| app.instances.get(id))
@@ -351,7 +355,10 @@ impl MainWindow {
         let selected2 = selected.clone();
         let _ = selected2;
         let sidebar = div()
-            .w(px(if horizon { 224. } else { 200. }))
+            .id("instance-sidebar")
+            .w(px(232.))
+            .flex_shrink_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
             .gap_1()
@@ -364,13 +371,13 @@ impl MainWindow {
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_ellipsis()
-                    .child(if name.is_empty() { "No selection" } else { name.as_str() }.to_string()),
+                    .child(if name.is_empty() { locale.text("No selection").to_owned() } else { name }),
             )
             .child(
                 div()
                     .text_size(px(11.))
                     .text_color(palette.muted_text)
-                    .child(if group.is_empty() { "No group" } else { group.as_str() }.to_string()),
+                    .child(if group.is_empty() { locale.text("No group").to_owned() } else { group }),
             )
             .child(div().w_full().h(px(1.)).my_1().bg(palette.strong_border))
             .child(self.sidebar_button(cx, "rename", "Rename", enabled).on_click(cx.listener(Self::on_rename)))
@@ -394,7 +401,7 @@ impl MainWindow {
                     .child(
                         Button::new("launch-options")
                             .label("▾")
-                            .accessibility_label("Launch options")
+                            .accessibility_label(locale.text("Launch options"))
                             .rounded_l_none()
                             .disabled(!enabled || is_running)
                             .dropdown_menu_with_anchor(Anchor::TopRight, {
@@ -410,11 +417,11 @@ impl MainWindow {
                                         let valid = !horizon && tool.check(&tool.path(&settings)).is_ok();
                                         let app = app.clone();
                                         let label = if valid {
-                                            format!("Launch with {}", tool.name())
+                                            locale.format("Launch with {0}", &[tool.name()])
                                         } else {
-                                            format!(
-                                                "{} — not set up; Settings → External Tools",
-                                                tool.name()
+                                            locale.format(
+                                                "{0} — not set up; Settings → External Tools",
+                                                &[tool.name()],
                                             )
                                         };
                                         menu =
@@ -513,7 +520,8 @@ impl MainWindow {
         sidebar
     }
 
-    fn sidebar_button(&self, cx: &gpui::App, id: &str, label: &str, enabled: bool) -> Button {
+    fn sidebar_button(&self, cx: &gpui::App, id: &str, label: &'static str, enabled: bool) -> Button {
+        let label = self.app.read(cx).locale.text(label);
         let key = match id {
             "view-folder" => Icon::Folder,
             "kill" => Icon::Kill,
@@ -528,14 +536,14 @@ impl MainWindow {
             "shortcut" => Icon::Shortcut,
             _ => {
                 return Button::new(SharedString::from(format!("sb-{id}")))
-                    .label(label.to_owned())
+                    .label(label)
                     .disabled(!enabled)
             }
         };
         let mut btn = crate::theme::button(
             SharedString::from(format!("sb-{id}")),
             key,
-            label.to_owned(),
+            label,
             cx,
         );
         if !enabled {
@@ -602,8 +610,8 @@ impl MainWindow {
                 return;
             };
             let message = match crate::shortcut::create(&app.paths, instance) {
-                Ok(path) => format!("Created shortcut: {}", path.display()),
-                Err(error) => format!("Could not create shortcut: {error}"),
+                Ok(path) => app.locale.format("Created shortcut: {0}", &[&path.display().to_string()]),
+                Err(error) => app.locale.format("Could not create shortcut: {0}", &[&error.to_string()]),
             };
             app.toast = Some((message, std::time::Instant::now()));
         });
@@ -663,7 +671,7 @@ impl MainWindow {
                 let _lock = match crate::instance_lock::acquire(&app.paths, instance) {
                     Ok(lock) => lock,
                     Err(error) => {
-                        app.toast = Some((format!("Could not remove instance: {error}"), std::time::Instant::now()));
+                        app.toast = Some((app.locale.format("Could not remove instance: {0}", &[&error.to_string()]), std::time::Instant::now()));
                         return;
                     }
                 };
@@ -712,7 +720,7 @@ impl MainWindow {
                     .h(px(26.))
                     .bg(palette.alternate)
                     .text_color(palette.base_text)
-                    .child(div().text_size(px(12.)).child("Console"))
+                    .child(div().text_size(px(12.)).child(self.app.read(cx).locale.text("Console")))
                     .child(
                         div()
                             .id("console-close")
@@ -750,6 +758,7 @@ impl MainWindow {
 
     fn render_bottom_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = crate::theme::Palette::get(cx);
+        let locale = self.app.read(cx).locale;
         let description = self.app.read(cx).status_description();
         let total_played: u64 = self
             .app
@@ -765,7 +774,7 @@ impl MainWindow {
             .news
             .first()
             .map(|n| n.title.clone())
-            .unwrap_or_else(|| "No news".to_string());
+            .unwrap_or_else(|| locale.text("No news").to_owned());
 
         div()
             .flex()
@@ -784,17 +793,17 @@ impl MainWindow {
                     .bg(palette.panel)
                     .text_size(px(12.))
                     .text_color(palette.muted_text)
-                    .child("News")
-                    .child(latest_news)
-                    .child(div().flex_1())
-                    .child("More News…"),
+                    .child(div().flex_shrink_0().child(locale.text("News")))
+                    .child(div().flex_1().min_w_0().truncate().child(latest_news))
+                    .child(div().flex_shrink_0().child(locale.text("More News…"))),
             )
             .child(
                 // Status bar
                 div()
                     .flex()
                     .items_center()
-                    .h(px(22.))
+                    .min_h(px(22.))
+                    .py_1()
                     .px_2()
                     .gap_4()
                     .bg(palette.alternate)
@@ -803,7 +812,10 @@ impl MainWindow {
                     .text_color(palette.base_muted_text)
                     .child(description)
                     .child(div().flex_1())
-                    .child(format!("Total play time: {}", format_play_time(total_played))),
+                    .child(div().flex_shrink_0().child(locale.format(
+                        "Total play time: {0}",
+                        &[&format_play_time(locale, total_played)],
+                    ))),
             )
     }
 }
