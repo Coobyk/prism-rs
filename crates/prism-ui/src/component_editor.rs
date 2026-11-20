@@ -18,12 +18,36 @@ pub(super) fn open(
     uid: Option<String>,
     cx: &mut App,
 ) {
+    let adding = uid.is_none();
+    let dimensions = if adding {
+        size(px(480.), px(300.))
+    } else {
+        size(px(900.), px(680.))
+    };
     open_window(
         WindowOptions {
-            window_min_size: Some(Size {
-                width: px(680.),
-                height: px(520.),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                None, dimensions, cx,
+            ))),
+            window_min_size: Some(if adding {
+                dimensions
+            } else {
+                size(px(680.), px(520.))
             }),
+            kind: if adding {
+                WindowKind::Dialog
+            } else {
+                WindowKind::Normal
+            },
+            is_resizable: !adding,
+            app_id: Some(
+                if adding {
+                    "prism-rs-add-component"
+                } else {
+                    "prism-rs-component-editor"
+                }
+                .into(),
+            ),
             ..Default::default()
         },
         cx,
@@ -70,6 +94,10 @@ impl Editor {
         });
         cx.subscribe(&text, |_, _, _: &InputEvent, cx| cx.notify())
             .detach();
+        cx.subscribe(&name, |_, _, _: &InputEvent, cx| cx.notify())
+            .detach();
+        cx.subscribe(&identifier, |_, _, _: &InputEvent, cx| cx.notify())
+            .detach();
         let ready = uid.is_none();
         if let Some(uid) = uid.clone() {
             let pack = pack.clone();
@@ -112,13 +140,7 @@ impl Editor {
         if self.busy || self.confirming_close {
             return;
         }
-        let dirty = if self.uid.is_some() {
-            self.text.read(cx).value().as_str() != self.original
-        } else {
-            self.ready
-                && (!self.name.read(cx).value().is_empty()
-                    || !self.identifier.read(cx).value().is_empty())
-        };
+        let dirty = self.uid.is_some() && self.text.read(cx).value().as_str() != self.original;
         if !dirty {
             window.remove_window();
             return;
@@ -156,32 +178,57 @@ impl Editor {
         });
         self.busy = true;
         cx.spawn_in(window, async move |this, cx| {
-            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
-            let _ = this.update_in(cx, |this, _, cx| {
+            let result = task
+                .await
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string()));
+            let _ = this.update_in(cx, |this, window, cx| {
                 this.busy = false;
                 match result {
                     Ok(pack) => {
                         this.pack = pack;
                         if this.uid.is_none() {
-                            this.ready = false;
-                            this.status = "Component created. Close this window and use Edit to customize it.".into();
+                            window.remove_window();
                         } else {
                             this.original = saving_text;
                             this.status = format!("Saved {saving_uid}.");
                         }
-                        let _ = this.parent.update(cx, |parent, cx| parent.refresh_version(cx));
+                        let _ = this
+                            .parent
+                            .update(cx, |parent, cx| parent.refresh_version(cx));
                     }
                     Err(error) => this.status = format!("Could not save: {error}"),
                 }
                 cx.notify();
             });
-        }).detach();
+        })
+        .detach();
         cx.notify();
     }
 }
 
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let adding = self.uid.is_none();
+        let identifier = self.identifier.read(cx).value().to_string();
+        let invalid = if adding {
+            if identifier.is_empty() {
+                Some("Enter a unique component UID.".to_owned())
+            } else if let Err(error) = prism_core::component::uid(&identifier) {
+                Some(error.to_string())
+            } else if self.pack.components().any(|(uid, _)| uid == identifier) {
+                Some("A component with this UID already exists.".into())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let message = invalid
+            .as_ref()
+            .filter(|_| !identifier.is_empty())
+            .unwrap_or(&self.status)
+            .clone();
         div()
             .relative()
             .size_full()
@@ -192,7 +239,7 @@ impl Render for Editor {
             .bg(rgb(0x232323))
             .text_color(rgb(0xdddddd))
             .child(
-                div().child(
+                div().font_weight(FontWeight::BOLD).child(
                     self.uid
                         .as_ref()
                         .map(|uid| format!("Edit component — {uid}"))
@@ -204,7 +251,19 @@ impl Render for Editor {
                     .flex()
                     .flex_col()
                     .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(0xaaaaaa))
+                            .child("Name"),
+                    )
                     .child(Input::new(&self.name).disabled(self.busy || !self.ready))
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(rgb(0xaaaaaa))
+                            .child("UID"),
+                    )
                     .child(Input::new(&self.identifier).disabled(self.busy || !self.ready))
             }))
             .children(self.uid.is_some().then(|| {
@@ -212,26 +271,52 @@ impl Render for Editor {
                     .id("component-editor-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .child(Textarea::new(&self.text).disabled(self.busy || !self.ready))
+                    .child(
+                        Textarea::new(&self.text)
+                            .h(relative(1.))
+                            .font_family("monospace")
+                            .disabled(self.busy || !self.ready),
+                    )
             }))
-            .child(div().child(self.status.clone()))
+            .children((!message.is_empty()).then(|| {
+                div()
+                    .text_size(px(12.))
+                    .text_color(if invalid.is_some() || message.starts_with("Could not") {
+                        rgb(0xf0a0a0)
+                    } else {
+                        rgb(0xaaaaaa)
+                    })
+                    .child(message)
+            }))
             .child(
                 div()
                     .flex()
+                    .justify_end()
+                    .mt_auto()
                     .gap_2()
+                    .children(adding.then(|| {
+                        Button::new("component-cancel")
+                            .label("Cancel")
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                    }))
                     .child(
                         Button::new("component-save")
-                            .label("Save")
-                            .disabled(!self.ready || self.busy)
+                            .label(if adding { "Add" } else { "Save" })
+                            .disabled(
+                                !self.ready
+                                    || self.busy
+                                    || invalid.is_some()
+                                    || (adding && self.name.read(cx).value().trim().is_empty()),
+                            )
                             .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
                     )
-                    .child(
+                    .children((!adding).then(|| {
                         Button::new("component-close")
                             .label("Close")
                             .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
-                    ),
+                            .on_click(cx.listener(|this, _, window, cx| this.close(window, cx)))
+                    })),
             )
             .children(self.confirming_close.then(|| {
                 div()

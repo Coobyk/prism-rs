@@ -11,7 +11,7 @@ use prism_core::{
     profile::LaunchProfile,
     version_components::{version_id, ArchiveKind, Pack, MINECRAFT},
 };
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoaderKind {
@@ -98,6 +98,7 @@ pub(super) struct VersionPage {
     dialog_id: u64,
     customize_reason: Option<String>,
     confirmation: Option<(String, ComponentAction)>,
+    component_names: BTreeMap<String, String>,
 }
 
 impl VersionPage {
@@ -195,9 +196,7 @@ impl InstanceWindow {
                     Ok(pack) => {
                         this.version_editor.pack = Some(pack);
                         this.version_editor.message = "Component changes saved.".into();
-                        if matches!(action, ComponentAction::Revert) {
-                            this.refresh_version(cx);
-                        }
+                        this.refresh_version(cx);
                     }
                     Err(error) => this.version_editor.message = error,
                 }
@@ -275,6 +274,7 @@ impl InstanceWindow {
                     Ok((pack, message)) => {
                         this.version_editor.pack = Some(pack);
                         this.version_editor.message = message;
+                        this.refresh_version(cx);
                     }
                     Err(error) => this.version_editor.message = error,
                 }
@@ -297,17 +297,24 @@ impl InstanceWindow {
         let load = app
             .runtime
             .handle()
-            .spawn_blocking(move || Pack::load(&root));
+            .spawn_blocking(move || {
+                let pack = Pack::load(&root)?;
+                let names = pack.components().filter_map(|(uid, _)| {
+                    let patch = pack.patch(uid).ok().flatten()?;
+                    Some((uid.to_owned(), patch.0.get("name")?.as_str()?.to_owned()))
+                }).collect::<BTreeMap<_, _>>();
+                Ok::<_, std::io::Error>((pack, names))
+            });
         let launcher = Launcher::new(app.paths.clone(), app.runtime.downloader.clone());
         let task = app.runtime.spawn(async move {
-            let pack = load.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+            let (pack, names) = load.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
             let reason = if !pack.is_custom(MINECRAFT) {
                 match pack.version(MINECRAFT) {
                     Some(version) => launcher.component_document(MINECRAFT, version).await.err().map(|e| e.to_string()),
                     None => Some("Minecraft version is missing.".into()),
                 }
             } else { None };
-            Ok::<_, String>((pack, reason))
+            Ok::<_, String>((pack, reason, names))
         });
         self.version_editor.busy = true;
         self.version_editor.pack = None;
@@ -319,9 +326,10 @@ impl InstanceWindow {
             let _ = this.update(cx, |this, cx| {
                 this.version_editor.busy = false;
                 match result {
-                    Ok((pack, reason)) => {
+                    Ok((pack, reason, names)) => {
                         this.version_editor.pack = Some(pack);
                         this.version_editor.customize_reason = reason;
+                        this.version_editor.component_names = names;
                     }
                     Err(error) => {
                         this.version_editor.message = format!("Could not read components: {error}")
@@ -588,35 +596,12 @@ impl InstanceWindow {
                         cx.listener(move |this, _, window, cx| this.edit_version(edit, window, cx)),
                     )
                 };
-                let m = pack.version(MINECRAFT).unwrap_or("1.20.1");
-                let lwjgl = pack
-                    .lwjgl()
-                    .map(|(_, version)| version)
-                    .unwrap_or("Minecraft default");
-                let mut rows = div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(row("Minecraft", m).child(action(
-                        "version-minecraft",
-                        "Change",
-                        Edit::Minecraft,
-                    )))
-                    .child(row("LWJGL", lwjgl).child(action(
-                        "version-lwjgl",
-                        "Change",
-                        Edit::Lwjgl,
-                    )));
-                let mut has_loader = false;
-                for (uid, version) in pack.components() {
-                    if matches!(
-                        uid,
-                        MINECRAFT
-                            | prism_core::version_components::LWJGL
-                            | prism_core::version_components::LWJGL3
-                    ) {
-                        continue;
-                    }
+                let mut components: Vec<_> = pack.components().collect();
+                if pack.lwjgl().is_none() {
+                    components.insert(components.len().min(1), ("", "Minecraft default"));
+                }
+                let mut rows = div().flex().flex_col().gap_2();
+                for (index, (uid, version)) in components.into_iter().enumerate() {
                     let kind = [
                         LoaderKind::Fabric,
                         LoaderKind::Quilt,
@@ -625,9 +610,49 @@ impl InstanceWindow {
                     ]
                     .into_iter()
                     .find(|kind| kind.loader(String::new()).uid() == uid);
-                    has_loader |= kind.is_some();
-                    rows = rows.child(row(kind.map(LoaderKind::name).unwrap_or(uid), version));
+                    let lwjgl = uid.is_empty() || matches!(uid,
+                        prism_core::version_components::LWJGL | prism_core::version_components::LWJGL3);
+                    let fallback = if uid == MINECRAFT { "Minecraft" } else if lwjgl { "LWJGL" } else { kind.map(LoaderKind::name).unwrap_or(uid) };
+                    let name = state.component_names.get(uid).map(String::as_str).filter(|name| !name.trim().is_empty()).unwrap_or(fallback);
+                    let custom = pack.is_custom(uid);
+                    let reason = if uid == MINECRAFT { state.customize_reason.clone() } else { Some("Equivalent component JSON unavailable".into()) };
+                    let mut controls = component_row(name, uid, version, custom,
+                        (!custom && !lwjgl).then_some(reason.as_deref()).flatten());
+                    let edit = if uid == MINECRAFT { Some(Edit::Minecraft) } else if lwjgl { Some(Edit::Lwjgl) } else { kind.map(Edit::SetLoader) };
+                    if let Some(edit) = edit {
+                        controls = controls.child(Button::new(("component-change", index)).label("Change")
+                            .disabled(blocked).on_click(cx.listener(move |this, _, window, cx| this.edit_version(edit, window, cx))));
+                    }
+                    if custom {
+                        let edit_uid = uid.to_owned();
+                        controls = controls.child(Button::new(("component-edit", index)).label("Edit").disabled(blocked)
+                            .on_click(cx.listener(move |this, _, _, cx| this.open_component_editor(Some(edit_uid.clone()), cx))));
+                        let meta = pack.has_meta(uid);
+                        let uid = uid.to_owned();
+                        controls = controls.child(Button::new(("component-remove", index)).label(if meta { "Revert" } else { "Remove" }).disabled(blocked)
+                            .on_click(cx.listener(move |this, _, window, cx| this.component_action(uid.clone(),
+                                if meta { ComponentAction::Revert } else { ComponentAction::Remove }, window, cx))));
+                    } else if !lwjgl {
+                        let uid = uid.to_owned();
+                        controls = controls.child(Button::new(("component-customize", index)).label("Customize")
+                            .disabled(blocked || reason.is_some()).on_click(cx.listener(move |this, _, window, cx|
+                                this.component_action(uid.clone(), ComponentAction::Customize, window, cx))));
+                        if kind.is_some() {
+                            controls = controls.child(Button::new(("loader-remove", index)).label("Remove").disabled(blocked)
+                                .on_click(cx.listener(|this, _, window, cx| this.edit_version(Edit::RemoveLoader, window, cx))));
+                        }
+                    }
+                    rows = rows.child(controls);
                 }
+                rows = rows.child(div().flex().gap_2().mt_1()
+                    .child(Button::new("component-import").label("Import components").disabled(blocked)
+                        .on_click(cx.listener(|this, _, _, cx| this.import_components(ComponentFile::Json, cx))))
+                    .child(Button::new("component-empty").label("Add empty").disabled(blocked)
+                        .on_click(cx.listener(|this, _, _, cx| this.open_component_editor(None, cx))))
+                    .child(Button::new("component-client").label("Replace Minecraft.jar").disabled(blocked)
+                        .on_click(cx.listener(|this, _, _, cx| this.import_components(ComponentFile::ClientJar, cx))))
+                    .child(Button::new("component-agents").label("Add agents").disabled(blocked)
+                        .on_click(cx.listener(|this, _, _, cx| this.import_components(ComponentFile::Agent, cx)))));
                 rows = rows.child(
                     div()
                         .flex()
@@ -653,9 +678,7 @@ impl InstanceWindow {
                             "NeoForge",
                             Edit::SetLoader(LoaderKind::NeoForge),
                         ))
-                        .children(has_loader.then(|| {
-                            action("version-remove-loader", "Remove loader", Edit::RemoveLoader)
-                        })),
+                        ,
                 );
                 for (kind, title, button, id, detail) in [
                     (
@@ -708,107 +731,6 @@ impl InstanceWindow {
                                 .child(control("Remove", Edit::Remove(index), false)),
                         );
                     }
-                }
-                rows = rows.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            Button::new("component-import")
-                                .label("Import components")
-                                .disabled(blocked)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.import_components(ComponentFile::Json, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("component-empty")
-                                .label("Add empty")
-                                .disabled(blocked)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.open_component_editor(None, cx)
-                                })),
-                        ),
-                );
-                rows = rows.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(
-                            Button::new("component-client")
-                                .label("Replace Minecraft.jar")
-                                .disabled(blocked)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.import_components(ComponentFile::ClientJar, cx)
-                                })),
-                        )
-                        .child(
-                            Button::new("component-agents")
-                                .label("Add agents")
-                                .disabled(blocked)
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.import_components(ComponentFile::Agent, cx)
-                                })),
-                        ),
-                );
-                rows = rows.child(div().child("Component patches"));
-                for (index, (uid, version)) in pack.components().enumerate() {
-                    let uid = uid.to_owned();
-                    let mut controls = row(&uid, version);
-                    if pack.is_custom(&uid) {
-                        let edit_uid = uid.clone();
-                        controls = controls.child(
-                            Button::new(("component-edit", index))
-                                .label("Edit")
-                                .disabled(blocked)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.open_component_editor(Some(edit_uid.clone()), cx)
-                                })),
-                        );
-                        let meta = pack.has_meta(&uid);
-                        let uid = uid.clone();
-                        controls = controls.child(
-                            Button::new(("component-remove", index))
-                                .label(if meta { "Revert" } else { "Remove" })
-                                .disabled(blocked)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.component_action(
-                                        uid.clone(),
-                                        if meta {
-                                            ComponentAction::Revert
-                                        } else {
-                                            ComponentAction::Remove
-                                        },
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        );
-                    } else {
-                        let reason = if uid == MINECRAFT { state.customize_reason.clone() } else { Some("Equivalent component JSON unavailable".into()) };
-                        let supported = reason.is_none();
-                        controls = controls.child(
-                            Button::new(("component-customize", index))
-                                .label("Customize")
-                                .disabled(blocked || !supported)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.component_action(
-                                        uid.clone(),
-                                        ComponentAction::Customize,
-                                        window,
-                                        cx,
-                                    )
-                                })),
-                        );
-                        if !supported {
-                            controls = controls.child(
-                                div()
-                                    .text_size(px(11.))
-                                    .child(reason.unwrap_or_default()),
-                            );
-                        }
-                    }
-                    rows = rows.child(controls);
                 }
                 rows
             }));
@@ -931,6 +853,18 @@ impl InstanceWindow {
                     ),
             )
     }
+}
+
+fn component_row(name: &str, uid: &str, version: &str, custom: bool, reason: Option<&str>) -> Div {
+    div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(rgb(0x2b2b2b))
+        .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
+            .child(div().flex().items_center().gap_2()
+                .child(div().min_w_0().text_ellipsis().child(name.to_owned()))
+                .children(custom.then(|| div().text_size(px(11.)).text_color(rgb(0xaaaaaa)).child("custom"))))
+            .child(div().text_size(px(12.)).text_color(rgb(0xaaaaaa)).text_ellipsis()
+                .child(if uid.is_empty() { "Provided by Minecraft".to_owned() } else { uid.to_owned() }))
+            .children(reason.map(|reason| div().text_size(px(11.)).text_color(rgb(0xaaaaaa)).text_ellipsis().child(reason.to_owned()))))
+        .child(div().flex_shrink_0().text_color(rgb(0x8fb4d9)).child(version.to_owned()))
 }
 
 fn row(name: &str, value: &str) -> Div {
