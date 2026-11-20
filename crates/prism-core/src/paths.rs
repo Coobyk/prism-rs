@@ -1,6 +1,8 @@
 //! Launcher data directory layout, mirroring PrismLauncher's directory
 //! structure (Application::m_root / data paths).
 
+use std::fs::{self, File, OpenOptions};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Where the launcher keeps its data. Overridable with `PRISM_RS_DATA`.
@@ -68,6 +70,41 @@ impl Paths {
         self.cache_dir().join("metadata")
     }
 
+    fn metadata_lock_file(&self) -> io::Result<File> {
+        let cache = self.cache_dir();
+        fs::create_dir_all(&cache)?;
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(cache.join(".metadata.lock"))
+    }
+
+    pub fn lock_metadata_cache(&self) -> io::Result<File> {
+        let lock = self.metadata_lock_file()?;
+        fs2::FileExt::lock_shared(&lock)?;
+        Ok(lock)
+    }
+
+    pub fn clear_metadata_cache(&self) -> io::Result<()> {
+        let lock = self.metadata_lock_file()?;
+        if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
+            return if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                Err(io::Error::other(
+                    "Metadata is in use. Wait for launcher preparation or component editing to finish, then try again.",
+                ))
+            } else {
+                Err(error)
+            };
+        }
+        match fs::remove_dir_all(self.metadata_dir()) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn assets_dir(&self) -> PathBuf {
         self.cache_dir().join("assets")
     }
@@ -133,4 +170,38 @@ fn prism_data_candidates() -> Vec<PathBuf> {
         out.push(PathBuf::from(xdg).join("PrismLauncher"));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clears_only_the_metadata_cache_and_only_when_not_in_use() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: root.path().into(),
+        };
+        let metadata = paths.metadata_dir().join("net.minecraft");
+        fs::create_dir_all(&metadata).unwrap();
+        fs::write(metadata.join("1.20.1.json"), "cached version").unwrap();
+        fs::create_dir_all(paths.libraries_dir()).unwrap();
+        fs::write(paths.libraries_dir().join("library.jar"), "cached library").unwrap();
+        fs::write(paths.global_config(), "settings").unwrap();
+
+        let lock = paths.lock_metadata_cache().unwrap();
+        assert!(paths
+            .clear_metadata_cache()
+            .unwrap_err()
+            .to_string()
+            .contains("in use"));
+        assert!(metadata.join("1.20.1.json").is_file());
+        drop(lock);
+
+        paths.clear_metadata_cache().unwrap();
+        paths.clear_metadata_cache().unwrap();
+        assert!(!paths.metadata_dir().exists());
+        assert!(paths.libraries_dir().join("library.jar").is_file());
+        assert!(paths.global_config().is_file());
+    }
 }

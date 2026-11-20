@@ -452,6 +452,11 @@ impl Button {
         self
     }
 
+    pub fn dropdown_caret(mut self, visible: bool) -> Self {
+        self.inner = self.inner.dropdown_caret(visible);
+        self
+    }
+
     pub fn on_click(
         mut self,
         handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,

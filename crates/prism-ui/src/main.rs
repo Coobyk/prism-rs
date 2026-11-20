@@ -1,11 +1,13 @@
 //! prism-rs: PrismLauncher rewritten in Rust with GPUI.
 
+mod about_dialog;
 mod accounts_window;
 mod atlauncher_cli;
 mod atlauncher_dialog;
 mod cli_launch;
 mod dialogs;
 mod ftb_page;
+mod help_menu;
 mod instance_lock;
 mod instance_window;
 mod instance_settings_page;
@@ -305,6 +307,9 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
     let launcher = prism_core::launch::Launcher::new(paths.clone(), runtime.downloader.clone());
 
     runtime.handle().block_on(async {
+        let metadata_lock = instance.is_none().then(|| {
+            paths.lock_metadata_cache().expect("failed to lock the metadata cache")
+        });
         let version = mc_version.as_str();
         let mut profile = if let Some(instance) = &instance {
             let loader = prism_core::instance::loader_of(instance);
@@ -353,6 +358,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
 
         println!("Downloading game files…");
         launcher.prepare_files(&profile, &settings).await.expect("prepare failed");
+        drop(metadata_lock);
 
         let mut accounts = prism_core::AccountList::load(&paths.accounts_file());
         let session = match accounts.session_for_launch(&paths.accounts_file()).await {

@@ -96,7 +96,7 @@ impl MainWindow {
                 crate::theme::button("settings", Icon::Settings, "Settings", cx)
                     .on_click(cx.listener(Self::on_open_settings)),
             )
-            .child(crate::theme::button("help", Icon::Help, "Help", cx).on_click(|_, _, _| {}))
+            .child(crate::help_menu::button(self.app.read(cx).paths.clone(), cx))
             .child(
                 crate::theme::button("check-updates", Icon::Update, "Check for Updates", cx)
                     .on_click(|_, _, _| {}),
