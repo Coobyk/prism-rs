@@ -486,7 +486,7 @@ impl MainWindow {
             cx,
         );
         if !enabled {
-            btn = btn.disabled(true).opacity(0.5);
+            btn = btn.disabled(true);
         }
         btn
     }

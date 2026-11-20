@@ -1,4 +1,5 @@
 use gpui_kit::component::theme::{Theme, ThemeMode};
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;
 use prism_core::themes::{ApplicationTheme, Color, ThemeCatalog};
 
@@ -123,6 +124,7 @@ pub struct Palette {
     pub panel_text: Hsla,
     pub secondary_text: Hsla,
     pub muted_text: Hsla,
+    pub disabled_ink: Hsla,
     pub accent: Hsla,
     pub selection: Hsla,
     pub highlighted_text: Hsla,
@@ -184,6 +186,12 @@ impl Palette {
             panel_text: c("ButtonText"),
             secondary_text: mix(c("WindowText"), c("Window"), 0.27),
             muted_text: mix(c("WindowText"), c("Window"), 0.45),
+            disabled_ink: rgb(if theme.color("Button").is_light() {
+                0x000000
+            } else {
+                0xffffff
+            })
+            .into(),
             accent: c("Highlight"),
             selection: if light {
                 mix(c("Window"), c("Highlight"), 0.16)
@@ -305,9 +313,16 @@ pub fn custom_icon(catalog: &ThemeCatalog, id: &str, name: &str) -> Option<std::
 }
 
 pub fn icon(icon: Icon, cx: &App) -> AnyElement {
+    icon_with_tint(icon, Palette::get(cx).text, true, cx)
+}
+
+fn icon_with_tint(icon: Icon, tint: Hsla, custom: bool, cx: &App) -> AnyElement {
     let (name, path) = icon.names();
     let selection = cx.global::<Selection>();
-    if let Some(path) = custom_icon(&selection.catalog, &selection.icon_id, name) {
+    if let Some(path) = custom
+        .then(|| custom_icon(&selection.catalog, &selection.icon_id, name))
+        .flatten()
+    {
         return img(path)
             .size(px(16.))
             .object_fit(ObjectFit::Contain)
@@ -316,15 +331,26 @@ pub fn icon(icon: Icon, cx: &App) -> AnyElement {
     svg()
         .path(format!("icons/{path}.svg"))
         .size(px(16.))
-        .text_color(Palette::get(cx).text)
+        .text_color(tint)
         .into_any_element()
+}
+
+#[derive(IntoElement)]
+struct ButtonIcon(Icon);
+
+impl RenderOnce for ButtonIcon {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let tint = window.text_style().color;
+        let disabled = tint == cx.theme().muted_foreground.opacity(0.5);
+        icon_with_tint(self.0, tint, !disabled, cx)
+    }
 }
 
 pub fn button(
     id: impl Into<ElementId>,
     name: Icon,
     label: impl Into<SharedString>,
-    cx: &App,
+    _cx: &App,
 ) -> gpui_kit::component::button::Button {
     let label = label.into();
     gpui_kit::component::button::Button::new(id)
@@ -334,7 +360,7 @@ pub fn button(
                 .flex()
                 .items_center()
                 .gap_2()
-                .child(div().size(px(16.)).flex_shrink_0().child(icon(name, cx)))
+                .child(div().size(px(16.)).flex_shrink_0().child(ButtonIcon(name)))
                 .child(label),
         )
 }
@@ -393,7 +419,7 @@ fn apply(appearance: WindowAppearance, cx: &mut App) {
         c.secondary_hover = palette.hover;
         c.secondary_active = palette.selection;
         c.muted = palette.alternate;
-        c.muted_foreground = palette.muted_text;
+        c.muted_foreground = palette.disabled_ink;
         c.popover = palette.tooltip;
         c.popover_foreground = palette.tooltip_text;
         c.list = palette.base;
@@ -554,6 +580,51 @@ mod tests {
         assert_eq!(palette.base_text, color(Color(0xff112233)));
         assert_eq!(palette.panel_text, color(Color(0xff445566)));
         assert_eq!(palette.accent, color(Color(0xff123456)));
+    }
+
+    #[test]
+    fn disabled_button_contrast() {
+        let custom = ApplicationTheme::parse(
+            "custom",
+            r##"{"colors":{"Window":"#1e1e2e","WindowText":"#cdd6f4","Base":"#181825","AlternateBase":"#242436","Button":"#313244","ButtonText":"#cdd6f4"}}"##,
+        )
+        .unwrap();
+        let luminance = |c: Rgba| {
+            let channel = |v: f32| {
+                if v <= 0.04045 {
+                    v / 12.92
+                } else {
+                    ((v + 0.055) / 1.055).powf(2.4)
+                }
+            };
+            0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+        };
+        for theme in [
+            ApplicationTheme::builtin(false),
+            ApplicationTheme::builtin(true),
+            ApplicationTheme::parse("empty", "{}").unwrap(),
+            custom,
+        ] {
+            let palette = Palette::from_theme(&theme);
+            let ink: Rgba = palette.disabled_ink.into();
+            for background in [
+                palette.window,
+                palette.panel,
+                palette.base,
+                palette.alternate,
+            ] {
+                let bg: Rgba = background.into();
+                // gpui-kit applies 50% opacity to muted_foreground for disabled buttons.
+                let fg = Rgba {
+                    r: (ink.r + bg.r) / 2.,
+                    g: (ink.g + bg.g) / 2.,
+                    b: (ink.b + bg.b) / 2.,
+                    a: 1.,
+                };
+                let (a, b) = (luminance(fg), luminance(bg));
+                assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 3., "{}", theme.id);
+            }
+        }
     }
 
     #[test]
