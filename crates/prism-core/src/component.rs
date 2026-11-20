@@ -265,9 +265,7 @@ impl Component {
             profile.legacy_arguments = data.minecraft_arguments;
         }
         if let Some(args) = data.arguments {
-            let target = profile
-                .modern_arguments
-                .get_or_insert_with(Default::default);
+            let target = profile.arguments_mut();
             target.jvm.extend(args.jvm);
             target.game.extend(args.game);
             target.default_user_jvm.extend(args.default_user_jvm);

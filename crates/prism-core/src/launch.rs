@@ -1295,6 +1295,31 @@ pub fn extract_natives(jar: &Path, dest: &Path) -> Result<(), LaunchError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn jvm_only_overlays_preserve_legacy_game_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths { root: dir.path().into() };
+        let instance = crate::InstanceList::create(&paths, "Legacy", "default", "1.12.2").unwrap();
+        let settings = LaunchSettings::for_instance(&instance, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let base = VersionData::from_json(&serde_json::json!({"id":"1.12.2","mainClass":"Main",
+            "minecraftArguments":"--username ${auth_player_name} --accessToken ${auth_access_token} --version ${version_name}"})).unwrap();
+        for loader in [false, true] {
+            let mut profile = LaunchProfile::from_mojang(&base);
+            let patch = serde_json::json!({"uid":"test","formatVersion":1,"arguments":{"jvm":["-Dpatch=yes"]}});
+            if loader {
+                profile.apply_loader(&VersionData::from_json(&patch).unwrap());
+            } else {
+                crate::component::Component(patch).apply(&mut profile, &instance.root).unwrap();
+            }
+            let command = launcher.build_command(&settings, None, &profile).command;
+            assert!(command.iter().any(|arg| arg == "-Dpatch=yes"));
+            for flag in ["--username", "--accessToken", "--version"] {
+                assert_eq!(command.iter().filter(|arg| *arg == flag).count(), 1, "{flag}");
+            }
+            assert!(!command.iter().any(|arg| arg.contains("${auth_")));
+        }
+    }
     #[tokio::test]
     async fn customize_supports_official_version_rules_and_default_user_jvm() {
         let dir = tempfile::tempdir().unwrap();

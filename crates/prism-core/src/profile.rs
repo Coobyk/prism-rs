@@ -192,6 +192,14 @@ impl LaunchProfile {
         self.apply_loader(data);
     }
 
+    pub(crate) fn arguments_mut(&mut self) -> &mut meta::Arguments {
+        self.modern_arguments.get_or_insert_with(|| meta::Arguments {
+            game: self.legacy_arguments.as_deref().unwrap_or_default()
+                .split_whitespace().map(|arg| meta::ArgValue::Str(arg.into())).collect(),
+            ..Default::default()
+        })
+    }
+
     /// Overlay a loader profile: its main
     /// class, libraries and arguments are applied on top of the Mojang base.
     pub fn apply_loader(&mut self, loader_vd: &VersionData) {
@@ -206,7 +214,7 @@ impl LaunchProfile {
 
         // Merge the loader's structured arguments after the base ones.
         if let Some(loader_args) = &loader_vd.arguments {
-            let base = self.modern_arguments.get_or_insert_with(Default::default);
+            let base = self.arguments_mut();
             base.jvm.extend(loader_args.jvm.iter().cloned());
             base.game.extend(loader_args.game.iter().cloned());
             base.default_user_jvm.extend(loader_args.default_user_jvm.iter().cloned());
