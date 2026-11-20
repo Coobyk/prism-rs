@@ -123,27 +123,8 @@ impl Editor {
             window.remove_window();
             return;
         }
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            "Discard unsaved changes?",
-            None,
-            &[
-                PromptButton::cancel("Keep editing"),
-                PromptButton::new("Discard"),
-            ],
-            cx,
-        );
         self.confirming_close = true;
-        cx.spawn_in(window, async move |this, cx| {
-            let discard = answer.await == Ok(1);
-            let _ = this.update_in(cx, |this, window, _| {
-                this.confirming_close = false;
-                if discard {
-                    window.remove_window();
-                }
-            });
-        })
-        .detach();
+        cx.notify();
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -202,6 +183,7 @@ impl Editor {
 impl Render for Editor {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .relative()
             .size_full()
             .p_4()
             .flex()
@@ -251,5 +233,53 @@ impl Render for Editor {
                             .on_click(cx.listener(|this, _, window, cx| this.close(window, cx))),
                     ),
             )
+            .children(self.confirming_close.then(|| {
+                div()
+                    .absolute()
+                    .inset_0()
+                    .size_full()
+                    .occlude()
+                    .bg(black().opacity(0.5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        div()
+                            .w(px(410.))
+                            .p_4()
+                            .rounded_lg()
+                            .bg(rgb(0x2b2b2b))
+                            .border_1()
+                            .border_color(rgb(0x555555))
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::BOLD)
+                                    .child("Discard unsaved changes?"),
+                            )
+                            .child("Your changes have not been saved to the component patch.")
+                            .child(
+                                div()
+                                    .flex()
+                                    .justify_end()
+                                    .gap_2()
+                                    .child(
+                                        Button::new("component-keep-editing")
+                                            .label("Keep editing")
+                                            .on_click(cx.listener(|this, _, _, cx| {
+                                                this.confirming_close = false;
+                                                cx.notify();
+                                            })),
+                                    )
+                                    .child(
+                                        Button::new("component-discard").label("Discard").on_click(
+                                            cx.listener(|_, _, window, _| window.remove_window()),
+                                        ),
+                                    ),
+                            ),
+                    )
+            }))
     }
 }

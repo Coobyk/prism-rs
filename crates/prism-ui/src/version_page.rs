@@ -97,11 +97,13 @@ pub(super) struct VersionPage {
     dialog: Option<Dialog>,
     dialog_id: u64,
     customize_reason: Option<String>,
+    confirmation: Option<(String, ComponentAction)>,
 }
 
 impl VersionPage {
     pub(super) fn on_navigation(&mut self) {
         self.dialog = None;
+        self.confirmation = None;
     }
 }
 
@@ -131,7 +133,21 @@ impl InstanceWindow {
         &mut self,
         uid: String,
         action: ComponentAction,
-        window: &mut Window,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(action, ComponentAction::Customize) {
+            self.version_editor.confirmation = Some((uid, action));
+            cx.notify();
+            return;
+        }
+        self.apply_component_action(uid, action, cx);
+    }
+
+    fn apply_component_action(
+        &mut self,
+        uid: String,
+        action: ComponentAction,
         cx: &mut Context<Self>,
     ) {
         if self.version_editor.busy || self.app.read(cx).is_running(&self.instance_id) {
@@ -147,24 +163,8 @@ impl InstanceWindow {
         let paths = app.paths.clone();
         let runtime = app.runtime.clone();
         let launcher = Launcher::new(paths.clone(), runtime.downloader.clone());
-        let confirmation = (!matches!(action, ComponentAction::Customize)).then(|| window.prompt(
-            PromptLevel::Warning,
-            if matches!(action, ComponentAction::Revert) { "Revert component?" } else { "Remove component?" },
-            Some("This permanently deletes the patch. Remove also deletes its unshared local artifacts."),
-            &[PromptButton::cancel("Cancel"), PromptButton::new("Continue")], cx));
         self.version_editor.busy = true;
         cx.spawn(async move |this, cx| {
-            let confirmed = match confirmation {
-                Some(answer) => answer.await == Ok(1),
-                None => true,
-            };
-            if !confirmed {
-                let _ = this.update(cx, |this, cx| {
-                    this.version_editor.busy = false;
-                    cx.notify();
-                });
-                return;
-            }
             let task = runtime.spawn(async move {
                 let doc = if matches!(action, ComponentAction::Customize) {
                     Some(
@@ -834,6 +834,28 @@ impl InstanceWindow {
                     .as_ref()
                     .map(|dialog| self.version_dialog(dialog, cx)),
             )
+            .children(state.confirmation.as_ref().map(|(_, action)| {
+                let revert = matches!(action, ComponentAction::Revert);
+                div().absolute().inset_0().size_full().occlude()
+                    .bg(black().opacity(0.5)).flex().items_center().justify_center()
+                    .child(div().w(px(410.)).p_4().rounded_lg().bg(rgb(0x2b2b2b))
+                        .border_1().border_color(rgb(0x555555)).flex().flex_col().gap_3()
+                        .child(div().font_weight(FontWeight::BOLD).child(if revert { "Revert component?" } else { "Remove component?" }))
+                        .child(if revert { "This permanently deletes the local patch and restores the metadata component." } else { "This permanently deletes the component patch and its unshared local artifacts." })
+                        .child(div().flex().justify_end().gap_2()
+                            .child(Button::new("component-confirm-cancel").label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.version_editor.confirmation = None;
+                                    cx.notify();
+                                })))
+                            .child(Button::new("component-confirm-apply").label(if revert { "Revert" } else { "Remove" })
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some((uid, action)) = this.version_editor.confirmation.take() {
+                                        this.apply_component_action(uid, action, cx);
+                                    }
+                                    cx.notify();
+                                })))))
+            }))
             .into_any_element()
     }
 
