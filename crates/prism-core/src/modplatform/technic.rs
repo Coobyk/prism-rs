@@ -589,12 +589,12 @@ pub fn apply_forge_patch(
     Ok(true)
 }
 
-fn maven_artifact(spec: &str) -> Option<(&str, &str, Option<&str>)> {
-    let coordinate = spec.split('@').next()?;
+fn maven_artifact(spec: &str) -> Option<(&str, &str, Option<&str>, &str)> {
+    let (coordinate, extension) = spec.split_once('@').unwrap_or((spec, "jar"));
     let mut parts = coordinate.split(':');
     let (group, artifact) = (parts.next()?, parts.next()?);
     parts.next()?;
-    Some((group, artifact, parts.next()))
+    Some((group, artifact, parts.next(), extension))
 }
 
 fn merge_embedded_libraries(
@@ -849,6 +849,83 @@ mod tests {
         )
         .unwrap());
         assert!(checked_maven_path("org.example:../outside:1").is_err());
+    }
+
+    #[test]
+    fn embedded_artifact_extension_is_part_of_replacement_identity() {
+        let library = |spec: &str| ResolvedLibrary {
+            spec: spec.into(),
+            path: meta::maven_path(spec),
+            url: None,
+            sha1: None,
+            native: false,
+        };
+        let mut libraries = vec![
+            library("org.example:module:1"),
+            library("org.example:module:2@zip"),
+        ];
+        merge_embedded_libraries(&mut libraries, 1, false);
+        assert_eq!(libraries.len(), 2);
+        assert_eq!(libraries[0].spec, "org.example:module:1");
+        libraries.push(library("org.example:module:3@jar"));
+        merge_embedded_libraries(&mut libraries, 2, false);
+        assert_eq!(libraries.len(), 2);
+        assert_eq!(libraries[0].spec, "org.example:module:2@zip");
+        assert_eq!(libraries[1].spec, "org.example:module:3@jar");
+    }
+
+    #[test]
+    fn embedded_lwjgl_core_only_replacement_keeps_the_mojang_natives() {
+        let dir = tempfile::tempdir().unwrap();
+        let game = dir.path().join("game");
+        fixture(
+            &game,
+            &[(
+                "version.json",
+                r#"{
+            "inheritsFrom":"1.12.2",
+            "mainClass":"net.minecraft.launchwrapper.Launch",
+            "libraries":[
+                {"name":"net.minecraftforge:forge:1.12.2-14.23.5.2864"},
+                {"name":"org.lwjgl.lwjgl:lwjgl:2.9.0"}
+            ]
+        }"#,
+            )],
+        );
+        let paths = Paths {
+            root: dir.path().join("launcher"),
+        };
+        let installed = install_staged(&paths, "Technic Forge", &game, "1.12.2").unwrap();
+        let os = meta::os_name();
+        let classifier = format!("natives-{os}");
+        let vanilla = VersionData::from_json(&serde_json::json!({
+            "id": "1.12.2",
+            "libraries": [
+                {"name":"org.lwjgl.lwjgl:lwjgl:2.9.4-nightly-20150209"},
+                {"name":"org.lwjgl.lwjgl:lwjgl-platform:2.9.4-nightly-20150209",
+                    "natives": {(os): &classifier}}
+            ]
+        }))
+        .unwrap();
+        let mut profile = LaunchProfile::from_mojang(&vanilla);
+        let loader = crate::instance::loader_of(&installed);
+        assert!(apply_forge_patch(
+            &mut profile,
+            &installed.root,
+            &installed.game_root(),
+            &loader
+        )
+        .unwrap());
+        let classpath = profile.classpath();
+        assert_eq!(classpath.len(), 2);
+        assert!(classpath
+            .iter()
+            .any(|path| path.ends_with("lwjgl-2.9.0.jar")));
+        assert_eq!(profile.natives.len(), 1);
+        assert_eq!(
+            profile.natives[0].spec,
+            format!("org.lwjgl.lwjgl:lwjgl-platform:2.9.4-nightly-20150209:{classifier}")
+        );
     }
 
     #[test]
