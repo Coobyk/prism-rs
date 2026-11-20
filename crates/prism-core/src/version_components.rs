@@ -421,6 +421,9 @@ impl Pack {
             let other = if uid == LWJGL { LWJGL3 } else { LWJGL };
             self.rows().retain(|row| row["uid"] != other);
             self.upsert(uid, version);
+            for row in self.rows().iter_mut().filter(|row| row["uid"] == uid) {
+                row.as_object_mut().unwrap().remove("dependencyOnly");
+            }
         } else {
             self.rows()
                 .retain(|row| !matches!(row["uid"].as_str(), Some(LWJGL | LWJGL3)));
@@ -760,6 +763,22 @@ mod tests {
         assert!(!pack.is_custom(MINECRAFT));
         assert!(!root.path().join("patches/net.minecraft.json").exists());
         assert!(pack.components().any(|(uid, _)| uid == "custom.unknown"));
+    }
+
+    #[test]
+    fn explicit_lwjgl_selection_clears_dependency_only() {
+        let root = tempfile::tempdir().unwrap();
+        instance(root.path());
+        let mut data: Value = serde_json::from_reader(fs::File::open(root.path().join(PACK)).unwrap()).unwrap();
+        data["components"].as_array_mut().unwrap().push(json!({"uid":LWJGL3,"version":"3.3.1","dependencyOnly":true,"opaque":true}));
+        fs::write(root.path().join(PACK), data.to_string()).unwrap();
+        let pack = Pack::load(root.path()).unwrap();
+        assert!(pack.dependency_only(LWJGL3));
+        let pack = pack.set_lwjgl(LWJGL3, Some("3.3.3")).unwrap();
+        assert!(!pack.dependency_only(LWJGL3));
+        assert_eq!(pack.lwjgl(), Some((LWJGL3, "3.3.3")));
+        assert_eq!(pack.data["components"].as_array().unwrap().last().unwrap()["opaque"], true);
+        assert!(pack.set_lwjgl(LWJGL3, None).unwrap().lwjgl().is_none());
     }
 
     #[test]
