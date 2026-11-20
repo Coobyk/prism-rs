@@ -435,10 +435,7 @@ impl SettingsForm {
             }
         }
         if let Some(env) = &raw.env {
-            local.env = env
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect();
+            local.env = env.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
         }
         local
     }
@@ -559,9 +556,9 @@ impl SettingsForm {
             raw.min_memory_mb = Some(min);
             raw.max_memory_mb = Some(max);
         }
-        let java_was_enabled = baseline
-            .override_java_location
-            .unwrap_or(baseline.java_path.is_some() || baseline.legacy_java_path.is_some());
+        let java_was_enabled = baseline.override_java_location.unwrap_or(
+            baseline.java_path.is_some() || baseline.legacy_java_path.is_some(),
+        );
         if self.overrides[1] != java_was_enabled {
             raw.override_java_location = Some(self.overrides[1]);
         }
@@ -830,13 +827,11 @@ impl SettingsEditor {
                                     Checkbox::new(SharedString::from(format!("override-{group}")))
                                         .label("Override global settings")
                                         .checked(enabled)
-                                        .on_change(cx.listener(
-                                            move |this, checked: &bool, window, cx| {
-                                                if let Some(editor) = &mut this.settings_editor {
-                                                    editor.toggle(group, *checked, window, cx);
-                                                }
-                                            },
-                                        )),
+                                        .on_change(cx.listener(move |this, checked: &bool, window, cx| {
+                                            if let Some(editor) = &mut this.settings_editor {
+                                                editor.toggle(group, *checked, window, cx);
+                                            }
+                                        })),
                                 ),
                         ),
                 );

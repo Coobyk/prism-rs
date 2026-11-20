@@ -1,13 +1,13 @@
-use super::{datapacks_page::open_folder, InstanceWindow, Page};
+use super::{InstanceWindow, Page, datapacks_page::open_folder};
 use gpui_kit::base::Disableable;
 use gpui_kit::component::{
     button::Button,
     input::{Input, InputState},
 };
 use gpui_kit::*;
+use prism_core::Instance;
 use prism_core::launch::QuickPlayTarget;
 use prism_core::worlds::{RenameOutcome, World, WorldDetails};
-use prism_core::Instance;
 use std::{io, path::PathBuf};
 
 enum WorldRow {

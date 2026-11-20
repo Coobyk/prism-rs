@@ -389,11 +389,14 @@ impl Render for FtbPage {
                                 "FTB Modpacks"
                             }),
                     )
-                    .child(muted(palette, if self.local {
-                        "Bring your worlds, settings and playtime into Prism."
-                    } else {
-                        "Discover your next adventure. Install a pack directly from Feed The Beast."
-                    })),
+                    .child(muted(
+                        palette,
+                        if self.local {
+                            "Bring your worlds, settings and playtime into Prism."
+                        } else {
+                            "Discover your next adventure. Install a pack directly from Feed The Beast."
+                        },
+                    )),
             );
         if self.local {
             panel = panel.child(
@@ -425,11 +428,7 @@ impl Render for FtbPage {
                     ),
             );
         } else {
-            let mut sorts = div()
-                .flex()
-                .gap_2()
-                .items_center()
-                .child(muted(palette, "Sort by"));
+            let mut sorts = div().flex().gap_2().items_center().child(muted(palette, "Sort by"));
             for (sort, label, id) in [
                 (Sort::Plays, "Plays", "ftb-plays"),
                 (Sort::Installs, "Installs", "ftb-installs"),

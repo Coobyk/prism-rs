@@ -312,23 +312,18 @@ pub fn render(
                 .iter()
                 .filter(|e| e.client && e.optional && !e.hidden && !e.library)
                 .count();
-            body = body.child(
-                div()
-                    .text_sm()
-                    .text_color(palette.secondary_text)
-                    .child(format!(
-                        "Minecraft {} · Optional mods selected: {}",
-                        m.minecraft,
-                        m.mods
-                            .iter()
-                            .filter(|e| e.client
-                                && e.optional
-                                && !e.hidden
-                                && !e.library
-                                && d.selection.enabled.contains(&e.name))
-                            .count()
-                    )),
-            );
+            body = body.child(div().text_sm().text_color(palette.secondary_text).child(format!(
+                    "Minecraft {} · Optional mods selected: {}",
+                    m.minecraft,
+                    m.mods
+                        .iter()
+                        .filter(|e| e.client
+                            && e.optional
+                            && !e.hidden
+                            && !e.library
+                            && d.selection.enabled.contains(&e.name))
+                        .count()
+                )));
             if let Some(message) = m.messages.get("install") {
                 body = body.child(rich("atl-message", message.clone()));
             }
@@ -564,109 +559,106 @@ pub fn render(
         );
     }
     let can_install = d.manifest.is_some() && !d.loading && d.warning.is_none();
-    let panel =
-        div()
-            .w(px(1120.))
-            .h(px(760.))
-            .max_w(relative(0.94))
-            .max_h(relative(0.90))
-            .bg(palette.base)
-            .p_4()
-            .rounded_lg()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .child(div().text_lg().child("Create Instance — ATLauncher"))
-            .child(
-                div()
-                    .flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(div().text_sm().child("Instance name"))
-                            .child(Input::new(&dialog.name_input)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .child(div().text_sm().child("Group (optional)"))
-                            .child(Input::new(&dialog.group_input)),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .gap_4()
-                    .child(
-                        div()
-                            .w(px(288.))
-                            .flex_shrink_0()
-                            .flex()
-                            .flex_col()
-                            .gap_2()
-                            .child(Input::new(&d.query))
-                            .child(div().text_sm().text_color(palette.secondary_text).child(
-                                format!(
-                                    "{count} public {}",
-                                    if count == 1 { "pack" } else { "packs" }
-                                ),
-                            ))
-                            .child(packs),
-                    )
-                    .child(body),
-            )
-            .children(
-                d.error
-                    .as_ref()
-                    .map(|e| div().text_color(palette.error).child(e.clone())),
-            )
-            .child(
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("atl-back")
-                            .label("Back")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
-                                if let Some(d) = this.create_dialog.as_mut() {
-                                    d.atlauncher = None;
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("atl-packs")
-                            .label("Packs")
-                            .disabled(busy)
-                            .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
-                                if let Some(d) = this
-                                    .create_dialog
-                                    .as_mut()
-                                    .and_then(|d| d.atlauncher.as_mut())
-                                {
-                                    d.pack = None;
-                                    d.manifest = None;
-                                    d.loading = false;
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("atl-install")
-                            .primary()
-                            .label(if d.installing {
-                                "Installing…"
-                            } else {
-                                "Install"
-                            })
-                            .disabled(busy || !can_install)
-                            .on_click(cx.listener(install)),
-                    ),
-            );
+    let panel = div()
+        .w(px(1120.))
+        .h(px(760.))
+        .max_w(relative(0.94))
+        .max_h(relative(0.90))
+        .bg(palette.base)
+        .p_4()
+        .rounded_lg()
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(div().text_lg().child("Create Instance — ATLauncher"))
+        .child(
+            div()
+                .flex()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_sm().child("Instance name"))
+                        .child(Input::new(&dialog.name_input)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .child(div().text_sm().child("Group (optional)"))
+                        .child(Input::new(&dialog.group_input)),
+                ),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .gap_4()
+                .child(
+                    div()
+                        .w(px(288.))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(Input::new(&d.query))
+                        .child(div().text_sm().text_color(palette.secondary_text).child(format!(
+                            "{count} public {}",
+                            if count == 1 { "pack" } else { "packs" }
+                        )))
+                        .child(packs),
+                )
+                .child(body),
+        )
+        .children(
+            d.error
+                .as_ref()
+                .map(|e| div().text_color(palette.error).child(e.clone())),
+        )
+        .child(
+            div()
+                .flex()
+                .gap_2()
+                .child(
+                    Button::new("atl-back")
+                        .label("Back")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                            if let Some(d) = this.create_dialog.as_mut() {
+                                d.atlauncher = None;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("atl-packs")
+                        .label("Packs")
+                        .disabled(busy)
+                        .on_click(cx.listener(|this: &mut MainWindow, _, _, cx| {
+                            if let Some(d) = this
+                                .create_dialog
+                                .as_mut()
+                                .and_then(|d| d.atlauncher.as_mut())
+                            {
+                                d.pack = None;
+                                d.manifest = None;
+                                d.loading = false;
+                            }
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("atl-install")
+                        .primary()
+                        .label(if d.installing {
+                            "Installing…"
+                        } else {
+                            "Install"
+                        })
+                        .disabled(busy || !can_install)
+                        .on_click(cx.listener(install)),
+                ),
+        );
     div()
         .absolute()
         .size_full()

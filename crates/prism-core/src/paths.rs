@@ -21,9 +21,7 @@ impl Paths {
                 return Paths { root: candidate };
             }
         }
-        Paths {
-            root: dirs_data().join("prismlauncher-rs"),
-        }
+        Paths { root: dirs_data().join("prismlauncher-rs") }
     }
 
     pub fn instances_dir(&self) -> PathBuf {

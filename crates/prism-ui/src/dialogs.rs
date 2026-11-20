@@ -1,7 +1,7 @@
 //! Dialogs: create instance (mirrors NewInstanceDialog).
 
-use crate::main_window::MainWindow;
 use crate::state::App;
+use crate::main_window::MainWindow;
 use gpui_kit::base::{Disableable, Selectable};
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -328,7 +328,11 @@ impl QuickPlayState {
                     .font_weight(FontWeight::BOLD)
                     .child(format!("Quick Play — {}", self.name)),
             );
-        let mut tabs = div().flex().p_1().bg(palette.alternate).rounded_md();
+        let mut tabs = div()
+            .flex()
+            .p_1()
+            .bg(palette.alternate)
+            .rounded_md();
         for (multiplayer, label) in [(false, "Singleplayer"), (true, "Multiplayer")] {
             tabs = tabs.child(
                 div()
@@ -499,8 +503,7 @@ impl CreateInstanceState {
     pub fn new(window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Instance name"));
         let group_input = cx.new(|cx| InputState::new(window, cx).placeholder("Group (optional)"));
-        let version_filter =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter versions…"));
+        let version_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter versions…"));
         CreateInstanceState {
             atlauncher: None,
             name_input,
@@ -567,20 +570,10 @@ impl CreateInstanceState {
             .flex_col()
             .gap_3()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::BOLD)
-                    .child("Create Instance"),
-            )
+            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child("Create Instance"))
             .child(crate::ftb_page::buttons(cx))
             .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child("Name")
-                    .child(Input::new(&self.name_input)),
+                div().flex().flex_col().gap_1().child("Name").child(Input::new(&self.name_input)),
             )
             .child(
                 div()
@@ -610,13 +603,7 @@ impl CreateInstanceState {
                     })),
             );
         }
-        panel = panel.child(
-            types.child(
-                Button::new("type-atlauncher")
-                    .label("ATLauncher")
-                    .on_click(cx.listener(crate::atlauncher_dialog::open)),
-            ),
-        );
+        panel = panel.child(types.child(Button::new("type-atlauncher").label("ATLauncher").on_click(cx.listener(crate::atlauncher_dialog::open))));
 
         if self.horizon {
             panel = panel.child(
@@ -691,12 +678,7 @@ impl CreateInstanceState {
         }
 
         if let Some(e) = &self.error {
-            panel = panel.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette.error)
-                    .child(e.clone()),
-            );
+            panel = panel.child(div().text_size(px(12.)).text_color(palette.error).child(e.clone()));
         }
 
         panel = panel.child(
@@ -725,12 +707,7 @@ impl CreateInstanceState {
     }
 }
 
-fn confirm_create(
-    this: &mut MainWindow,
-    _ev: &ClickEvent,
-    _window: &mut Window,
-    cx: &mut Context<MainWindow>,
-) {
+fn confirm_create(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(dialog) = this.create_dialog.as_mut() else {
         return;
     };
@@ -760,10 +737,7 @@ fn confirm_create(
             })
         });
         cx.spawn(async move |this, cx| {
-            let result = task
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|result| result);
+            let result = task.await.map_err(|e| e.to_string()).and_then(|result| result);
             let _ = this.update(cx, |this, cx| finish_create(this, &group, result, cx));
         })
         .detach();
@@ -776,9 +750,8 @@ fn confirm_create(
         return;
     };
 
-    let result =
-        prism_core::InstanceList::create(&this.app.read(cx).paths, &name, "default", &version)
-            .map_err(|e| e.to_string());
+    let result = prism_core::InstanceList::create(&this.app.read(cx).paths, &name, "default", &version)
+        .map_err(|e| e.to_string());
     finish_create(this, &group, result, cx);
 }
 
@@ -850,13 +823,7 @@ pub enum PromptKind {
 }
 
 impl PromptState {
-    pub fn new(
-        kind: PromptKind,
-        target_id: String,
-        initial: String,
-        window: &mut Window,
-        cx: &mut Context<MainWindow>,
-    ) -> Self {
+    pub fn new(kind: PromptKind, target_id: String, initial: String, window: &mut Window, cx: &mut Context<MainWindow>) -> Self {
         let placeholder = match kind {
             PromptKind::Rename => "Instance name",
             PromptKind::ChangeGroup => "Group name (empty = none)",
@@ -875,62 +842,38 @@ impl PromptState {
             error: None,
             export_fields: if kind == PromptKind::Export {
                 Some(
-                    [
-                        "Pack name",
-                        "Version (e.g. 1.0.0)",
-                        "Summary",
-                        "Author (optional)",
-                    ]
-                    .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(label))),
+                    ["Pack name", "Version (e.g. 1.0.0)", "Summary", "Author (optional)"]
+                        .map(|label| cx.new(|cx| InputState::new(window, cx).placeholder(label))),
                 )
             } else {
                 None
             },
             export_format: ExportFormat::Prism,
             export_default_path: None,
-            copy_group: (kind == PromptKind::Copy).then(|| {
-                cx.new(|cx| InputState::new(window, cx).placeholder("Group (empty = none)"))
-            }),
+            copy_group: (kind == PromptKind::Copy).then(|| cx.new(|cx| InputState::new(window, cx).placeholder("Group (empty = none)"))),
             copy_flags: [true; 8],
         }
     }
 
-    pub fn set_export_defaults(
-        &mut self,
-        instance: &prism_core::Instance,
-        window: &mut Window,
-        cx: &mut Context<MainWindow>,
-    ) {
+    pub fn set_export_defaults(&mut self, instance: &prism_core::Instance, window: &mut Window, cx: &mut Context<MainWindow>) {
         let path = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()))
             .join(format!("{}.zip", instance.name.replace(['/', '\\'], "_")))
-            .to_string_lossy()
-            .into_owned();
-        self.input
-            .update(cx, |state, cx| state.set_value(path.clone(), window, cx));
+            .to_string_lossy().into_owned();
+        self.input.update(cx, |state, cx| state.set_value(path.clone(), window, cx));
         self.export_default_path = Some(path);
         if let Some(fields) = &self.export_fields {
-            for (field, value) in
-                fields
-                    .iter()
-                    .zip([instance.name.clone(), "1.0.0".into(), String::new()])
-            {
+            for (field, value) in fields.iter().zip([instance.name.clone(), "1.0.0".into(), String::new()]) {
                 field.update(cx, |state, cx| state.set_value(value, window, cx));
             }
         }
     }
 
-    fn set_export_format(
-        &mut self,
-        format: ExportFormat,
-        window: &mut Window,
-        cx: &mut Context<MainWindow>,
-    ) {
+    fn set_export_format(&mut self, format: ExportFormat, window: &mut Window, cx: &mut Context<MainWindow>) {
         if self.export_default_path.as_deref() == Some(self.input.read(cx).value().as_str()) {
             let mut path = std::path::PathBuf::from(self.export_default_path.as_ref().unwrap());
             path.set_extension(format.extension());
             let value = path.to_string_lossy().into_owned();
-            self.input
-                .update(cx, |state, cx| state.set_value(value.clone(), window, cx));
+            self.input.update(cx, |state, cx| state.set_value(value.clone(), window, cx));
             self.export_default_path = Some(value);
         }
         self.export_format = format;
@@ -964,11 +907,7 @@ impl PromptState {
 
         let mut panel = div()
             .id("prompt-dialog")
-            .w(px(if self.kind == PromptKind::Export {
-                440.
-            } else {
-                380.
-            }))
+            .w(px(if self.kind == PromptKind::Export { 440. } else { 380. }))
             .bg(palette.panel)
             .rounded_lg()
             .border_1()
@@ -978,12 +917,7 @@ impl PromptState {
             .flex_col()
             .gap_3()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::BOLD)
-                    .child(title),
-            )
+            .child(div().text_size(px(16.)).font_weight(FontWeight::BOLD).child(title))
             .child(Input::new(&input));
 
         if self.kind == PromptKind::ImportPath {
@@ -992,46 +926,19 @@ impl PromptState {
 
         if let Some(group) = &self.copy_group {
             panel = panel.child(Input::new(group));
-            for (index, label) in [
-                "Saves",
-                "Game options",
-                "Resource packs",
-                "Shader packs",
-                "Servers",
-                "Mods (including config)",
-                "Screenshots",
-                "Keep playtime",
-            ]
-            .into_iter()
-            .enumerate()
-            {
+            for (index, label) in ["Saves", "Game options", "Resource packs", "Shader packs", "Servers", "Mods (including config)", "Screenshots", "Keep playtime"].into_iter().enumerate() {
                 let checked = self.copy_flags[index];
-                panel = panel.child(
-                    gpui_kit::component::checkbox::Checkbox::new(("copy-option", index))
-                        .label(label)
-                        .checked(checked)
-                        .on_click(cx.listener(
-                            move |this: &mut MainWindow, checked: &bool, _, cx| {
-                                if let Some(prompt) = this.prompt.as_mut() {
-                                    prompt.copy_flags[index] = *checked;
-                                }
-                                cx.notify();
-                            },
-                        )),
-                );
+                panel = panel.child(gpui_kit::component::checkbox::Checkbox::new(("copy-option", index)).label(label).checked(checked).on_click(cx.listener(move |this: &mut MainWindow, checked: &bool, _, cx| {
+                    if let Some(prompt) = this.prompt.as_mut() { prompt.copy_flags[index] = *checked; }
+                    cx.notify();
+                })));
             }
-            panel = panel.child(div().flex().gap_2().children(
-                [(true, "Select all"), (false, "Select none")].map(|(value, label)| {
-                    Button::new(label).label(label).on_click(cx.listener(
-                        move |this: &mut MainWindow, _, _, cx| {
-                            if let Some(prompt) = this.prompt.as_mut() {
-                                prompt.copy_flags.fill(value);
-                            }
-                            cx.notify();
-                        },
-                    ))
-                }),
-            ));
+            panel = panel.child(div().flex().gap_2().children([(true, "Select all"), (false, "Select none")].map(|(value, label)| {
+                Button::new(label).label(label).on_click(cx.listener(move |this: &mut MainWindow, _, _, cx| {
+                    if let Some(prompt) = this.prompt.as_mut() { prompt.copy_flags.fill(value); }
+                    cx.notify();
+                }))
+            })));
         }
 
         if let Some(fields) = &self.export_fields {
@@ -1039,11 +946,7 @@ impl PromptState {
             for (format, id, label) in [
                 (ExportFormat::Prism, "export-zip", "Prism zip"),
                 (ExportFormat::Modrinth, "export-mrpack", "Modrinth mrpack"),
-                (
-                    ExportFormat::CurseForge,
-                    "export-curseforge",
-                    "CurseForge zip",
-                ),
+                (ExportFormat::CurseForge, "export-curseforge", "CurseForge zip"),
             ] {
                 let selected = self.export_format == format;
                 formats = formats.child(
@@ -1061,11 +964,7 @@ impl PromptState {
             }
             panel = panel.child(formats);
             if self.export_format != ExportFormat::Prism {
-                let detail = if self.export_format == ExportFormat::Modrinth {
-                    2
-                } else {
-                    3
-                };
+                let detail = if self.export_format == ExportFormat::Modrinth { 2 } else { 3 };
                 for field in [&fields[0], &fields[1], &fields[detail]] {
                     panel = panel.child(Input::new(field));
                 }
@@ -1073,12 +972,7 @@ impl PromptState {
         }
 
         if let Some(e) = &self.error {
-            panel = panel.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette.error)
-                    .child(e.clone()),
-            );
+            panel = panel.child(div().text_size(px(12.)).text_color(palette.error).child(e.clone()));
         }
 
         panel = panel.child(
@@ -1106,12 +1000,7 @@ impl PromptState {
     }
 }
 
-fn confirm_prompt(
-    this: &mut MainWindow,
-    _ev: &ClickEvent,
-    _window: &mut Window,
-    cx: &mut Context<MainWindow>,
-) {
+fn confirm_prompt(this: &mut MainWindow, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<MainWindow>) {
     let Some(prompt) = this.prompt.as_ref() else {
         return;
     };
@@ -1125,18 +1014,12 @@ fn confirm_prompt(
         let downloader = state.runtime.downloader.clone();
         let task = state.runtime.spawn(async move {
             if let Some((project, version)) = prism_core::managed_pack::import_source(&value) {
-                prism_core::managed_pack::install_modrinth(
-                    &paths,
-                    &downloader,
-                    &project,
-                    version.as_deref(),
-                )
-                .await
-                .map(|instance| prism_core::import::ImportOutcome {
-                    instance,
-                    missing_files: Vec::new(),
-                    curseforge_key_issue: None,
-                })
+                prism_core::managed_pack::install_modrinth(&paths, &downloader, &project, version.as_deref()).await
+                    .map(|instance| prism_core::import::ImportOutcome {
+                        instance,
+                        missing_files: Vec::new(),
+                        curseforge_key_issue: None,
+                    })
             } else {
                 prism_core::import::import_source(&paths, &value, &downloader).await
             }
@@ -1173,8 +1056,7 @@ fn confirm_prompt(
                 app.toast = Some((message, std::time::Instant::now()));
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
         cx.notify();
         return;
     }
@@ -1184,26 +1066,9 @@ fn confirm_prompt(
             cx.notify();
             return;
         }
-        let group = prompt
-            .copy_group
-            .as_ref()
-            .unwrap()
-            .read(cx)
-            .value()
-            .trim()
-            .to_string();
-        let [saves, game_options, resource_packs, shader_packs, servers, mods, screenshots, keep_playtime] =
-            prompt.copy_flags;
-        let options = prism_core::copy::CopyOptions {
-            saves,
-            game_options,
-            resource_packs,
-            shader_packs,
-            servers,
-            mods,
-            screenshots,
-            keep_playtime,
-        };
+        let group = prompt.copy_group.as_ref().unwrap().read(cx).value().trim().to_string();
+        let [saves, game_options, resource_packs, shader_packs, servers, mods, screenshots, keep_playtime] = prompt.copy_flags;
+        let options = prism_core::copy::CopyOptions { saves, game_options, resource_packs, shader_packs, servers, mods, screenshots, keep_playtime };
         let app = this.app.clone();
         let state = app.read(cx);
         let source = state.instances.get(&target).cloned();
@@ -1211,12 +1076,9 @@ fn confirm_prompt(
         let runtime = state.runtime.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         runtime.handle().spawn_blocking(move || {
-            let result = source
-                .ok_or_else(|| "Source instance no longer exists".to_string())
-                .and_then(|source| {
-                    prism_core::copy::copy_instance_files(&paths, &source, &value, &options)
-                        .map_err(|e| e.to_string())
-                });
+            let result = source.ok_or_else(|| "Source instance no longer exists".to_string()).and_then(|source| {
+                prism_core::copy::copy_instance_files(&paths, &source, &value, &options).map_err(|e| e.to_string())
+            });
             let _ = tx.send(result);
         });
         cx.spawn(async move |this, cx| {
@@ -1224,20 +1086,9 @@ fn confirm_prompt(
                 let _ = app.update(cx, |app, _| {
                     let message = match result {
                         Ok(instance) => {
-                            app.instances.groups.set_group(
-                                &instance.id,
-                                if group.is_empty() { None } else { Some(&group) },
-                            );
-                            if let Err(error) =
-                                app.instances.groups.save(&app.paths.instances_dir())
-                            {
-                                app.toast = Some((
-                                    format!(
-                                        "Copied {}, but could not save group: {error}",
-                                        instance.name
-                                    ),
-                                    std::time::Instant::now(),
-                                ));
+                            app.instances.groups.set_group(&instance.id, if group.is_empty() { None } else { Some(&group) });
+                            if let Err(error) = app.instances.groups.save(&app.paths.instances_dir()) {
+                                app.toast = Some((format!("Copied {}, but could not save group: {error}", instance.name), std::time::Instant::now()));
                                 app.reload_instances();
                                 app.selected = Some(instance.id);
                                 return;
@@ -1252,8 +1103,7 @@ fn confirm_prompt(
                 });
                 let _ = this.update(cx, |_, cx| cx.notify());
             }
-        })
-        .detach();
+        }).detach();
         this.prompt = None;
         cx.notify();
         return;
@@ -1289,21 +1139,16 @@ fn confirm_prompt(
             runtime.handle().spawn(async move {
                 let result = match format {
                     ExportFormat::Prism => prism_core::export::export_zip(&instance, &output),
-                    ExportFormat::Modrinth => {
-                        prism_core::export::export_mrpack(&instance, &output, metadata).await
-                    }
-                    ExportFormat::CurseForge => {
-                        prism_core::export::export_curseforge(
-                            &instance,
-                            &output,
-                            prism_core::export::CurseForgeMetadata {
-                                name: metadata.name,
-                                version: metadata.version,
-                                author,
-                            },
-                        )
-                        .await
-                    }
+                    ExportFormat::Modrinth => prism_core::export::export_mrpack(&instance, &output, metadata).await,
+                    ExportFormat::CurseForge => prism_core::export::export_curseforge(
+                        &instance,
+                        &output,
+                        prism_core::export::CurseForgeMetadata {
+                            name: metadata.name,
+                            version: metadata.version,
+                            author,
+                        },
+                    ).await,
                 };
                 let message = match result {
                     Ok(()) => format!("Exported: {}", output.display()),
@@ -1338,22 +1183,14 @@ fn confirm_prompt(
             PromptKind::Rename => {
                 if let Some(inst) = app.instances.get_mut(&target) {
                     if let Err(error) = inst.rename(value.clone()) {
-                        app.toast = Some((
-                            format!("Could not rename instance: {error}"),
-                            std::time::Instant::now(),
-                        ));
+                        app.toast = Some((format!("Could not rename instance: {error}"), std::time::Instant::now()));
                     }
                 }
             }
             PromptKind::ChangeGroup => {
-                app.instances.groups.set_group(
-                    &target,
-                    if value.is_empty() {
-                        None
-                    } else {
-                        Some(value.as_str())
-                    },
-                );
+                app.instances
+                    .groups
+                    .set_group(&target, if value.is_empty() { None } else { Some(value.as_str()) });
                 let _ = app.instances.groups.save(&app.paths.instances_dir());
             }
         }

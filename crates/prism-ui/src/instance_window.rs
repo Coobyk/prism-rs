@@ -105,11 +105,7 @@ impl Page {
     }
 
     fn available(self, horizon: bool) -> bool {
-        !horizon
-            || matches!(
-                self,
-                Self::Log | Self::Worlds | Self::Screenshots | Self::Notes
-            )
+        !horizon || matches!(self, Self::Log | Self::Worlds | Self::Screenshots | Self::Notes)
     }
 
     fn browser(self) -> Option<Browser> {
@@ -149,21 +145,9 @@ mod tests {
     #[test]
     fn pack_browsers_belong_to_their_java_resource_pages() {
         for (browser, installed, resource_type) in [
-            (
-                Page::BrowseResourcePacks,
-                Page::ResourcePacks,
-                ResourceType::ResourcePack,
-            ),
-            (
-                Page::BrowseShaderPacks,
-                Page::ShaderPacks,
-                ResourceType::ShaderPack,
-            ),
-            (
-                Page::BrowseDataPacks,
-                Page::DataPacks,
-                ResourceType::DataPack,
-            ),
+            (Page::BrowseResourcePacks, Page::ResourcePacks, ResourceType::ResourcePack),
+            (Page::BrowseShaderPacks, Page::ShaderPacks, ResourceType::ShaderPack),
+            (Page::BrowseDataPacks, Page::DataPacks, ResourceType::DataPack),
         ] {
             assert!(browser.available(false));
             assert!(!browser.available(true));
@@ -200,9 +184,7 @@ impl Browser {
         if *loader == Loader::None {
             return Some("Install a mod loader before browsing CurseForge mods.".into());
         }
-        (!curseforge_configured).then(|| {
-            format!("Add a key in Settings → API Keys or set {API_KEY_ENV} to browse CurseForge.")
-        })
+        (!curseforge_configured).then(|| format!("Add a key in Settings → API Keys or set {API_KEY_ENV} to browse CurseForge."))
     }
 }
 
@@ -215,18 +197,8 @@ enum BrowserProject {
 impl BrowserProject {
     fn details(&self) -> (String, &str, &str, u64) {
         match self {
-            Self::Modrinth(project) => (
-                project.project_id.clone(),
-                &project.title,
-                &project.description,
-                project.downloads,
-            ),
-            Self::CurseForge(project) => (
-                project.id.to_string(),
-                &project.name,
-                &project.summary,
-                project.downloads,
-            ),
+            Self::Modrinth(project) => (project.project_id.clone(), &project.title, &project.description, project.downloads),
+            Self::CurseForge(project) => (project.id.to_string(), &project.name, &project.summary, project.downloads),
         }
     }
 }
@@ -242,8 +214,7 @@ impl BrowserTarget {
     fn new(instance: &Instance, app: &App) -> Self {
         Self {
             game_root: instance.game_root(),
-            mc_version: prism_core::launch::LaunchSettings::for_instance(instance, &app.paths)
-                .mc_version,
+            mc_version: prism_core::launch::LaunchSettings::for_instance(instance, &app.paths).mc_version,
             loader: prism_core::instance::loader_of(instance),
         }
     }
@@ -315,18 +286,11 @@ impl InstanceWindow {
 
     fn start_search(&mut self, provider: Browser, cx: &mut Context<Self>) {
         let app = self.app.read(cx);
-        let Some(inst) = app
-            .instances
-            .get(&self.instance_id)
-            .filter(|inst| !inst.is_horizon())
-        else {
+        let Some(inst) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
             return;
         };
         let target = BrowserTarget::new(inst, app);
-        if provider
-            .prerequisite(&target.loader, app.curseforge_configured)
-            .is_some()
-        {
+        if provider.prerequisite(&target.loader, app.curseforge_configured).is_some() {
             return;
         }
         let runtime = app.runtime.clone();
@@ -361,10 +325,7 @@ impl InstanceWindow {
             Ok::<_, prism_core::modplatform::PlatformError>(results)
         });
         cx.spawn(async move |this, cx| {
-            let result = task
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| {
                 if let Some(browser) = this.browsers.get_mut(&provider) {
                     browser.searching = false;
@@ -384,18 +345,9 @@ impl InstanceWindow {
         cx.notify();
     }
 
-    fn install_project(
-        &mut self,
-        provider: Browser,
-        project: BrowserProject,
-        cx: &mut Context<Self>,
-    ) {
+    fn install_project(&mut self, provider: Browser, project: BrowserProject, cx: &mut Context<Self>) {
         let app = self.app.read(cx);
-        let Some(inst) = app
-            .instances
-            .get(&self.instance_id)
-            .filter(|inst| !inst.is_horizon())
-        else {
+        let Some(inst) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
             return;
         };
         let target = BrowserTarget::new(inst, app);
@@ -405,8 +357,7 @@ impl InstanceWindow {
             return;
         };
         if browser.target.as_ref() != Some(&target) {
-            browser.install_status =
-                "This instance's version or loader changed. Search again before installing.".into();
+            browser.install_status = "This instance's version or loader changed. Search again before installing.".into();
             cx.notify();
             return;
         }
@@ -428,37 +379,17 @@ impl InstanceWindow {
         let task = runtime.spawn(async move {
             let _lock = lock;
             match (provider, project) {
-                (Browser::Modrinth(resource_type), BrowserProject::Modrinth(project)) => {
-                    ModrinthApi::with_client(downloader.client())
-                        .install_compatible(
-                            &downloader,
-                            &target.game_root,
-                            &project,
-                            resource_type,
-                            &target.mc_version,
-                            &target.loader,
-                        )
-                        .await
-                }
-                (Browser::CurseForge, BrowserProject::CurseForge(project)) => {
-                    FlameApi::new()
-                        .install_mod(
-                            &downloader,
-                            &target.game_root,
-                            project.id,
-                            &target.mc_version,
-                            &target.loader,
-                        )
-                        .await
-                }
+                (Browser::Modrinth(resource_type), BrowserProject::Modrinth(project)) => ModrinthApi::with_client(downloader.client())
+                    .install_compatible(&downloader, &target.game_root, &project, resource_type, &target.mc_version, &target.loader)
+                    .await,
+                (Browser::CurseForge, BrowserProject::CurseForge(project)) => FlameApi::new()
+                    .install_mod(&downloader, &target.game_root, project.id, &target.mc_version, &target.loader)
+                    .await,
                 _ => unreachable!("browser project belongs to another provider"),
             }
         });
         cx.spawn(async move |this, cx| {
-            let result = task
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| {
                 if let Some(browser) = this.browsers.get_mut(&provider) {
                     browser.installing.remove(&project_id);
@@ -479,11 +410,7 @@ impl InstanceWindow {
             return;
         }
         let app = self.app.read(cx);
-        let Some(instance) = app
-            .instances
-            .get(&self.instance_id)
-            .filter(|inst| !inst.is_horizon())
-        else {
+        let Some(instance) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
             return;
         };
         let root = instance.game_root();
@@ -498,13 +425,9 @@ impl InstanceWindow {
             status: "Checking installed mods…".into(),
             ..ModUpdates::default()
         };
-        let task =
-            runtime.spawn(async move { updates::check(&root, &mc, &loader, &downloader).await });
+        let task = runtime.spawn(async move { updates::check(&root, &mc, &loader, &downloader).await });
         cx.spawn(async move |this, cx| {
-            let result = task
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| {
                 let state = &mut this.mod_updates;
                 state.busy = false;
@@ -512,10 +435,7 @@ impl InstanceWindow {
                     Ok(report) => {
                         let count = report.updates.len();
                         let status = if count > 0 {
-                            format!(
-                                "{count} compatible update{} available.",
-                                if count == 1 { "" } else { "s" }
-                            )
+                            format!("{count} compatible update{} available.", if count == 1 { "" } else { "s" })
                         } else if report.warnings.is_empty() && report.unmatched == 0 {
                             "No compatible updates found.".into()
                         } else {
@@ -528,8 +448,7 @@ impl InstanceWindow {
                 };
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
         cx.notify();
     }
 
@@ -538,11 +457,7 @@ impl InstanceWindow {
             return;
         }
         let app = self.app.read(cx);
-        let Some(instance) = app
-            .instances
-            .get(&self.instance_id)
-            .filter(|inst| !inst.is_horizon())
-        else {
+        let Some(instance) = app.instances.get(&self.instance_id).filter(|inst| !inst.is_horizon()) else {
             return;
         };
         let target = (
@@ -575,27 +490,20 @@ impl InstanceWindow {
             update.apply(&downloader).await
         });
         cx.spawn(async move |this, cx| {
-            let result = task
-                .await
-                .map_err(|e| e.to_string())
-                .and_then(|r| r.map_err(|e| e.to_string()));
+            let result = task.await.map_err(|e| e.to_string()).and_then(|r| r.map_err(|e| e.to_string()));
             let _ = this.update(cx, |this, cx| {
                 let state = &mut this.mod_updates;
                 state.busy = false;
                 state.status = match result {
                     Ok(()) => {
-                        state
-                            .report
-                            .updates
-                            .retain(|row| row.installed_filename() != filename);
+                        state.report.updates.retain(|row| row.installed_filename() != filename);
                         format!("Updated {title}.")
                     }
                     Err(error) => format!("Could not update {title}: {error}"),
                 };
                 cx.notify();
             });
-        })
-        .detach();
+        }).detach();
         cx.notify();
     }
 
@@ -643,15 +551,10 @@ impl InstanceWindow {
             .child(div().h(px(1.)).bg(palette.border));
 
         for page in Page::all().into_iter().filter(|page| {
-            page.available(inst.is_horizon())
-                && (*page != Page::ManagedPack || self.managed_pack.available)
+            page.available(inst.is_horizon()) && (*page != Page::ManagedPack || self.managed_pack.available)
         }) {
             let active = self.page.sidebar_page() == page;
-            let label = if page == Page::Log && inst.is_horizon() {
-                "Horizon Log"
-            } else {
-                page.label()
-            };
+            let label = if page == Page::Log && inst.is_horizon() { "Horizon Log" } else { page.label() };
             let icon = match page {
                 Page::Log | Page::OtherLogs => crate::theme::Icon::Log,
                 Page::Worlds => crate::theme::Icon::Worlds,
@@ -718,20 +621,23 @@ impl InstanceWindow {
         }
 
         col.child(div().flex_1()).child(
-            div().px_3().py_2().child(
-                crate::theme::button(
-                    "iw-launch",
-                    crate::theme::Icon::Launch,
-                    if running { "Running…" } else { "Launch" },
-                    cx,
-                )
-                .disabled(running)
-                .on_click(cx.listener(|this, _ev, _window, cx| {
-                    let id = this.instance_id.clone();
-                    this.app.update(cx, |app, cx| app.start_launch(&id, cx));
-                    cx.notify();
-                })),
-            ),
+            div()
+                .px_3()
+                .py_2()
+                .child(
+                    crate::theme::button(
+                        "iw-launch",
+                        crate::theme::Icon::Launch,
+                        if running { "Running…" } else { "Launch" },
+                        cx,
+                    )
+                        .disabled(running)
+                        .on_click(cx.listener(|this, _ev, _window, cx| {
+                            let id = this.instance_id.clone();
+                            this.app.update(cx, |app, cx| app.start_launch(&id, cx));
+                            cx.notify();
+                        })),
+                ),
         )
     }
 
@@ -750,13 +656,8 @@ impl InstanceWindow {
             Page::Worlds => self.render_worlds_page(cx),
             Page::Servers => self.render_servers_page(cx),
             Page::Screenshots => self.render_screenshots_page(cx),
-            Page::BrowseMods
-            | Page::BrowseCurseForge
-            | Page::BrowseResourcePacks
-            | Page::BrowseShaderPacks
-            | Page::BrowseDataPacks => {
-                self.render_mod_browser(cx, self.page.browser().expect("browser page"))
-            }
+            Page::BrowseMods | Page::BrowseCurseForge | Page::BrowseResourcePacks | Page::BrowseShaderPacks | Page::BrowseDataPacks => self
+                .render_mod_browser(cx, self.page.browser().expect("browser page")),
         }
     }
 
@@ -777,28 +678,12 @@ impl InstanceWindow {
                     .flex()
                     .flex_col()
                     .min_w_0()
-                    .child(
-                        div()
-                            .text_ellipsis()
-                            .text_size(px(15.))
-                            .font_weight(FontWeight::BOLD)
-                            .child(inst.name),
-                    )
-                    .child(
-                        div()
-                            .text_ellipsis()
-                            .text_size(px(11.))
-                            .text_color(palette.muted_text)
-                            .child(subtitle),
-                    ),
+                    .child(div().text_ellipsis().text_size(px(15.)).font_weight(FontWeight::BOLD).child(inst.name))
+                    .child(div().text_ellipsis().text_size(px(11.)).text_color(palette.muted_text).child(subtitle)),
             )
     }
 
-    fn render_resources_page(
-        &self,
-        cx: &mut Context<Self>,
-        rtype: ResourceType,
-    ) -> gpui::AnyElement {
+    fn render_resources_page(&self, cx: &mut Context<Self>, rtype: ResourceType) -> gpui::AnyElement {
         let palette = crate::theme::Palette::get(cx);
         let inst = self.instance(cx);
         let folder = inst.game_root().join(rtype.folder());
@@ -832,11 +717,11 @@ impl InstanceWindow {
                             .flex_1()
                             .flex()
                             .flex_col()
-                            .child(div().text_ellipsis().child(if enabled {
-                                display_title
-                            } else {
-                                format!("{display_title} (disabled)")
-                            }))
+                            .child(
+                                div()
+                                    .text_ellipsis()
+                                    .child(if enabled { display_title } else { format!("{display_title} (disabled)") }),
+                            )
                             .child(
                                 div()
                                     .text_size(px(10.))
@@ -871,48 +756,34 @@ impl InstanceWindow {
         };
         let mut header = self.page_header(cx, folder.display().to_string());
         if rtype == ResourceType::Mod {
-            header = header.child(
-                div()
-                    .flex_shrink_0()
-                    .flex()
-                    .gap_2()
-                    .child(
-                        Button::new("browse-curseforge")
-                            .label("Browse CurseForge")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.page = Page::BrowseCurseForge;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("check-mod-updates")
-                            .label("Check for Updates")
-                            .disabled(self.mod_updates.busy)
-                            .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx))),
-                    )
-                    .child(
-                        Button::new("export-mod-list")
-                            .label("Export Mod List")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                if let Some(instance) =
-                                    this.app.read(cx).instances.get(&this.instance_id).cloned()
-                                {
-                                    mod_list_dialog::open(instance, cx);
-                                }
-                            })),
-                    ),
+            header = header.child(div().flex_shrink_0().flex().gap_2()
+                .child(Button::new("browse-curseforge")
+                    .label("Browse CurseForge")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.page = Page::BrowseCurseForge;
+                        cx.notify();
+                    })))
+                .child(Button::new("check-mod-updates")
+                    .label("Check for Updates")
+                    .disabled(self.mod_updates.busy)
+                    .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx))))
+                .child(Button::new("export-mod-list")
+                    .label("Export Mod List")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        if let Some(instance) = this.app.read(cx).instances.get(&this.instance_id).cloned() {
+                            mod_list_dialog::open(instance, cx);
+                        }
+                    }))),
             );
         }
         if let Some(page) = browser_page {
             header = header.child(
-                div().flex_shrink_0().child(
-                    Button::new("browse-packs")
-                        .label("Browse Modrinth")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.page = page;
-                            cx.notify();
-                        })),
-                ),
+                div().flex_shrink_0().child(Button::new("browse-packs")
+                    .label("Browse Modrinth")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.page = page;
+                        cx.notify();
+                    }))),
             );
         }
         div()
@@ -952,14 +823,12 @@ impl InstanceWindow {
         let installed_page = self.page.sidebar_page();
         if installed_page != self.page {
             header = header.child(
-                div().flex_shrink_0().child(
-                    Button::new("installed-packs")
-                        .label("Back to installed")
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.page = installed_page;
-                            cx.notify();
-                        })),
-                ),
+                div().flex_shrink_0().child(Button::new("installed-packs")
+                    .label("Back to installed")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.page = installed_page;
+                        cx.notify();
+                    }))),
             );
         }
 
@@ -971,27 +840,13 @@ impl InstanceWindow {
             .min_h_0()
             .child(header);
         if is_datapack && pack_target.is_none() {
-            return panel
-                .child(
-                    div()
-                        .p_3()
-                        .child("Select an existing world on the Data Packs page."),
-                )
-                .into_any_element();
+            return panel.child(div().p_3().child("Select an existing world on the Data Packs page.")).into_any_element();
         }
-        if let Some(message) =
-            provider.prerequisite(&target.loader, self.app.read(cx).curseforge_configured)
-        {
-            return panel
-                .child(div().p_3().text_color(palette.link).child(message))
-                .into_any_element();
+        if let Some(message) = provider.prerequisite(&target.loader, self.app.read(cx).curseforge_configured) {
+            return panel.child(div().p_3().text_color(palette.link).child(message)).into_any_element();
         }
 
-        let search_row = div()
-            .flex()
-            .gap_2()
-            .p_2()
-            .items_center()
+        let search_row = div().flex().gap_2().p_2().items_center()
             .child(div().flex_1().min_w_0().child(Input::new(&browser.input)))
             .child(
                 Button::new("mod-browser-search")
@@ -1064,28 +919,18 @@ impl InstanceWindow {
                             .child(format!("{downloads} downloads")),
                     )
                     .child(
-                        div().flex_shrink_0().child(
-                            Button::new(SharedString::from(format!("install-{id}")))
-                                .label(if is_installing {
-                                    "Installing…"
-                                } else {
-                                    "Install"
-                                })
-                                .disabled(running || is_installing)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(target) = &pack_target {
-                                        if let BrowserProject::Modrinth(project) = &project {
-                                            this.install_datapack(
-                                                target.clone(),
-                                                project.clone(),
-                                                cx,
-                                            );
-                                        }
-                                    } else if !is_datapack {
-                                        this.install_project(provider, project.clone(), cx);
+                        div().flex_shrink_0().child(Button::new(SharedString::from(format!("install-{id}")))
+                            .label(if is_installing { "Installing…" } else { "Install" })
+                            .disabled(running || is_installing)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(target) = &pack_target {
+                                    if let BrowserProject::Modrinth(project) = &project {
+                                        this.install_datapack(target.clone(), project.clone(), cx);
                                     }
-                                })),
-                        ),
+                                } else if !is_datapack {
+                                    this.install_project(provider, project.clone(), cx);
+                                }
+                            }))),
                     ),
             );
         }
@@ -1097,119 +942,48 @@ impl InstanceWindow {
         let palette = crate::theme::Palette::get(cx);
         let updates = &self.mod_updates;
         let running = self.app.read(cx).is_running(&self.instance_id);
-        let subtitle = updates
-            .target
-            .as_ref()
+        let subtitle = updates.target.as_ref()
             .map(|(_, mc, _)| format!("Mod Updates · Minecraft {mc}"))
             .unwrap_or_else(|| "Mod Updates".into());
-        let header = self.page_header(cx, subtitle).child(
-            div()
-                .flex_shrink_0()
-                .flex()
-                .gap_2()
-                .child(
-                    Button::new("recheck-mod-updates")
-                        .label("Check again")
-                        .disabled(updates.busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx))),
-                )
-                .child(
-                    Button::new("back-to-mods")
-                        .label("Back to installed")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.page = Page::Mods;
-                            cx.notify();
-                        })),
-                ),
-        );
-        let mut list = div()
-            .id("mod-updates-list")
-            .min_h_0()
-            .flex_1()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap_2()
-            .p_3();
+        let header = self.page_header(cx, subtitle)
+            .child(div().flex_shrink_0().flex().gap_2()
+                .child(Button::new("recheck-mod-updates")
+                    .label("Check again")
+                    .disabled(updates.busy)
+                    .on_click(cx.listener(|this, _, _, cx| this.check_mod_updates(cx))))
+                .child(Button::new("back-to-mods")
+                    .label("Back to installed")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.page = Page::Mods;
+                        cx.notify();
+                    }))));
+        let mut list = div().id("mod-updates-list").min_h_0().flex_1().overflow_y_scroll()
+            .flex().flex_col().gap_2().p_3();
         for update in &updates.report.updates {
             let row = update.clone();
             list = list.child(
-                div()
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .rounded_md()
-                    .bg(palette.panel)
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .flex()
-                            .flex_col()
-                            .child(div().text_ellipsis().child(update.title.clone()))
-                            .child(
-                                div()
-                                    .text_ellipsis()
-                                    .text_size(px(11.))
-                                    .text_color(palette.secondary_text)
-                                    .child(format!(
-                                        "{} → {} · {}",
-                                        update.current_version, update.new_version, update.provider
-                                    )),
-                            ),
-                    )
-                    .child(
-                        div().flex_shrink_0().child(
-                            Button::new(SharedString::from(format!(
-                                "update-{}",
-                                update.installed_filename()
-                            )))
-                            .label("Update")
-                            .disabled(updates.busy || running)
-                            .on_click(cx.listener(
-                                move |this, _, _, cx| this.apply_mod_update(row.clone(), cx),
-                            )),
-                        ),
-                    ),
+                div().flex().flex_shrink_0().items_center().gap_3().px_3().py_2()
+                    .rounded_md().bg(palette.panel)
+                    .child(div().min_w_0().flex_1().flex().flex_col()
+                        .child(div().text_ellipsis().child(update.title.clone()))
+                        .child(div().text_ellipsis().text_size(px(11.)).text_color(palette.secondary_text)
+                            .child(format!("{} → {} · {}", update.current_version, update.new_version, update.provider))))
+                    .child(div().flex_shrink_0().child(Button::new(SharedString::from(format!("update-{}", update.installed_filename())))
+                        .label("Update")
+                        .disabled(updates.busy || running)
+                        .on_click(cx.listener(move |this, _, _, cx| this.apply_mod_update(row.clone(), cx))))),
             );
         }
         if updates.report.locked > 0 || updates.report.unmatched > 0 {
-            list = list.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette.secondary_text)
-                    .child(format!(
-                        "Skipped: {} locked, {} without a provider match.",
-                        updates.report.locked, updates.report.unmatched
-                    )),
-            );
+            list = list.child(div().text_size(px(12.)).text_color(palette.secondary_text)
+                .child(format!("Skipped: {} locked, {} without a provider match.", updates.report.locked, updates.report.unmatched)));
         }
         for warning in &updates.report.warnings {
-            list = list.child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(palette.warning)
-                    .child(warning.clone()),
-            );
+            list = list.child(div().text_size(px(12.)).text_color(palette.warning).child(warning.clone()));
         }
-        div()
-            .min_w_0()
-            .min_h_0()
-            .flex_1()
-            .flex()
-            .flex_col()
+        div().min_w_0().min_h_0().flex_1().flex().flex_col()
             .child(header)
-            .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .text_size(px(13.))
-                    .text_color(palette.link)
-                    .child(updates.status.clone()),
-            )
+            .child(div().px_3().pt_3().text_size(px(13.)).text_color(palette.link).child(updates.status.clone()))
             .child(list)
             .into_any_element()
     }
@@ -1222,10 +996,7 @@ impl InstanceWindow {
             .flex()
             .flex_col()
             .min_h_0()
-            .child(
-                self.page_header(cx, "Free-form notes".to_string())
-                    .into_any_element(),
-            )
+            .child(self.page_header(cx, "Free-form notes".to_string()).into_any_element())
             .child(
                 div()
                     .id("notes-area")
@@ -1235,11 +1006,7 @@ impl InstanceWindow {
                     .bg(palette.panel)
                     .rounded_md()
                     .text_size(px(13.))
-                    .child(if notes.is_empty() {
-                        "No notes yet.".to_string()
-                    } else {
-                        notes
-                    }),
+                    .child(if notes.is_empty() { "No notes yet.".to_string() } else { notes }),
             )
             .into_any_element()
     }
@@ -1247,10 +1014,7 @@ impl InstanceWindow {
     fn render_settings_page(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         match &self.settings_editor {
             Some(editor) => editor.render(cx),
-            None => div()
-                .p_4()
-                .child("Could not load instance settings. Reopen this window to retry.")
-                .into_any_element(),
+            None => div().p_4().child("Could not load instance settings. Reopen this window to retry.").into_any_element(),
         }
     }
 
@@ -1504,6 +1268,7 @@ impl InstanceWindow {
         }
         panel.into_any_element()
     }
+
 }
 
 impl Render for InstanceWindow {
@@ -1517,8 +1282,7 @@ impl Render for InstanceWindow {
                 let paths = self.app.read(cx).paths.clone();
                 self.settings_editor = crate::instance_settings_page::SettingsEditor::load(
                     &instance, &paths, window, cx,
-                )
-                .ok();
+                ).ok();
             }
         }
         let running = self.servers_running(cx);
@@ -1550,24 +1314,19 @@ impl Render for InstanceWindow {
                 Browser::Modrinth(_) => "Search Modrinth…",
                 Browser::CurseForge => "Search CurseForge…",
             };
-            self.browsers
-                .entry(provider)
-                .or_insert_with(|| BrowserState {
-                    input: cx.new(|cx| InputState::new(window, cx).placeholder(placeholder)),
-                    target: None,
-                    results: Vec::new(),
-                    searching: false,
-                    search_status: "Search by name or leave blank to browse.".into(),
-                    installing: HashSet::new(),
-                    install_status: String::new(),
-                });
+            self.browsers.entry(provider).or_insert_with(|| BrowserState {
+                input: cx.new(|cx| InputState::new(window, cx).placeholder(placeholder)),
+                target: None,
+                results: Vec::new(),
+                searching: false,
+                search_status: "Search by name or leave blank to browse.".into(),
+                installing: HashSet::new(),
+                install_status: String::new(),
+            });
         }
         if running {
             cx.spawn(async move |this, cx| {
-                let _ = cx
-                    .background_executor()
-                    .timer(std::time::Duration::from_millis(500))
-                    .await;
+                let _ = cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
                 let _ = this.update(cx, |_, cx| cx.notify());
             })
             .detach();

@@ -48,6 +48,7 @@ impl MainWindow {
         self.app.update(cx, |app, _| app.poll_news());
     }
 
+
     fn open_create_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.create_dialog = Some(CreateInstanceState::new(window, cx));
         cx.notify();
@@ -157,12 +158,7 @@ impl MainWindow {
         cx.notify();
     }
 
-    fn on_view_instances_folder(
-        &mut self,
-        _ev: &ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_view_instances_folder(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let dir = self.app.read(cx).paths.instances_dir();
         let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
     }
@@ -252,12 +248,7 @@ impl MainWindow {
         container.into_any_element()
     }
 
-    fn render_instance_tile(
-        &self,
-        id: String,
-        name: String,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_instance_tile(&self, id: String, name: String, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = crate::theme::Palette::get(cx);
         let app = self.app.clone();
         let selected = {
@@ -265,16 +256,8 @@ impl MainWindow {
             app.selected.as_deref() == Some(id.as_str())
         };
         let running = app.read(cx).is_running(&id);
-        let horizon = app
-            .read(cx)
-            .instances
-            .get(&id)
-            .is_some_and(|inst| inst.is_horizon());
-        let icon = app
-            .read(cx)
-            .instances
-            .get(&id)
-            .and_then(|inst| app.read(cx).instance_icon_path(inst));
+        let horizon = app.read(cx).instances.get(&id).is_some_and(|inst| inst.is_horizon());
+        let icon = app.read(cx).instances.get(&id).and_then(|inst| app.read(cx).instance_icon_path(inst));
         let tile_bg = if selected {
             palette.selection
         } else {
@@ -329,10 +312,7 @@ impl MainWindow {
                     } else if running {
                         "▶".to_string()
                     } else {
-                        name.chars()
-                            .next()
-                            .map(|c| c.to_uppercase().to_string())
-                            .unwrap_or_else(|| "?".to_string())
+                        name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".to_string())
                     }),
             )
             .child(
@@ -357,9 +337,7 @@ impl MainWindow {
             .map(|i| i.name.clone())
             .unwrap_or_default();
         let enabled = selected.is_some();
-        let horizon = app
-            .selected_instance()
-            .is_some_and(|inst| inst.is_horizon());
+        let horizon = app.selected_instance().is_some_and(|inst| inst.is_horizon());
         let is_running = selected
             .as_deref()
             .map(|id| app.is_running(id))
@@ -386,45 +364,22 @@ impl MainWindow {
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_ellipsis()
-                    .child(
-                        if name.is_empty() {
-                            "No selection"
-                        } else {
-                            name.as_str()
-                        }
-                        .to_string(),
-                    ),
+                    .child(if name.is_empty() { "No selection" } else { name.as_str() }.to_string()),
             )
             .child(
                 div()
                     .text_size(px(11.))
                     .text_color(palette.muted_text)
-                    .child(
-                        if group.is_empty() {
-                            "No group"
-                        } else {
-                            group.as_str()
-                        }
-                        .to_string(),
-                    ),
+                    .child(if group.is_empty() { "No group" } else { group.as_str() }.to_string()),
             )
             .child(div().w_full().h(px(1.)).my_1().bg(palette.strong_border))
-            .child(
-                self.sidebar_button(cx, "rename", "Rename", enabled)
-                    .on_click(cx.listener(Self::on_rename)),
-            )
-            .child(
-                self.sidebar_button(cx, "change-icon", "Change Icon", enabled)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(inst) = this.app.read(cx).selected_instance() {
-                            this.icon_picker = Some(crate::dialogs::IconPickerDialog::new(
-                                inst,
-                                &this.app.read(cx).paths.icons_dir(),
-                            ));
-                            cx.notify();
-                        }
-                    })),
-            )
+            .child(self.sidebar_button(cx, "rename", "Rename", enabled).on_click(cx.listener(Self::on_rename)))
+            .child(self.sidebar_button(cx, "change-icon", "Change Icon", enabled).on_click(cx.listener(|this, _, _, cx| {
+                if let Some(inst) = this.app.read(cx).selected_instance() {
+                    this.icon_picker = Some(crate::dialogs::IconPickerDialog::new(inst, &this.app.read(cx).paths.icons_dir()));
+                    cx.notify();
+                }
+            })))
             .child(div().w_full().h(px(1.)).my_1().bg(palette.strong_border))
             .child(
                 self.sidebar_button(cx, "launch", "Launch", enabled && !is_running)
@@ -459,17 +414,11 @@ impl MainWindow {
                 self.sidebar_button(cx, "change-group", "Change Group", enabled)
                     .on_click(cx.listener(Self::on_change_group)),
             )
-            .child(
-                self.sidebar_button(cx, "view-folder", "View Folder", enabled)
-                    .on_click(cx.listener(Self::on_view_folder)),
-            )
+            .child(self.sidebar_button(cx, "view-folder", "View Folder", enabled).on_click(cx.listener(Self::on_view_folder)))
             .child(
                 self.sidebar_button(cx, "export", "Export", enabled && !horizon)
                     .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(instance) = this
-                            .app
-                            .read(cx)
-                            .selected_instance()
+                        if let Some(instance) = this.app.read(cx).selected_instance()
                             .filter(|instance| !instance.is_horizon())
                             .cloned()
                         {
@@ -486,43 +435,22 @@ impl MainWindow {
                         }
                     })),
             )
-            .child(
-                self.sidebar_button(cx, "copy", "Copy", enabled && !horizon)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        if let Some(instance) = this
-                            .app
-                            .read(cx)
-                            .selected_instance()
-                            .filter(|i| !i.is_horizon())
-                            .cloned()
-                        {
-                            let prompt = PromptState::new(
-                                crate::dialogs::PromptKind::Copy,
-                                instance.id,
-                                format!("{} (Copy)", instance.name),
-                                window,
-                                cx,
-                            );
-                            prompt.copy_group.as_ref().unwrap().update(cx, |input, cx| {
-                                input.set_value(instance.group.unwrap_or_default(), window, cx)
-                            });
-                            this.prompt = Some(prompt);
-                            cx.notify();
-                        }
-                    })),
-            )
+            .child(self.sidebar_button(cx, "copy", "Copy", enabled && !horizon).on_click(cx.listener(|this, _, window, cx| {
+                if let Some(instance) = this.app.read(cx).selected_instance().filter(|i| !i.is_horizon()).cloned() {
+                    let prompt = PromptState::new(crate::dialogs::PromptKind::Copy, instance.id, format!("{} (Copy)", instance.name), window, cx);
+                    prompt.copy_group.as_ref().unwrap().update(cx, |input, cx| input.set_value(instance.group.unwrap_or_default(), window, cx));
+                    this.prompt = Some(prompt);
+                    cx.notify();
+                }
+            })))
             .child(
                 self.sidebar_button(
                     cx,
                     "delete",
-                    if horizon {
-                        "Remove from Prism"
-                    } else {
-                        "Delete"
-                    },
+                    if horizon { "Remove from Prism" } else { "Delete" },
                     enabled && !(horizon && is_running),
                 )
-                .on_click(cx.listener(Self::on_delete)),
+                    .on_click(cx.listener(Self::on_delete)),
             );
         #[cfg(target_os = "linux")]
         let sidebar = sidebar.child(
@@ -615,12 +543,7 @@ impl MainWindow {
     }
 
     #[cfg(target_os = "linux")]
-    fn on_create_shortcut(
-        &mut self,
-        _ev: &ClickEvent,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn on_create_shortcut(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.app.update(cx, |app, _| {
             let Some(instance) = app.selected_instance() else {
                 return;
@@ -646,11 +569,7 @@ impl MainWindow {
         let Some(id) = self.app.read(cx).selected.clone() else {
             return;
         };
-        let managed = self
-            .app
-            .read(cx)
-            .instances
-            .get(&id)
+        let managed = self.app.read(cx).instances.get(&id)
             .is_some_and(prism_core::managed_pack::ManagedPack::present);
         let app = self.app.clone();
         let options = WindowOptions {
@@ -667,13 +586,17 @@ impl MainWindow {
     }
 
     fn on_view_folder(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        let dir = self.app.read(cx).selected_instance().and_then(|instance| {
-            if instance.is_horizon() {
-                prism_core::Instance::load(&instance.root).map(|current| current.game_root())
-            } else {
-                Some(instance.root.clone())
-            }
-        });
+        let dir = self
+            .app
+            .read(cx)
+            .selected_instance()
+            .and_then(|instance| {
+                if instance.is_horizon() {
+                    prism_core::Instance::load(&instance.root).map(|current| current.game_root())
+                } else {
+                    Some(instance.root.clone())
+                }
+            });
         if let Some(dir) = dir {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
@@ -683,16 +606,11 @@ impl MainWindow {
         let id = self.app.read(cx).selected.clone();
         self.app.update(cx, |app, _cx| {
             if let Some(id) = id {
-                let Some(instance) = app.instances.get(&id) else {
-                    return;
-                };
+                let Some(instance) = app.instances.get(&id) else { return };
                 let _lock = match crate::instance_lock::acquire(&app.paths, instance) {
                     Ok(lock) => lock,
                     Err(error) => {
-                        app.toast = Some((
-                            format!("Could not remove instance: {error}"),
-                            std::time::Instant::now(),
-                        ));
+                        app.toast = Some((format!("Could not remove instance: {error}"), std::time::Instant::now()));
                         return;
                     }
                 };
@@ -718,11 +636,7 @@ impl MainWindow {
                 if let Ok(log) = running.log.lock() {
                     lines = log.clone();
                 }
-                let s = running
-                    .state
-                    .lock()
-                    .map(|s| s.clone())
-                    .unwrap_or(InstanceRunState::Idle);
+                let s = running.state.lock().map(|s| s.clone()).unwrap_or(InstanceRunState::Idle);
                 lines.push(format!("--- {s:?} ---"));
             }
         }
@@ -833,10 +747,7 @@ impl MainWindow {
                     .text_color(palette.muted_text)
                     .child(description)
                     .child(div().flex_1())
-                    .child(format!(
-                        "Total play time: {}",
-                        format_play_time(total_played)
-                    )),
+                    .child(format!("Total play time: {}", format_play_time(total_played))),
             )
     }
 }
@@ -848,18 +759,12 @@ impl Render for MainWindow {
         // Keep state fresh while instances run.
         if self.app.read(cx).running.values().any(|r| {
             matches!(
-                r.state
-                    .lock()
-                    .map(|s| s.clone())
-                    .unwrap_or(InstanceRunState::Idle),
+                r.state.lock().map(|s| s.clone()).unwrap_or(InstanceRunState::Idle),
                 InstanceRunState::Preparing | InstanceRunState::Running
             )
         }) {
             cx.spawn(async move |this, cx| {
-                let _ = cx
-                    .background_executor()
-                    .timer(std::time::Duration::from_millis(500))
-                    .await;
+                let _ = cx.background_executor().timer(std::time::Duration::from_millis(500)).await;
                 let _ = this.update(cx, |_, cx| cx.notify());
             })
             .detach();
@@ -870,7 +775,10 @@ impl Render for MainWindow {
             .create_dialog
             .as_mut()
             .map(|d| d.render(&self.app.clone(), window, cx));
-        let prompt_dialog = self.prompt.as_ref().map(|p| p.render(window, cx));
+        let prompt_dialog = self
+            .prompt
+            .as_ref()
+            .map(|p| p.render(window, cx));
 
         let toast = self
             .app

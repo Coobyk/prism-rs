@@ -7,13 +7,13 @@ mod cli_launch;
 mod dialogs;
 mod ftb_page;
 mod instance_lock;
-mod instance_settings_page;
 mod instance_window;
+mod instance_settings_page;
 mod main_window;
 mod settings_window;
+mod skins_dialog;
 #[cfg(target_os = "linux")]
 mod shortcut;
-mod skins_dialog;
 mod state;
 mod technic_window;
 mod theme;
@@ -57,27 +57,16 @@ fn main() {
     }
     if args.get(1).map(String::as_str) == Some("copy") {
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            if args.len() < 4 || args.len() > 5 {
-                return Err("Usage: prism-rs copy <instance-id> <name> [group]".into());
-            }
+            if args.len() < 4 || args.len() > 5 { return Err("Usage: prism-rs copy <instance-id> <name> [group]".into()); }
             let paths = prism_core::Paths::new();
             let list = prism_core::InstanceList::load(&paths)?;
             let source = list.get(&args[2]).ok_or("Instance not found")?;
             let group = args.get(4).map(String::as_str).or(source.group.as_deref());
-            let copied = prism_core::copy::copy_instance(
-                &paths,
-                source,
-                &args[3],
-                group,
-                &Default::default(),
-            )?;
+            let copied = prism_core::copy::copy_instance(&paths, source, &args[3], group, &Default::default())?;
             println!("Copied: {} ({})", copied.name, copied.id);
             Ok(())
         })();
-        if let Err(error) = result {
-            eprintln!("Copy failed: {error}");
-            std::process::exit(1);
-        }
+        if let Err(error) = result { eprintln!("Copy failed: {error}"); std::process::exit(1); }
         return;
     }
     if args.get(1).map(String::as_str) == Some("export") {
@@ -154,11 +143,7 @@ fn headless_instances() -> i32 {
                 if let prism_core::InstanceKind::Horizon { id, home, .. } = &inst.kind {
                     println!(
                         "- {:?} (id: {:?}, Horizon ID: {}, group {}, game dir: {})",
-                        inst.name,
-                        inst.id,
-                        id,
-                        inst.group.as_deref().unwrap_or("-"),
-                        home.display()
+                        inst.name, inst.id, id, inst.group.as_deref().unwrap_or("-"), home.display()
                     );
                     continue;
                 }
@@ -213,7 +198,10 @@ fn headless_import(path: &str) -> i32 {
         Ok(outcome) => {
             let inst = outcome.instance;
             println!("Imported: {} ({})", inst.name, inst.id);
-            println!("loader: {:?}", prism_core::instance::loader_of(&inst));
+            println!(
+                "loader: {:?}",
+                prism_core::instance::loader_of(&inst)
+            );
             if let Some(issue) = outcome.curseforge_key_issue {
                 eprintln!(
                     "{}: set a valid PRISM_RS_CURSEFORGE_API_KEY for automatic downloads.",
@@ -285,10 +273,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             instance_name: "headless-test".into(),
             instance_id: "headless-test".into(),
             instance_dir: paths.instances_dir().join("headless-test"),
-            game_dir: paths
-                .instances_dir()
-                .join("headless-test")
-                .join(".minecraft"),
+            game_dir: paths.instances_dir().join("headless-test").join(".minecraft"),
             mc_version: version.into(),
             java_path: prism_core::java::find_java().unwrap_or_else(|| "java".into()),
             java_path_explicit: false,
@@ -313,10 +298,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
     runtime.handle().block_on(async {
         let version = mc_version.as_str();
         println!("Fetching version metadata for {version}…");
-        let vd = launcher
-            .fetch_version_data(version)
-            .await
-            .expect("version fetch failed");
+        let vd = launcher.fetch_version_data(version).await.expect("version fetch failed");
         let mut profile = prism_core::profile::LaunchProfile::from_mojang(&vd);
         if let Some(instance) = &instance {
             let loader = prism_core::instance::loader_of(instance);
@@ -324,25 +306,18 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 prism_core::loaders::Loader::None => {}
                 prism_core::loaders::Loader::Forge { .. }
                     if prism_core::modplatform::technic::apply_forge_patch(
-                        &mut profile,
-                        &settings.instance_dir,
-                        &settings.game_dir,
-                        &loader,
-                    )
-                    .expect("Technic Forge profile could not be read") => {}
+                        &mut profile, &settings.instance_dir, &settings.game_dir, &loader,
+                    ).expect("Technic Forge profile could not be read") => {}
                 prism_core::loaders::Loader::Forge { .. }
                 | prism_core::loaders::Loader::NeoForge { .. } => {
-                    launcher
-                        .prepare_files(&profile, &settings)
-                        .await
-                        .expect("vanilla prepare failed");
+                    launcher.prepare_files(&profile, &settings)
+                        .await.expect("vanilla prepare failed");
                     let versions = settings.game_dir.join("versions").join(version);
                     std::fs::create_dir_all(&versions).unwrap();
                     std::fs::copy(
                         launcher.client_jar_path(version),
                         versions.join(format!("{version}.jar")),
-                    )
-                    .unwrap();
+                    ).unwrap();
                     let overlay = prism_core::loaders::ensure_forge_installed(
                         &settings.java_path,
                         &loader,
@@ -356,9 +331,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
                 }
                 _ => {
                     let overlay = prism_core::loaders::fetch_loader_profile(
-                        &runtime.downloader.client(),
-                        &loader,
-                        version,
+                        &runtime.downloader.client(), &loader, version,
                     )
                     .await
                     .expect("loader profile fetch failed");
@@ -372,9 +345,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             .filter(|_| instance.is_none())
         {
             if !loader_version.is_empty() {
-                let loader = prism_core::loaders::Loader::Fabric {
-                    version: loader_version,
-                };
+                let loader = prism_core::loaders::Loader::Fabric { version: loader_version };
                 let lvd = prism_core::loaders::fetch_loader_profile(
                     &runtime.downloader.client(),
                     &loader,
@@ -407,10 +378,7 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
         }
 
         println!("Downloading game files…");
-        launcher
-            .prepare_files(&profile, &settings)
-            .await
-            .expect("prepare failed");
+        launcher.prepare_files(&profile, &settings).await.expect("prepare failed");
 
         let mut accounts = prism_core::AccountList::load(&paths.accounts_file());
         let session = match accounts.session_for_launch(&paths.accounts_file()).await {
