@@ -102,12 +102,28 @@ pub(super) struct VersionPage {
     message: String,
     dialog: Option<Dialog>,
     dialog_id: u64,
+    refresh_id: u64,
     customize_reason: Option<String>,
     confirmation: Option<(String, ComponentAction)>,
     component_labels: BTreeMap<String, ComponentLabels>,
 }
 
 impl VersionPage {
+    fn install_pack(&mut self, pack: Pack, labels: BTreeMap<String, ComponentLabels>) -> Option<String> {
+        let version = (!pack.is_custom(MINECRAFT)).then(|| pack.version(MINECRAFT).map(str::to_owned)).flatten();
+        self.customize_reason = if pack.is_custom(MINECRAFT) {
+            None
+        } else if version.is_some() {
+            Some("Checking Customize availability…".into())
+        } else {
+            Some("Minecraft version is missing.".into())
+        };
+        self.busy = false;
+        self.pack = Some(pack);
+        self.component_labels = labels;
+        version
+    }
+
     pub(super) fn on_navigation(&mut self) {
         self.dialog = None;
         self.confirmation = None;
@@ -315,35 +331,39 @@ impl InstanceWindow {
                 Ok::<_, std::io::Error>((pack, names))
             });
         let launcher = Launcher::new(app.paths.clone(), app.runtime.downloader.clone());
-        let task = app.runtime.spawn(async move {
-            let (pack, names) = load.await.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
-            let reason = if !pack.is_custom(MINECRAFT) {
-                match pack.version(MINECRAFT) {
-                    Some(version) => launcher.component_document(MINECRAFT, version).await.err().map(|e| e.to_string()),
-                    None => Some("Minecraft version is missing.".into()),
-                }
-            } else { None };
-            Ok::<_, String>((pack, reason, names))
-        });
+        let runtime = app.runtime.handle();
         self.version_editor.busy = true;
-        self.version_editor.pack = None;
+        self.version_editor.refresh_id += 1;
+        let refresh_id = self.version_editor.refresh_id;
         cx.spawn(async move |this, cx| {
-            let result = task
+            let result = load
                 .await
                 .map_err(|error| error.to_string())
                 .and_then(|result| result.map_err(|error| error.to_string()));
-            let _ = this.update(cx, |this, cx| {
-                this.version_editor.busy = false;
-                match result {
-                    Ok((pack, reason, names)) => {
-                        this.version_editor.pack = Some(pack);
-                        this.version_editor.customize_reason = reason;
-                        this.version_editor.component_labels = names;
-                    }
-                    Err(error) => {
-                        this.version_editor.message = format!("Could not read components: {error}")
-                    }
+            let version = this.update(cx, |this, cx| {
+                if this.version_editor.refresh_id != refresh_id {
+                    return None;
                 }
+                this.version_editor.busy = false;
+                let version = match result {
+                    Ok((pack, names)) => this.version_editor.install_pack(pack, names),
+                    Err(error) => {
+                        this.version_editor.message = format!("Could not read components: {error}");
+                        None
+                    }
+                };
+                cx.notify();
+                version
+            }).ok().flatten();
+            let Some(version) = version else { return; };
+            let reason = runtime.spawn(async move {
+                launcher.component_document(MINECRAFT, &version).await.err().map(|error| error.to_string())
+            }).await.unwrap_or_else(|error| Some(error.to_string()));
+            let _ = this.update(cx, |this, cx| {
+                if this.version_editor.refresh_id != refresh_id || this.version_editor.busy {
+                    return;
+                }
+                this.version_editor.customize_reason = reason;
                 cx.notify();
             });
         })
@@ -932,8 +952,26 @@ fn row(name: &str, value: &str) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_message, local_jar_subtitle};
+    use super::{import_message, local_jar_subtitle, Pack, VersionPage, MINECRAFT};
     use serde_json::json;
+
+    #[test]
+    fn local_components_are_usable_before_customize_metadata_completes() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = prism_core::Paths { root: root.path().into() };
+        let instance = prism_core::InstanceList::create(&paths, "Version", "default", "1.20.1").unwrap();
+        let pack = Pack::load(&instance.root).unwrap();
+        let mut state = VersionPage::default();
+        state.busy = true;
+        assert_eq!(state.install_pack(pack, Default::default()).as_deref(), Some("1.20.1"));
+        assert!(!state.busy);
+        assert!(state.pack.as_ref().unwrap().components().next().is_some());
+        assert_eq!(state.customize_reason.as_deref(), Some("Checking Customize availability…"));
+        let custom = state.pack.take().unwrap().customize(MINECRAFT,
+            &json!({"uid":MINECRAFT,"formatVersion":1,"mainClass":"Main"})).unwrap();
+        assert!(state.install_pack(custom, Default::default()).is_none());
+        assert!(state.customize_reason.is_none());
+    }
 
     #[test]
     fn import_counts_and_failures() {
