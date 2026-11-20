@@ -1,5 +1,6 @@
 //! Application state shared across the UI.
 
+use crate::i18n::{self, Locale};
 use prism_core::horizon::HorizonLauncher;
 use prism_core::launch::LaunchSettings;
 use prism_core::meta::VersionManifest;
@@ -37,6 +38,7 @@ impl RunningInstance {
 
 pub struct App {
     pub paths: Paths,
+    pub locale: Locale,
     pub runtime: Arc<CoreRuntime>,
     pub instances: InstanceList,
     pub accounts: AccountList,
@@ -64,6 +66,9 @@ impl App {
             InstanceList::default()
         });
         App {
+            locale: Locale::resolve(
+                prism_core::settings::Settings::load(&paths.global_config()).get(i18n::SETTING),
+            ),
             runtime: Arc::new(CoreRuntime::new()),
             curseforge_configured: prism_core::modplatform::flame::FlameApi::is_configured(),
             paths,
@@ -129,16 +134,16 @@ impl App {
     pub fn status_description(&self) -> String {
         match self.selected_instance() {
             Some(inst) => {
-                let played = format_play_time(inst.total_time_played);
+                let played = format_play_time(self.locale, inst.total_time_played);
                 match self.run_state(&inst.id) {
-                    InstanceRunState::Preparing => format!("{} • Preparing…", inst.name),
-                    InstanceRunState::Running => format!("{} • Running", inst.name),
-                    InstanceRunState::Crashed(e) => format!("{} • Crashed: {e}", inst.name),
-                    InstanceRunState::Finished => format!("{} • Finished", inst.name),
-                    InstanceRunState::Idle => format!("Name: {} • Play time: {played}", inst.name),
+                    InstanceRunState::Preparing => self.locale.format("{0} • Preparing…", &[&inst.name]),
+                    InstanceRunState::Running => self.locale.format("{0} • Running", &[&inst.name]),
+                    InstanceRunState::Crashed(e) => self.locale.format("{0} • Crashed: {1}", &[&inst.name, &e]),
+                    InstanceRunState::Finished => self.locale.format("{0} • Finished", &[&inst.name]),
+                    InstanceRunState::Idle => self.locale.format("Name: {0} • Play time: {1}", &[&inst.name, &played]),
                 }
             }
-            None => "No instance selected".to_string(),
+            None => self.locale.text("No instance selected").to_owned(),
         }
     }
 
@@ -449,13 +454,13 @@ fn read_output(
     });
 }
 
-pub fn format_play_time(seconds: u64) -> String {
+pub fn format_play_time(locale: Locale, seconds: u64) -> String {
     let hours = seconds / 3600;
     let minutes = (seconds % 3600) / 60;
     if hours > 0 {
-        format!("{hours}h {minutes}m")
+        locale.format("{0}h {1}m", &[&hours.to_string(), &minutes.to_string()])
     } else {
-        format!("{minutes}m")
+        locale.format("{0}m", &[&minutes.to_string()])
     }
 }
 

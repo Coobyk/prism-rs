@@ -1,5 +1,6 @@
 //! Global launcher preferences persisted in `prismlauncher.cfg`.
 
+use crate::i18n::Locale;
 use crate::state::App;
 use crate::theme::Button;
 use gpui_kit::base::{Disableable, Selectable};
@@ -18,6 +19,7 @@ enum Page {
     ApiKeys,
     Appearance,
     Tools,
+    Language,
 }
 
 #[derive(Clone)]
@@ -90,6 +92,33 @@ impl SettingsWindow {
     pub fn new(app: gpui::Entity<App>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let config_path = app.read(cx).paths.global_config();
         let cfg = Settings::load(&config_path);
+        let locale = app.read(cx).locale;
+        let mut previous_locale = locale;
+        window.set_window_title(locale.text("Settings"));
+        cx.observe_in(&app, window, move |this, app, window, cx| {
+            let locale = app.read(cx).locale;
+            if locale == previous_locale {
+                return;
+            }
+            previous_locale = locale;
+            window.set_window_title(locale.text("Settings"));
+            for (input, source) in [
+                (&this.java_path, "(auto-detect)"),
+                (&this.jvm_args, "e.g. -Dexample=value"),
+                (&this.horizon_launcher_path, "(find on PATH)"),
+                (&this.proxy_user, "(optional)"),
+                (&this.proxy_password, "(optional)"),
+                (&this.curseforge_key, "(optional)"),
+                (&this.imgur_id, "(optional)"),
+            ] {
+                input.update(cx, |input, cx| {
+                    input.set_placeholder(locale.text(source), window, cx);
+                });
+            }
+            this.status.clear();
+            cx.notify();
+        })
+        .detach();
 
         let themes = cx.new(|cx| SelectState::new(choices(cx, false), None, window, cx));
         let icon_themes = cx.new(|cx| SelectState::new(choices(cx, true), None, window, cx));
@@ -115,7 +144,7 @@ impl SettingsWindow {
                                 } else {
                                     crate::theme::select(id, window.appearance(), cx);
                                 }
-                                "Appearance saved.".into()
+                                this.app.read(cx).locale.text("Appearance saved.").into()
                             }
                             Err(error) => {
                                 let (theme, icon) = crate::theme::selected(cx);
@@ -138,8 +167,8 @@ impl SettingsWindow {
             .detach();
         }
 
-        let mk = |placeholder: &str, value: String, window: &mut Window, cx: &mut Context<Self>| {
-            let state = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
+        let mk = |placeholder, value: String, window: &mut Window, cx: &mut Context<Self>| {
+            let state = cx.new(|cx| InputState::new(window, cx).placeholder(locale.text(placeholder)));
             state.update(cx, |s, cx| {
                 s.set_value(value.clone(), window, cx);
             });
@@ -153,7 +182,7 @@ impl SettingsWindow {
 
         SettingsWindow {
             tools: cx
-                .new(|cx| crate::external_tools_page::ExternalToolsPage::new(&cfg, window, cx)),
+                .new(|cx| crate::external_tools_page::ExternalToolsPage::new(app.clone(), &cfg, window, cx)),
             app,
             themes,
             icon_themes,
@@ -192,14 +221,14 @@ impl SettingsWindow {
             imgur_id: masked(cfg.get_or(ApiKey::Imgur.setting(), ""), window, cx),
             detected_java: prism_core::java::find_java()
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "not found".to_string()),
+                .unwrap_or_default(),
             status: String::new(),
         }
     }
 
     fn apply(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         self.status = match self.save(cx) {
-            Ok(()) => "Settings saved.".into(),
+            Ok(()) => self.app.read(cx).locale.text("Settings saved.").into(),
             Err(error) => error,
         };
         cx.notify();
@@ -207,15 +236,16 @@ impl SettingsWindow {
 
     fn save(&self, cx: &mut Context<Self>) -> Result<(), String> {
         let config_path = self.app.read(cx).paths.global_config();
+        let locale = self.app.read(cx).locale;
         let mut cfg = Settings::load(&config_path);
         let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
         match self.page {
-            Page::Appearance => return Ok(()),
+            Page::Appearance | Page::Language => return Ok(()),
             Page::Tools => self.tools.read(cx).save(&mut cfg, cx),
             Page::General => {
                 let args = value(&self.jvm_args);
                 prism_core::launch::split_args(&args)
-                    .map_err(|err| format!("Invalid JVM arguments: {err}"))?;
+                    .map_err(|err| locale.format("Invalid JVM arguments: {0}", &[&err.to_string()]))?;
                 for (key, field) in [
                     ("MinMemAlloc", &self.min_mem),
                     ("MaxMemAlloc", &self.max_mem),
@@ -265,13 +295,13 @@ impl SettingsWindow {
                     } else if key.is_valid(&secret) {
                         cfg.set(key.setting(), secret);
                     } else {
-                        return Err(format!("Enter a valid {label}."));
+                        return Err(locale.format("Enter a valid {0}.", &[locale.text(label)]));
                     }
                 }
             }
         }
         cfg.save(&config_path)
-            .map_err(|error| format!("Save failed: {error}"))?;
+            .map_err(|error| locale.format("Save failed: {0}", &[&error.to_string()]))?;
         if self.page == Page::ApiKeys {
             let configured = ApiKey::CurseForge.configured(&cfg).is_some();
             self.app.update(cx, |app, cx| {
@@ -280,6 +310,25 @@ impl SettingsWindow {
             });
         }
         Ok(())
+    }
+
+    fn select_language(&mut self, locale: Locale, cx: &mut Context<Self>) {
+        let path = self.app.read(cx).paths.global_config();
+        self.status = match locale.save(&path) {
+            Ok(()) => {
+                self.app.update(cx, |app, cx| {
+                    app.locale = locale;
+                    cx.notify();
+                });
+                String::new()
+            }
+            Err(error) => self
+                .app
+                .read(cx)
+                .locale
+                .format("Save failed: {0}", &[&error.to_string()]),
+        };
+        cx.notify();
     }
 
     fn reload_themes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -308,7 +357,7 @@ impl SettingsWindow {
             .and_then(|_| crate::instance_window::datapacks_page::open_folder(&path))
         {
             Ok(()) => String::new(),
-            Err(e) => format!("Could not open folder: {e}"),
+            Err(e) => self.app.read(cx).locale.format("Could not open folder: {0}", &[&e.to_string()]),
         };
         cx.notify();
     }
@@ -317,7 +366,9 @@ impl SettingsWindow {
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = crate::theme::Palette::get(cx);
-        let row = |label: &str, input: &gpui::Entity<InputState>| {
+        let locale = self.app.read(cx).locale;
+        let t = |source| locale.text(source);
+        let row = |label: &'static str, input: &gpui::Entity<InputState>| {
             div()
                 .flex()
                 .items_center()
@@ -327,7 +378,7 @@ impl Render for SettingsWindow {
                         .w(px(220.))
                         .text_size(px(13.))
                         .text_color(palette.secondary_text)
-                        .child(label.to_string()),
+                        .child(t(label)),
                 )
                 .child(div().w(px(280.)).child(Input::new(input)))
         };
@@ -336,9 +387,10 @@ impl Render for SettingsWindow {
             div()
                 .text_size(px(12.))
                 .text_color(palette.link)
-                .child(text)
+                .child(t(text))
         };
         let appearance_row = |label: &'static str, state: &Entity<ThemeSelect>| {
+            let label = t(label);
             div()
                 .flex()
                 .items_center()
@@ -361,31 +413,46 @@ impl Render for SettingsWindow {
                 )
         };
         let body = match self.page {
+            Page::Language => div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(label("Launcher language"))
+                .children(Locale::ALL.into_iter().map(|choice| {
+                    Button::new(SharedString::from(format!("locale-{}", choice.code())))
+                        .label(choice.native_name())
+                        .selected(locale == choice)
+                        .on_click(cx.listener(move |this, _, _, cx| this.select_language(choice, cx)))
+                }))
+                .child(div().text_size(px(12.)).text_color(palette.secondary_text).child(
+                    t("Language changes apply and save immediately."),
+                )),
             Page::Appearance => {
                 let folders = div()
                     .flex()
+                    .flex_wrap()
                     .gap_2()
                     .mt_2()
                     .child(
                         Button::new("themes-folder")
-                            .label("Open Themes Folder")
+                            .label(t("Open Themes Folder"))
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.open_theme_folder(false, cx)),
                             ),
                     )
                     .child(
                         Button::new("icon-themes-folder")
-                            .label("Open Icon Themes Folder")
+                            .label(t("Open Icon Themes Folder"))
                             .on_click(
                                 cx.listener(|this, _, _, cx| this.open_theme_folder(true, cx)),
                             ),
                     )
-                    .child(Button::new("reload-themes").label("Reload").on_click(
+                    .child(Button::new("reload-themes").label(t("Reload")).on_click(
                         cx.listener(|this, _, window, cx| this.reload_themes(window, cx)),
                     ));
-                let hint = format!(
-                    "Custom themes: {}/<name>/theme.json (PrismLauncher format).",
-                    self.app.read(cx).paths.themes_dir().display()
+                let hint = locale.format(
+                    "Custom themes: {0}/<name>/theme.json (PrismLauncher format).",
+                    &[&self.app.read(cx).paths.themes_dir().display().to_string()],
                 );
                 div()
                     .flex()
@@ -397,7 +464,7 @@ impl Render for SettingsWindow {
                     .child(div().text_size(px(12.)).text_color(palette.secondary_text).child(hint))
                     .child(
                         div().text_size(px(12.)).text_color(palette.muted_text).child(
-                            "Changes apply and save immediately. Qt stylesheets (QSS) are not supported.",
+                            t("Changes apply and save immediately. Qt stylesheets (QSS) are not supported."),
                         ),
                     )
                     .children(crate::theme::catalog(cx).warnings.iter().map(|warning| {
@@ -416,7 +483,11 @@ impl Render for SettingsWindow {
                 .child(row("Window height", &self.win_height))
                 .child(label("Java"))
                 .child(row("Java path", &self.java_path))
-                .child(label("Detected Java").child(format!(": {}", self.detected_java)))
+                .child(label("Detected Java").child(format!(": {}", if self.detected_java.is_empty() {
+                    t("not found")
+                } else {
+                    &self.detected_java
+                })))
                 .child(row("Global JVM arguments", &self.jvm_args))
                 .child(label("Used unless an instance overrides Java arguments."))
                 .child(label("Horizon"))
@@ -431,8 +502,8 @@ impl Render for SettingsWindow {
                 ];
                 div().flex().flex_col().gap_3()
                     .child(label("Launcher HTTP proxy"))
-                    .child(div().flex().gap_2().children(choices.into_iter().map(|(mode, name)| {
-                        Button::new(name).label(if self.proxy_mode == mode { format!("✓ {name}") } else { name.into() })
+                    .child(div().flex().flex_wrap().gap_2().children(choices.into_iter().map(|(mode, name)| {
+                        Button::new(name).label(t(name)).selected(self.proxy_mode == mode)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.proxy_mode = mode;
                                 this.status.clear();
@@ -456,7 +527,7 @@ impl Render for SettingsWindow {
                     div()
                         .text_size(px(12.))
                         .text_color(palette.link)
-                        .child(format!("{mode}: {}", key.environment()))
+                        .child(format!("{}: {}", t(mode), key.environment()))
                 };
                 div()
                     .flex()
@@ -482,22 +553,23 @@ impl Render for SettingsWindow {
                 div()
                     .text_size(px(15.))
                     .font_weight(FontWeight::BOLD)
-                    .child("Settings"),
+                    .child(t("Settings")),
             )
             .child(div().h(px(1.)).bg(palette.border))
             .child(
-                div().flex().gap_2().children(
+                div().flex().flex_wrap().gap_2().children(
                     [
                         (Page::General, "General & Java"),
                         (Page::Proxy, "Proxy"),
                         (Page::ApiKeys, "API Keys"),
                         (Page::Appearance, "Appearance"),
                         (Page::Tools, "External Tools"),
+                        (Page::Language, "Language"),
                     ]
                     .into_iter()
                     .map(|(page, name)| {
                         Button::new(name)
-                            .label(name)
+                            .label(t(name))
                             .selected(self.page == page)
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.page = page;
@@ -522,8 +594,8 @@ impl Render for SettingsWindow {
                     .gap_3()
                     .child(
                         Button::new("apply-settings")
-                            .label("Apply")
-                            .disabled(self.page == Page::Appearance)
+                            .label(t("Apply"))
+                            .disabled(matches!(self.page, Page::Appearance | Page::Language))
                             .on_click(cx.listener(Self::apply)),
                     )
                     .child(

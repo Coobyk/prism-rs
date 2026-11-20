@@ -1,4 +1,5 @@
 use crate::about_dialog;
+use crate::i18n::Locale;
 use crate::theme::Icon;
 use gpui_kit::component::button::ButtonVariant;
 use gpui_kit::component::menu::{DropdownMenu, PopupMenuItem};
@@ -6,52 +7,52 @@ use gpui_kit::component::WindowExt as _;
 use gpui_kit::*;
 use prism_core::Paths;
 
-pub(crate) fn button(paths: Paths, cx: &App) -> impl IntoElement {
-    crate::theme::button("help", Icon::Help, "Help", cx)
+pub(crate) fn button(paths: Paths, locale: Locale, cx: &App) -> impl IntoElement {
+    crate::theme::button("help", Icon::Help, locale.text("Help"), cx)
         .dropdown_caret(true)
         .dropdown_menu(move |menu, _, _| {
             let paths = paths.clone();
             menu.item(
-                PopupMenuItem::new("Clear Metadata Cache…")
+                PopupMenuItem::new(locale.text("Clear Metadata Cache…"))
                     .on_click(move |_, window, cx| confirm_clear_cache(paths.clone(), window, cx)),
             )
             .item(link(
-                "Report a Bug",
+                locale.text("Report a Bug"),
                 "https://github.com/Coobyk/prism-rs/issues",
             ))
             .separator()
             .item(link(
-                "Prism Launcher Matrix",
+                locale.text("Prism Launcher Matrix"),
                 "https://prismlauncher.org/matrix",
             ))
             .item(link(
-                "Prism Launcher Discord",
+                locale.text("Prism Launcher Discord"),
                 "https://prismlauncher.org/discord",
             ))
             .item(link(
-                "Prism Launcher Reddit",
+                locale.text("Prism Launcher Reddit"),
                 "https://prismlauncher.org/reddit",
             ))
             .separator()
             .item(link(
-                "Prism Launcher News",
+                locale.text("Prism Launcher News"),
                 "https://prismlauncher.org/news/",
             ))
             .item(link(
-                "prism-rs Changelog",
+                locale.text("prism-rs Changelog"),
                 "https://github.com/Coobyk/prism-rs/commits/main/",
             ))
             .item(link(
-                "prism-rs Help",
+                locale.text("prism-rs Help"),
                 "https://github.com/Coobyk/prism-rs#readme",
             ))
             .item(link(
-                "Prism Launcher Wiki",
+                locale.text("Prism Launcher Wiki"),
                 "https://prismlauncher.org/wiki/",
             ))
             .separator()
             .item(
-                PopupMenuItem::new("About prism-rs").on_click(|_, window, cx| {
+                PopupMenuItem::new(locale.text("About prism-rs")).on_click(|_, window, cx| {
                     window.defer(cx, about_dialog::open);
                 }),
             )
