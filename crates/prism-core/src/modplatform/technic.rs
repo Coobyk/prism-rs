@@ -10,6 +10,7 @@ use md5::{Digest, Md5};
 use reqwest::Url;
 use serde::{de::DeserializeOwned, Deserialize};
 use std::{
+    collections::HashSet,
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -582,59 +583,41 @@ pub fn apply_forge_patch(
             library.path = library_root.join(checked_maven_path(&library.spec)?);
         }
     }
-    merge_embedded_libraries(&mut profile.libraries, libraries);
-    merge_embedded_libraries(&mut profile.natives, natives);
+    let lwjgl_overridden = profile.natives_override.is_some();
+    merge_embedded_libraries(&mut profile.libraries, libraries, lwjgl_overridden);
+    merge_embedded_libraries(&mut profile.natives, natives, lwjgl_overridden);
     Ok(true)
 }
 
-fn numeric_maven_version(version: &str) -> Option<Vec<u32>> {
-    let core = version.split('-').next()?;
-    let mut parts: Vec<u32> = core
-        .split('.')
-        .map(str::parse)
-        .collect::<Result<_, _>>()
-        .ok()?;
-    while parts.last() == Some(&0) {
-        parts.pop();
-    }
-    Some(parts)
-}
-
-fn maven_artifact(spec: &str) -> Option<((&str, &str, Option<&str>, &str), &str)> {
-    let (coordinate, extension) = spec.split_once('@').unwrap_or((spec, "jar"));
+fn maven_artifact(spec: &str) -> Option<(&str, &str, Option<&str>)> {
+    let coordinate = spec.split('@').next()?;
     let mut parts = coordinate.split(':');
-    let (group, artifact, version) = (parts.next()?, parts.next()?, parts.next()?);
-    Some(((group, artifact, parts.next(), extension), version))
+    let (group, artifact) = (parts.next()?, parts.next()?);
+    parts.next()?;
+    Some((group, artifact, parts.next()))
 }
 
-fn merge_embedded_libraries(base: &mut Vec<ResolvedLibrary>, loader_start: usize) {
-    for library in base.split_off(loader_start) {
-        let Some((key, version)) = maven_artifact(&library.spec) else {
-            base.push(library);
-            continue;
-        };
-        let group = key.0;
-        if group.starts_with("org.lwjgl") || matches!(group, "net.java.jinput" | "net.java.jutils")
-        {
-            continue;
-        }
-        let version = numeric_maven_version(version);
-        if base.iter().any(|entry| {
-            maven_artifact(&entry.spec).is_some_and(|(identity, existing)| {
-                identity == key
-                    && !version
-                        .as_ref()
-                        .zip(numeric_maven_version(existing))
-                        .is_some_and(|(incoming, current)| incoming > &current)
-            })
-        }) {
-            continue;
-        }
-        base.retain(|entry| {
-            !maven_artifact(&entry.spec).is_some_and(|(identity, _)| identity == key)
+fn merge_embedded_libraries(
+    base: &mut Vec<ResolvedLibrary>,
+    loader_start: usize,
+    lwjgl_overridden: bool,
+) {
+    let mut pack = base.split_off(loader_start);
+    if lwjgl_overridden {
+        pack.retain(|library| {
+            let group = library.spec.split(':').next().unwrap_or_default();
+            !group.starts_with("org.lwjgl")
+                && !matches!(group, "net.java.jinput" | "net.java.jutils")
         });
-        base.push(library);
     }
+    let replacements: HashSet<_> = pack
+        .iter()
+        .filter_map(|library| maven_artifact(&library.spec))
+        .collect();
+    base.retain(|library| {
+        !maven_artifact(&library.spec).is_some_and(|key| replacements.contains(&key))
+    });
+    base.extend(pack);
 }
 
 fn extract_bundled_forge(
@@ -869,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn embedded_forge_upgrades_matching_libraries_but_preserves_lwjgl_and_newer_versions() {
+    fn embedded_forge_replaces_matching_libraries_unless_lwjgl_is_overridden() {
         let dir = tempfile::tempdir().unwrap();
         let game = dir.path().join("game");
         let os = meta::os_name();
@@ -879,6 +862,7 @@ mod tests {
             "libraries": [
                 {"name": "net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10"},
                 {"name": "com.google.guava:guava:17.0"},
+                {"name": "io.netty:netty-all:4.1.25.Final"},
                 {"name": "org.ow2.asm:asm:4.0"},
                 {"name": "org.lwjgl.lwjgl:lwjgl:2.9.0"},
                 {"name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.0", "natives": {(os): "test-native"}},
@@ -897,8 +881,10 @@ mod tests {
             "libraries": [
                 {"name": "com.google.guava:guava:15.0"},
                 {"name": "com.google.guava:guava:15.0:classified"},
+                {"name": "io.netty:netty-all:4.1.9.Final"},
                 {"name": "org.ow2.asm:asm:10.0"},
-                {"name": "org.lwjgl.lwjgl:lwjgl:2.9.0"}
+                {"name": "org.lwjgl.lwjgl:lwjgl:2.9.1"},
+                {"name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.1", "natives": {(os): "test-native"}}
             ]
         }))
         .unwrap();
@@ -911,38 +897,57 @@ mod tests {
             ]
         }))
         .unwrap();
-        let mut profile = LaunchProfile::from_mojang(&vanilla);
-        profile.apply_lwjgl(&selected_lwjgl).unwrap();
         let loader = crate::instance::loader_of(&installed);
-        assert!(apply_forge_patch(
-            &mut profile,
-            &installed.root,
-            &installed.game_root(),
-            &loader
-        )
-        .unwrap());
-        let specs: Vec<_> = profile
-            .libraries
-            .iter()
-            .map(|lib| lib.spec.as_str())
-            .collect();
-        assert_eq!(
-            specs,
-            [
-                "com.google.guava:guava:15.0:classified",
-                "org.ow2.asm:asm:10.0",
-                "org.lwjgl.lwjgl:lwjgl:2.9.3",
-                "net.java.jinput:jinput:2.0.5",
-                "net.java.jutils:jutils:1.0.0",
-                "net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10",
-                "com.google.guava:guava:17.0"
-            ]
-        );
-        assert_eq!(profile.natives.len(), 1);
-        assert_eq!(
-            profile.natives[0].spec,
-            "org.lwjgl.lwjgl:lwjgl-platform:2.9.3:test-native"
-        );
+        for overridden in [false, true] {
+            let mut profile = LaunchProfile::from_mojang(&vanilla);
+            if overridden {
+                profile.apply_lwjgl(&selected_lwjgl).unwrap();
+                profile.natives_override = Some(installed.game_root().join("bin/lwjgl-2.9.3"));
+            }
+            assert!(apply_forge_patch(
+                &mut profile,
+                &installed.root,
+                &installed.game_root(),
+                &loader
+            )
+            .unwrap());
+            let specs: HashSet<_> = profile
+                .libraries
+                .iter()
+                .map(|lib| lib.spec.as_str())
+                .collect();
+            let (lwjgl, jinput, jutils, native) = if overridden {
+                (
+                    "2.9.3",
+                    "2.0.5",
+                    "1.0.0",
+                    "org.lwjgl.lwjgl:lwjgl-platform:2.9.3:test-native",
+                )
+            } else {
+                (
+                    "2.9.0",
+                    "2.1.0",
+                    "1.0",
+                    "org.lwjgl.lwjgl:lwjgl-platform:2.9.0:test-native",
+                )
+            };
+            assert_eq!(profile.libraries.len(), 8);
+            assert_eq!(
+                specs,
+                HashSet::from([
+                    "com.google.guava:guava:15.0:classified",
+                    "net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10",
+                    "com.google.guava:guava:17.0",
+                    "io.netty:netty-all:4.1.25.Final",
+                    "org.ow2.asm:asm:4.0",
+                    &format!("org.lwjgl.lwjgl:lwjgl:{lwjgl}"),
+                    &format!("net.java.jinput:jinput:{jinput}"),
+                    &format!("net.java.jutils:jutils:{jutils}"),
+                ])
+            );
+            assert_eq!(profile.natives.len(), 1);
+            assert_eq!(profile.natives[0].spec, native);
+        }
     }
 
     #[test]
