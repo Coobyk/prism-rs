@@ -525,6 +525,16 @@ fn validate_library(value: &Value) -> io::Result<()> {
             validate_download(&serde_json::json!({"url":url,"sha1":value["downloads"]["artifact"]["sha1"]}))?;
         }
     }
+    if let (Some(repo), Some(natives)) = (value.get("url"), value["natives"].as_object()) {
+        for classifier in natives.values().filter_map(Value::as_str) {
+            for arch in ["32", "64"] {
+                let classifier = classifier.replace("${arch}", arch);
+                if value["downloads"]["classifiers"].get(&classifier).and_then(Value::as_object).is_none() {
+                    validate_download(&serde_json::json!({"url":repo}))?;
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -671,6 +681,31 @@ mod tests {
                 assert_eq!(parse(document).unwrap().validate_launch().is_ok(), allowed, "{field}: {url}");
             }
         }
+    }
+
+    #[test]
+    fn derived_natives_cannot_borrow_the_main_artifact_checksum() {
+        let mut document = json!({"uid":"test","formatVersion":1,"libraries":[{
+            "name":"org.example:library:1","url":"http://example.invalid/repo",
+            "downloads":{"artifact":{"url":"https://example.invalid/main.jar",
+                "sha1":"0123456789012345678901234567890123456789"}},
+            "natives":{"linux":"natives-linux","windows":"natives-windows"}
+        }]});
+        assert!(parse(document.clone()).unwrap().validate_launch().is_err());
+        document["libraries"][0]["downloads"]["classifiers"] = json!({
+            "natives-linux":{"url":"https://example.invalid/linux.jar"},
+            "natives-windows":{"url":"http://example.invalid/windows.jar",
+                "sha1":"abcdef0123456789abcdef0123456789abcdef01"}
+        });
+        parse(document.clone()).unwrap().validate_launch().unwrap();
+        let linux = document["libraries"][0]["downloads"]["classifiers"]["natives-linux"].take();
+        assert!(parse(document.clone()).unwrap().validate_launch().is_err());
+        document["libraries"][0]["downloads"]["classifiers"]["natives-linux"] = linux;
+        document["libraries"][0]["downloads"]["classifiers"]["natives-windows"].as_object_mut().unwrap().remove("sha1");
+        assert!(parse(document.clone()).unwrap().validate_launch().is_err());
+        document["libraries"][0]["url"] = json!("https://example.invalid/repo");
+        document["libraries"][0]["downloads"].as_object_mut().unwrap().remove("classifiers");
+        parse(document).unwrap().validate_launch().unwrap();
     }
 
     #[test]
