@@ -325,12 +325,19 @@ mod tests {
 
     #[test]
     fn external_tools_attach_reports_invalid_configuration() {
+        let dir = tempfile::tempdir().unwrap();
         let mut settings = Settings::default();
-        settings.set("JVisualVMPath", "");
+        settings.set(
+            "JVisualVMPath",
+            dir.path().join("missing-visualvm").to_string_lossy(),
+        );
         let (tx, rx) = std::sync::mpsc::channel();
         Tool::JVisualVM.attach(&settings, 123, move |message| {
             tx.send(message).unwrap();
         });
-        assert_eq!(rx.recv().unwrap(), "Could not start JVisualVM: Empty path");
+        assert_eq!(
+            rx.recv().unwrap(),
+            "Could not start JVisualVM: Path does not exist"
+        );
     }
 }
