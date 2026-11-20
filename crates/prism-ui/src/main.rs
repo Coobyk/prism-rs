@@ -11,6 +11,7 @@ mod instance_window;
 mod instance_settings_page;
 mod main_window;
 mod settings_window;
+mod skins_dialog;
 #[cfg(target_os = "linux")]
 mod shortcut;
 mod state;

@@ -96,7 +96,7 @@ impl MainWindow {
     fn on_open_accounts(&mut self, _ev: &ClickEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let app = self.app.clone();
         open_window(WindowOptions::default(), cx, |_window, cx| {
-            cx.new(|_| crate::accounts_window::AccountsWindow::new(app.clone()))
+            cx.new(|cx| crate::accounts_window::AccountsWindow::new(app.clone(), cx))
         })
         .ok();
     }

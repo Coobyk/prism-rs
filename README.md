@@ -168,6 +168,9 @@ Working today:
   untracked files are kept. Local archives without a recorded provider project remain unmanaged.
 - CurseForge: import modpack zips
 - Offline accounts; MSA device-code login implemented end-to-end
+- **Accounts → Manage Skins** for Microsoft accounts: persistent local skin library,
+  file/URL/username imports, rename and confirmed delete, Classic/Slim previews,
+  skin uploads, and cape selection/hiding. Offline accounts cannot manage skins.
 - Global + per-instance settings (memory, Java, window size). Java arguments inherit the global setting unless the instance overrides them.
 - Launcher HTTP proxy settings (system, direct, HTTP and SOCKS5); the game manages its own network settings.
 - API Keys page for CurseForge and Imgur. Environment variables `PRISM_RS_CURSEFORGE_API_KEY` and `PRISM_RS_IMGUR_CLIENT_ID` override saved values.
