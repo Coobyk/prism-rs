@@ -199,7 +199,7 @@ Working today:
   `themes/<name>/theme.json` (colors only, no QSS), plus icon themes from `iconthemes/<name>/`.
 - Translations: Settings > Language changes the main window and launcher settings
   immediately. English, Deutsch, Français and 日本語 are bundled; unlocalized
-  text remains in English.
+  text remains in English. Choose System default to follow the system locale.
 
 Not yet at parity (tracked in the issue tracker of your heart): updater and
 per-instance console window options. External tools include JProfiler,

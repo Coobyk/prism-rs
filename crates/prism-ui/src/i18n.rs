@@ -71,22 +71,31 @@ impl Locale {
     }
 
     fn resolve_from(setting: Option<&str>, locales: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
-        if let Some(value) = setting.filter(|value| !value.trim().is_empty()) {
-            return Self::parse(value).unwrap_or_default();
-        }
-        locales.into_iter()
-            .find_map(|value| Self::parse(value.as_ref()))
-            .unwrap_or_default()
+        Self::configured(setting).unwrap_or_else(|| {
+            locales.into_iter()
+                .find_map(|value| Self::parse(value.as_ref()))
+                .unwrap_or_default()
+        })
     }
 
-    pub fn save(self, path: &Path) -> io::Result<()> {
+    pub fn configured(setting: Option<&str>) -> Option<Self> {
+        setting
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| Self::parse(value).unwrap_or_default())
+    }
+
+    pub fn save_selection(selection: Option<Self>, path: &Path) -> io::Result<()> {
         let ini = match IniFile::load(path) {
             Ok(ini) => ini,
             Err(error) if error.kind() == io::ErrorKind::NotFound => IniFile::default(),
             Err(error) => return Err(error),
         };
         let mut settings = Settings { ini };
-        settings.set(SETTING, self.code());
+        if let Some(locale) = selection {
+            settings.set(SETTING, locale.code());
+        } else {
+            settings.ini.remove(SETTING);
+        }
         settings.save(path)
     }
 
@@ -197,17 +206,39 @@ mod tests {
     fn saves_only_language_and_does_not_overwrite_unreadable_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("prismlauncher.cfg");
-        Locale::English.save(&path).unwrap();
+        Locale::save_selection(Some(Locale::English), &path).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "Language=en");
 
         std::fs::write(&path, "[General]\nApplicationTheme=bright\nLanguage=en\n").unwrap();
-        Locale::German.save(&path).unwrap();
+        Locale::save_selection(Some(Locale::German), &path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[General]\nApplicationTheme=bright\nLanguage=de"));
 
         std::fs::write(&path, [0xff]).unwrap();
-        assert!(Locale::French.save(&path).is_err());
+        assert!(Locale::save_selection(Some(Locale::French), &path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), [0xff]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn clearing_a_legacy_override_restores_system_locale_and_stays_unset_on_other_saves() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prismlauncher.cfg");
+        std::fs::write(&path, "ApplicationTheme=dark\nLanguage=en\n").unwrap();
+        assert_eq!(
+            Locale::resolve_from(Settings::load(&path).get(SETTING), ["de"]),
+            Locale::English
+        );
+
+        Locale::save_selection(None, &path).unwrap();
+        let mut settings = Settings::load(&path);
+        assert_eq!(settings.get(SETTING), None);
+        assert_eq!(settings.get("ApplicationTheme"), Some("dark"));
+        assert_eq!(Locale::resolve_from(settings.get(SETTING), ["de"]), Locale::German);
+
+        settings.set("MaxMemAlloc", "2048");
+        settings.save(&path).unwrap();
+        assert_eq!(IniFile::load(&path).unwrap().get(SETTING), None);
     }
 
     #[test]

@@ -39,18 +39,37 @@ impl SelectItem for ThemeChoice {
 }
 
 type ThemeSelect = SelectState<Vec<ThemeChoice>>;
-type LanguageSelect = SelectState<Vec<Locale>>;
+type LanguageSelect = SelectState<Vec<LanguageChoice>>;
 
-impl SelectItem for Locale {
-    type Value = Locale;
+#[derive(Clone)]
+struct LanguageChoice {
+    locale: Option<Locale>,
+    title: SharedString,
+}
+
+impl SelectItem for LanguageChoice {
+    type Value = Option<Locale>;
 
     fn title(&self) -> SharedString {
-        self.native_name().into()
+        self.title.clone()
     }
 
-    fn value(&self) -> &Locale {
-        self
+    fn value(&self) -> &Option<Locale> {
+        &self.locale
     }
+}
+
+fn language_choices(locale: Locale) -> Vec<LanguageChoice> {
+    let system = Locale::resolve(None);
+    std::iter::once(LanguageChoice {
+        locale: None,
+        title: locale.format("System default ({0})", &[system.native_name()]).into(),
+    })
+    .chain(Locale::ALL.into_iter().map(|locale| LanguageChoice {
+        locale: Some(locale),
+        title: locale.native_name().into(),
+    }))
+    .collect()
 }
 
 fn select_row<D: SelectDelegate + 'static>(
@@ -137,43 +156,54 @@ impl SettingsWindow {
         let config_path = app.read(cx).paths.global_config();
         let cfg = Settings::load(&config_path);
         let locale = app.read(cx).locale;
-        let mut previous_locale = locale;
+        let language_override = app.read(cx).language_override;
+        let mut previous = (locale, language_override);
         window.set_window_title(locale.text("Settings"));
         cx.observe_in(&app, window, move |this, app, window, cx| {
             let locale = app.read(cx).locale;
-            if locale == previous_locale {
+            let language_override = app.read(cx).language_override;
+            if (locale, language_override) == previous {
                 return;
             }
-            previous_locale = locale;
-            window.set_window_title(locale.text("Settings"));
-            this.languages
-                .update(cx, |state, cx| state.set_selected_value(&locale, window, cx));
-            for (input, source) in [
-                (&this.java_path, "(auto-detect)"),
-                (&this.jvm_args, "e.g. -Dexample=value"),
-                (&this.horizon_launcher_path, "(find on PATH)"),
-                (&this.proxy_user, "(optional)"),
-                (&this.proxy_password, "(optional)"),
-                (&this.curseforge_key, "(optional)"),
-                (&this.imgur_id, "(optional)"),
-            ] {
-                input.update(cx, |input, cx| {
-                    input.set_placeholder(locale.text(source), window, cx);
-                });
+            let locale_changed = locale != previous.0;
+            previous = (locale, language_override);
+            this.languages.update(cx, |state, cx| {
+                if locale_changed {
+                    state.set_items(language_choices(locale), window, cx);
+                }
+                if state.selected_value() != Some(&language_override) {
+                    state.set_selected_value(&language_override, window, cx);
+                }
+            });
+            if locale_changed {
+                window.set_window_title(locale.text("Settings"));
+                for (input, source) in [
+                    (&this.java_path, "(auto-detect)"),
+                    (&this.jvm_args, "e.g. -Dexample=value"),
+                    (&this.horizon_launcher_path, "(find on PATH)"),
+                    (&this.proxy_user, "(optional)"),
+                    (&this.proxy_password, "(optional)"),
+                    (&this.curseforge_key, "(optional)"),
+                    (&this.imgur_id, "(optional)"),
+                ] {
+                    input.update(cx, |input, cx| {
+                        input.set_placeholder(locale.text(source), window, cx);
+                    });
+                }
             }
             this.status.clear();
             cx.notify();
         })
         .detach();
 
-        let languages = cx.new(|cx| SelectState::new(Locale::ALL.to_vec(), None, window, cx));
-        languages.update(cx, |state, cx| state.set_selected_value(&locale, window, cx));
+        let languages = cx.new(|cx| SelectState::new(language_choices(locale), None, window, cx));
+        languages.update(cx, |state, cx| state.set_selected_value(&language_override, window, cx));
         cx.subscribe_in(
             &languages,
             window,
-            |this, _, event: &SelectEvent<Vec<Locale>>, window, cx| {
-                if let SelectEvent::Confirm(Some(locale)) = event {
-                    this.select_language(*locale, window, cx);
+            |this, _, event: &SelectEvent<Vec<LanguageChoice>>, window, cx| {
+                if let SelectEvent::Confirm(Some(selection)) = event {
+                    this.select_language(*selection, window, cx);
                 }
             },
         )
@@ -372,20 +402,28 @@ impl SettingsWindow {
         Ok(())
     }
 
-    fn select_language(&mut self, locale: Locale, window: &mut Window, cx: &mut Context<Self>) {
+    fn select_language(
+        &mut self,
+        selection: Option<Locale>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let path = self.app.read(cx).paths.global_config();
-        self.status = match locale.save(&path) {
+        self.status = match Locale::save_selection(selection, &path) {
             Ok(()) => {
                 self.app.update(cx, |app, cx| {
-                    app.locale = locale;
+                    app.locale = selection.unwrap_or_else(|| Locale::resolve(None));
+                    app.language_override = selection;
                     cx.notify();
                 });
                 String::new()
             }
             Err(error) => {
-                let previous_locale = self.app.read(cx).locale;
+                let app = self.app.read(cx);
+                let previous_locale = app.locale;
+                let previous_selection = app.language_override;
                 self.languages.update(cx, |state, cx| {
-                    state.set_selected_value(&previous_locale, window, cx);
+                    state.set_selected_value(&previous_selection, window, cx);
                 });
                 previous_locale.format("Save failed: {0}", &[&error.to_string()])
             }

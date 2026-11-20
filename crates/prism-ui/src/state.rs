@@ -39,6 +39,7 @@ impl RunningInstance {
 pub struct App {
     pub paths: Paths,
     pub locale: Locale,
+    pub language_override: Option<Locale>,
     pub runtime: Arc<CoreRuntime>,
     pub instances: InstanceList,
     pub accounts: AccountList,
@@ -65,10 +66,11 @@ impl App {
             tracing::error!("failed to load instances: {e}");
             InstanceList::default()
         });
+        let settings = prism_core::settings::Settings::load(&paths.global_config());
+        let language_override = Locale::configured(settings.get(i18n::SETTING));
         App {
-            locale: Locale::resolve(
-                prism_core::settings::Settings::load(&paths.global_config()).get(i18n::SETTING),
-            ),
+            locale: language_override.unwrap_or_else(|| Locale::resolve(None)),
+            language_override,
             runtime: Arc::new(CoreRuntime::new()),
             curseforge_configured: prism_core::modplatform::flame::FlameApi::is_configured(),
             paths,
