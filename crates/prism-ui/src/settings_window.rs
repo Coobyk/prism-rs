@@ -5,7 +5,7 @@ use crate::state::App;
 use crate::theme::Button;
 use gpui_kit::base::{Disableable, Selectable};
 use gpui_kit::component::input::{Input, InputState};
-use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
+use gpui_kit::component::select::{Select, SelectDelegate, SelectEvent, SelectItem, SelectState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use prism_core::horizon::LAUNCHER_PATH_SETTING;
@@ -39,6 +39,49 @@ impl SelectItem for ThemeChoice {
 }
 
 type ThemeSelect = SelectState<Vec<ThemeChoice>>;
+type LanguageSelect = SelectState<Vec<Locale>>;
+
+impl SelectItem for Locale {
+    type Value = Locale;
+
+    fn title(&self) -> SharedString {
+        self.native_name().into()
+    }
+
+    fn value(&self) -> &Locale {
+        self
+    }
+}
+
+fn select_row<D: SelectDelegate + 'static>(
+    label: &'static str,
+    state: &Entity<SelectState<D>>,
+    palette: crate::theme::Palette,
+) -> impl IntoElement
+where
+    <D::Item as SelectItem>::Value: PartialEq + Clone,
+{
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .w(px(220.))
+                .flex_shrink_0()
+                .text_size(px(13.))
+                .text_color(palette.secondary_text)
+                .child(label),
+        )
+        .child(
+            div().w(px(280.)).child(
+                Select::new(state)
+                    .w_full()
+                    .menu_width(px(280.))
+                    .accessibility_label(label),
+            ),
+        )
+}
 
 fn choices(cx: &gpui::App, icons: bool) -> Vec<ThemeChoice> {
     let catalog = crate::theme::catalog(cx);
@@ -85,6 +128,7 @@ pub struct SettingsWindow {
     status: String,
     themes: Entity<ThemeSelect>,
     icon_themes: Entity<ThemeSelect>,
+    languages: Entity<LanguageSelect>,
     tools: Entity<crate::external_tools_page::ExternalToolsPage>,
 }
 
@@ -102,6 +146,8 @@ impl SettingsWindow {
             }
             previous_locale = locale;
             window.set_window_title(locale.text("Settings"));
+            this.languages
+                .update(cx, |state, cx| state.set_selected_value(&locale, window, cx));
             for (input, source) in [
                 (&this.java_path, "(auto-detect)"),
                 (&this.jvm_args, "e.g. -Dexample=value"),
@@ -118,6 +164,19 @@ impl SettingsWindow {
             this.status.clear();
             cx.notify();
         })
+        .detach();
+
+        let languages = cx.new(|cx| SelectState::new(Locale::ALL.to_vec(), None, window, cx));
+        languages.update(cx, |state, cx| state.set_selected_value(&locale, window, cx));
+        cx.subscribe_in(
+            &languages,
+            window,
+            |this, _, event: &SelectEvent<Vec<Locale>>, window, cx| {
+                if let SelectEvent::Confirm(Some(locale)) = event {
+                    this.select_language(*locale, window, cx);
+                }
+            },
+        )
         .detach();
 
         let themes = cx.new(|cx| SelectState::new(choices(cx, false), None, window, cx));
@@ -186,6 +245,7 @@ impl SettingsWindow {
             app,
             themes,
             icon_themes,
+            languages,
             min_mem: mk("512", cfg.get_or("MinMemAlloc", "512"), window, cx),
             max_mem: mk("4096", cfg.get_or("MaxMemAlloc", "4096"), window, cx),
             java_path: mk("(auto-detect)", cfg.get_or("JavaPath", ""), window, cx),
@@ -312,7 +372,7 @@ impl SettingsWindow {
         Ok(())
     }
 
-    fn select_language(&mut self, locale: Locale, cx: &mut Context<Self>) {
+    fn select_language(&mut self, locale: Locale, window: &mut Window, cx: &mut Context<Self>) {
         let path = self.app.read(cx).paths.global_config();
         self.status = match locale.save(&path) {
             Ok(()) => {
@@ -322,11 +382,13 @@ impl SettingsWindow {
                 });
                 String::new()
             }
-            Err(error) => self
-                .app
-                .read(cx)
-                .locale
-                .format("Save failed: {0}", &[&error.to_string()]),
+            Err(error) => {
+                let previous_locale = self.app.read(cx).locale;
+                self.languages.update(cx, |state, cx| {
+                    state.set_selected_value(&previous_locale, window, cx);
+                });
+                previous_locale.format("Save failed: {0}", &[&error.to_string()])
+            }
         };
         cx.notify();
     }
@@ -389,41 +451,12 @@ impl Render for SettingsWindow {
                 .text_color(palette.link)
                 .child(t(text))
         };
-        let appearance_row = |label: &'static str, state: &Entity<ThemeSelect>| {
-            let label = t(label);
-            div()
-                .flex()
-                .items_center()
-                .gap_3()
-                .child(
-                    div()
-                        .w(px(220.))
-                        .flex_shrink_0()
-                        .text_size(px(13.))
-                        .text_color(palette.secondary_text)
-                        .child(label),
-                )
-                .child(
-                    div().w(px(280.)).child(
-                        Select::new(state)
-                            .w_full()
-                            .menu_width(px(280.))
-                            .accessibility_label(label),
-                    ),
-                )
-        };
         let body = match self.page {
             Page::Language => div()
                 .flex()
                 .flex_col()
                 .gap_2()
-                .child(label("Launcher language"))
-                .children(Locale::ALL.into_iter().map(|choice| {
-                    Button::new(SharedString::from(format!("locale-{}", choice.code())))
-                        .label(choice.native_name())
-                        .selected(locale == choice)
-                        .on_click(cx.listener(move |this, _, _, cx| this.select_language(choice, cx)))
-                }))
+                .child(select_row(t("Launcher language"), &self.languages, palette))
                 .child(div().text_size(px(12.)).text_color(palette.secondary_text).child(
                     t("Language changes apply and save immediately."),
                 )),
@@ -458,8 +491,8 @@ impl Render for SettingsWindow {
                     .flex()
                     .flex_col()
                     .gap_3()
-                    .child(appearance_row("Theme", &self.themes))
-                    .child(appearance_row("Icon theme", &self.icon_themes))
+                    .child(select_row(t("Theme"), &self.themes, palette))
+                    .child(select_row(t("Icon theme"), &self.icon_themes, palette))
                     .child(folders)
                     .child(div().text_size(px(12.)).text_color(palette.secondary_text).child(hint))
                     .child(
