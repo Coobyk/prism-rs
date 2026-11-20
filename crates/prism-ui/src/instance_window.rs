@@ -23,7 +23,7 @@ use datapacks_page::DataPacksPage;
 mod logs_page;
 use logs_page::LogsPages;
 #[path = "managed_pack_page.rs"]
-mod managed_pack_page;
+pub(super) mod managed_pack_page;
 use managed_pack_page::ManagedPackPage;
 #[path = "mod_list_dialog.rs"]
 mod mod_list_dialog;

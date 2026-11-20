@@ -5,6 +5,7 @@ pub mod flame;
 pub mod ftb;
 pub mod atlauncher;
 pub mod modrinth;
+pub mod technic;
 pub mod updates;
 
 use serde::{Deserialize, Serialize};

@@ -14,6 +14,7 @@ mod settings_window;
 #[cfg(target_os = "linux")]
 mod shortcut;
 mod state;
+mod technic_window;
 
 use gpui_kit::*;
 use prism_core::launch::QuickPlayTarget;
@@ -305,6 +306,10 @@ fn headless_prepare(version: &str, args: &[String]) -> i32 {
             let loader = prism_core::instance::loader_of(instance);
             match &loader {
                 prism_core::loaders::Loader::None => {}
+                prism_core::loaders::Loader::Forge { .. }
+                    if prism_core::modplatform::technic::apply_forge_patch(
+                        &mut profile, &settings.instance_dir, &settings.game_dir, &loader,
+                    ).expect("Technic Forge profile could not be read") => {}
                 prism_core::loaders::Loader::Forge { .. }
                 | prism_core::loaders::Loader::NeoForge { .. } => {
                     launcher.prepare_files(&profile, &settings)

@@ -4,7 +4,9 @@
 //! one.
 
 use crate::meta::VersionData;
+use crate::version_components::version_id;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum Loader {
@@ -195,7 +197,7 @@ pub async fn ensure_forge_installed(
     let Some((url, full_version)) = installer_url(loader, mc_version) else {
         return Err("not a forge loader".to_string());
     };
-    let installer_path = mc_dir.join(format!("{full_version}-installer.jar"));
+    let installer_path = forge_installer_path(mc_dir, &full_version);
     downloader
         .download(&crate::net::DownloadRequest::new(url, &installer_path))
         .await
@@ -240,11 +242,15 @@ pub fn read_forge_version_json(
     mc_dir: &std::path::Path,
     mc_version: &str,
 ) -> Result<VersionData, String> {
-    let dir_name = installer_profile_id(loader, mc_version)
+    let (_, installer_version) = installer_url(loader, mc_version)
         .ok_or_else(|| "not a forge loader".to_string())?;
+    let dir_name = declared_profile_id(&forge_installer_path(mc_dir, &installer_version))
+        .or_else(|| installer_profile_id(loader, mc_version))
+        .ok_or_else(|| "not a forge loader".to_string())?;
+    let dir_name = version_id(&dir_name).map_err(|e| e.to_string())?;
     let json_path = mc_dir
         .join("versions")
-        .join(&dir_name)
+        .join(dir_name)
         .join(format!("{dir_name}.json"));
     if !json_path.exists() {
         return Err(format!("installer output not found: {}", json_path.display()));
@@ -252,6 +258,28 @@ pub fn read_forge_version_json(
     let text = std::fs::read_to_string(&json_path).map_err(|e| e.to_string())?;
     let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     VersionData::from_json(&json).map_err(|e| e.to_string())
+}
+
+fn forge_installer_path(mc_dir: &Path, installer_version: &str) -> std::path::PathBuf {
+    mc_dir.join(format!("{installer_version}-installer.jar"))
+}
+
+fn declared_profile_id(installer: &Path) -> Option<String> {
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(installer).ok()?).ok()?;
+    let mut read = |name| {
+        let file = archive.by_name(name).ok()?;
+        serde_json::from_reader::<_, serde_json::Value>(file).ok()
+    };
+    let read_id = |value: &serde_json::Value| {
+        let id = value.as_str()?;
+        version_id(id).ok().map(str::to_owned)
+    };
+    read("version.json")
+        .and_then(|json| read_id(&json["id"]))
+        .or_else(|| {
+            let json = read("install_profile.json")?;
+            read_id(&json["versionInfo"]["id"]).or_else(|| read_id(&json["install"]["target"]))
+        })
 }
 
 fn installer_profile_id(loader: &Loader, mc_version: &str) -> Option<String> {
@@ -268,6 +296,30 @@ fn installer_profile_id(loader: &Loader, mc_version: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn reads_profile_ids_declared_by_legacy_and_modern_installers() {
+        let game = tempfile::tempdir().unwrap();
+        for (loader, mc, id, entry, metadata) in [
+            (Loader::Forge { version: "9.11.1.965".into() }, "1.6.4", "1.6.4-Forge9.11.1.965",
+             "install_profile.json", serde_json::json!({"versionInfo": {"id": "1.6.4-Forge9.11.1.965"}})),
+            (Loader::NeoForge { version: "26.1.2.109".into() }, "26.1.2", "neoforge-26.1.2.109",
+             "version.json", serde_json::json!({"id": "neoforge-26.1.2.109"})),
+        ] {
+            let (_, version) = installer_url(&loader, mc).unwrap();
+            let file = std::fs::File::create(forge_installer_path(game.path(), &version)).unwrap();
+            let mut archive = zip::ZipWriter::new(file);
+            archive.start_file(entry, zip::write::SimpleFileOptions::default()).unwrap();
+            archive.write_all(metadata.to_string().as_bytes()).unwrap();
+            archive.finish().unwrap();
+            let output = game.path().join("versions").join(id);
+            std::fs::create_dir_all(&output).unwrap();
+            std::fs::write(output.join(format!("{id}.json")),
+                serde_json::json!({"id": id, "mainClass": "fixture.Loader"}).to_string()).unwrap();
+            assert_eq!(read_forge_version_json(&loader, game.path(), mc).unwrap().id, id);
+        }
+    }
 
     #[test]
     fn forge_installer_accepts_prism_and_maven_versions() {
