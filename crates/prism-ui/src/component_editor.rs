@@ -1,5 +1,6 @@
 use super::InstanceWindow;
 use crate::state::App as LauncherApp;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     base::Disableable,
     component::{
@@ -237,6 +238,13 @@ impl Render for Editor {
             .flex_col()
             .gap_3()
             .bg(rgb(0x232323))
+            .when(adding, |dialog| {
+                dialog
+                    .bg(rgb(0x2b2b2b))
+                    .border_1()
+                    .border_color(rgb(0x555555))
+                    .rounded_lg()
+            })
             .text_color(rgb(0xdddddd))
             .child(
                 div().font_weight(FontWeight::BOLD).child(
