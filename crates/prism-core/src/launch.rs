@@ -1593,8 +1593,8 @@ mod tests {
         let raw = serde_json::json!({"id":"1.20.1","type":"release","mainClass":"GameMain",
             "arguments":{"jvm":["-cp","${classpath}"],"game":["--version","${version_name}"]},
             "javaVersion":{"component":"java-runtime-gamma","majorVersion":17},
-            "downloads":{"client":{"url":"https://example.invalid/client.jar","sha1":"123"}},
-            "assetIndex":{"id":"5","url":"https://example.invalid/assets.json","sha1":"456"},
+            "downloads":{"client":{"url":"https://example.invalid/client.jar","sha1":"0123456789012345678901234567890123456789"}},
+            "assetIndex":{"id":"5","url":"https://example.invalid/assets.json","sha1":"abcdef0123456789abcdef0123456789abcdef01"},
             "logging":{"client":{"argument":"unused by existing launch"}},
             "libraries":[{"name":"group:lib:1","downloads":{"artifact":{"url":"https://example.invalid/lib.jar"}}}]
         });

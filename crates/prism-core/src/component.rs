@@ -121,6 +121,7 @@ impl Component {
             if !index["url"].is_string() {
                 return Err(invalid("assetIndex requires a URL"));
             }
+            validate_download(index)?;
         }
         if let Some(java) = self.0.get("javaVersion") {
             version_id(
@@ -192,6 +193,7 @@ impl Component {
                 if !artifact["url"].is_string() {
                     return Err(invalid("Download requires a URL"));
                 }
+                validate_download(artifact)?;
             }
         }
         for field in ["libraries", "mavenFiles", "jarMods", "+jarMods", "+agents"] {
@@ -506,6 +508,7 @@ fn validate_library(value: &Value) -> io::Result<()> {
                 .into_iter()
                 .flat_map(|m| m.values()),
         ) {
+            validate_download(artifact)?;
             if let Some(path) = artifact.get("path") {
                 let path = path
                     .as_str()
@@ -518,6 +521,29 @@ fn validate_library(value: &Value) -> io::Result<()> {
                     return Err(invalid("Unsafe artifact path"));
                 }
             }
+        }
+    }
+    for key in ["url", "MMC-absoluteUrl"] {
+        if let Some(url) = value.get(key) {
+            validate_download(&serde_json::json!({"url":url,"sha1":value["downloads"]["artifact"]["sha1"]}))?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_download(artifact: &Value) -> io::Result<()> {
+    let sha1 = artifact.get("sha1").filter(|value| !value.is_null());
+    let hashed = sha1.and_then(Value::as_str).is_some_and(|hash| {
+        hash.len() == 40 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+    });
+    if sha1.is_some() && !hashed {
+        return Err(invalid("Download sha1 must contain 40 hexadecimal digits"));
+    }
+    if let Some(url) = artifact.get("url") {
+        let url = url.as_str().and_then(|url| reqwest::Url::parse(url).ok())
+            .ok_or_else(|| invalid("Invalid download URL"))?;
+        if url.scheme() != "https" && !(url.scheme() == "http" && hashed) {
+            return Err(invalid("Component downloads require HTTPS or HTTP with a SHA-1 checksum"));
         }
     }
     Ok(())
@@ -630,6 +656,23 @@ mod tests {
         }
         for name in ["org.example:lib:1.0", "org.example:lib:1:natives-linux"] {
             assert!(library(&json!({"name":name}), Path::new("/instance"), false).is_ok());
+        }
+    }
+
+    #[test]
+    fn insecure_downloads_require_a_checksum_including_agents() {
+        for field in ["libraries", "mavenFiles", "+agents", "jarMods"] {
+            for (url, sha1, allowed) in [
+                ("https://example.invalid/a.jar", Value::Null, true),
+                ("http://example.invalid/a.jar", Value::Null, false),
+                ("http://example.invalid/a.jar", json!("0123456789012345678901234567890123456789"), true),
+                ("http://example.invalid/a.jar", json!("bad"), false),
+                ("file:///a.jar", Value::Null, false),
+            ] {
+                let mut document = json!({"uid":"test","formatVersion":1});
+                document[field] = json!([{"name":"a:b:1","downloads":{"artifact":{"url":url,"sha1":sha1}}}]);
+                assert_eq!(parse(document).unwrap().validate_launch().is_ok(), allowed, "{field}: {url}");
+            }
         }
     }
 
