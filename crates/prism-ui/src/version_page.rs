@@ -109,6 +109,16 @@ pub(super) struct VersionPage {
 }
 
 impl VersionPage {
+    fn finish_customize_check(&mut self, refresh_id: u64, version: &str, reason: Option<String>) -> bool {
+        if self.refresh_id != refresh_id
+            || self.pack.as_ref().is_none_or(|pack| pack.is_custom(MINECRAFT) || pack.version(MINECRAFT) != Some(version))
+        {
+            return false;
+        }
+        self.customize_reason = reason;
+        true
+    }
+
     fn install_pack(&mut self, pack: Pack, labels: BTreeMap<String, ComponentLabels>) -> Option<String> {
         let version = (!pack.is_custom(MINECRAFT)).then(|| pack.version(MINECRAFT).map(str::to_owned)).flatten();
         self.customize_reason = if pack.is_custom(MINECRAFT) {
@@ -356,15 +366,14 @@ impl InstanceWindow {
                 version
             }).ok().flatten();
             let Some(version) = version else { return; };
+            let checked_version = version.clone();
             let reason = runtime.spawn(async move {
-                launcher.component_document(MINECRAFT, &version).await.err().map(|error| error.to_string())
+                launcher.component_document(MINECRAFT, &checked_version).await.err().map(|error| error.to_string())
             }).await.unwrap_or_else(|error| Some(error.to_string()));
             let _ = this.update(cx, |this, cx| {
-                if this.version_editor.refresh_id != refresh_id || this.version_editor.busy {
-                    return;
+                if this.version_editor.finish_customize_check(refresh_id, &version, reason) {
+                    cx.notify();
                 }
-                this.version_editor.customize_reason = reason;
-                cx.notify();
             });
         })
         .detach();
@@ -591,6 +600,9 @@ impl InstanceWindow {
                     Ok(pack) => {
                         this.version_editor.pack = Some(pack);
                         this.version_editor.message = "Version changes saved.".into();
+                        if matches!(edit, Edit::Minecraft) {
+                            this.refresh_version(cx);
+                        }
                     }
                     Err(error) => {
                         this.version_editor.message = format!("Could not save changes: {error}")
@@ -971,6 +983,31 @@ mod tests {
             &json!({"uid":MINECRAFT,"formatVersion":1,"mainClass":"Main"})).unwrap();
         assert!(state.install_pack(custom, Default::default()).is_none());
         assert!(state.customize_reason.is_none());
+    }
+
+    #[test]
+    fn customize_availability_survives_a_local_edit_in_progress() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = prism_core::Paths { root: root.path().into() };
+        let instance = prism_core::InstanceList::create(&paths, "Version", "default", "1.20.1").unwrap();
+        let mut state = VersionPage::default();
+        state.install_pack(Pack::load(&instance.root).unwrap(), Default::default());
+        state.refresh_id = 1;
+        state.busy = true;
+        assert!(state.finish_customize_check(1, "1.20.1", None));
+        assert!(state.busy);
+        state.pack = Some(Pack::load(&instance.root).unwrap());
+        state.busy = false;
+        assert!(state.customize_reason.is_none());
+        state.busy = true;
+        assert!(state.finish_customize_check(1, "1.20.1", Some("Metadata unavailable".into())));
+        state.busy = false;
+        assert_eq!(state.customize_reason.as_deref(), Some("Metadata unavailable"));
+        assert!(!state.finish_customize_check(0, "1.20.1", None));
+        assert!(!state.finish_customize_check(1, "1.20.4", None));
+        assert_eq!(state.customize_reason.as_deref(), Some("Metadata unavailable"));
+        state.pack = None;
+        assert!(!state.finish_customize_check(1, "1.20.1", None));
     }
 
     #[test]
