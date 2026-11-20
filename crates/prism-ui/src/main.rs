@@ -11,6 +11,7 @@ mod instance_window;
 mod instance_settings_page;
 mod main_window;
 mod settings_window;
+mod external_tools_page;
 mod skins_dialog;
 #[cfg(target_os = "linux")]
 mod shortcut;
@@ -38,15 +39,23 @@ fn main() {
         std::process::exit(atlauncher_cli::run(&args[2..]));
     }
     if args.get(1).map(String::as_str) == Some("launch") {
-        let (id, shortcut_token) = match &args[2..] {
-            [id] => (id, None),
-            [id, flag, token] if flag == "--shortcut-token" => (id, Some(token.as_str())),
+        let (id, shortcut_token, profiler) = match &args[2..] {
+            [id] => (id, None, None),
+            [id, flag, token] if flag == "--shortcut-token" => (id, Some(token.as_str()), None),
+            [id, flag, name] if flag == "--profiler" && name == "jprofiler" => {
+                (id, None, Some(prism_core::tools::Tool::JProfiler))
+            }
+            [id, flag, name] if flag == "--profiler" && name == "jvisualvm" => {
+                (id, None, Some(prism_core::tools::Tool::JVisualVM))
+            }
             _ => {
-                eprintln!("Usage: prism-rs launch <instance-id>");
+                eprintln!(
+                    "Usage: prism-rs launch <instance-id> [--profiler <jprofiler|jvisualvm>]"
+                );
                 std::process::exit(2);
             }
         };
-        match cli_launch::launch(id, shortcut_token) {
+        match cli_launch::launch(id, shortcut_token, profiler) {
             Ok(code) => std::process::exit(code),
             Err(error) => {
                 eprintln!("Launch failed: {error}");

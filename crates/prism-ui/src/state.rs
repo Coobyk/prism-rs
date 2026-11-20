@@ -179,6 +179,16 @@ impl App {
         quick_play: Option<prism_core::launch::QuickPlayTarget>,
         cx: &mut gpui_kit::Context<Self>,
     ) {
+        self.start_launch_profiled(id, quick_play, None, cx);
+    }
+
+    pub fn start_launch_profiled(
+        &mut self,
+        id: &str,
+        quick_play: Option<prism_core::launch::QuickPlayTarget>,
+        profiler: Option<prism_core::tools::Tool>,
+        cx: &mut gpui_kit::Context<Self>,
+    ) {
         if self.is_running(id) {
             return;
         }
@@ -232,6 +242,7 @@ impl App {
         }
 
         let mut settings = LaunchSettings::for_instance(&inst, &self.paths);
+        let tool_settings = prism_core::settings::Settings::load(&self.paths.global_config());
         settings.quick_play = quick_play;
         let accounts_path = self.paths.accounts_file();
         let account_id = AccountList::load(&accounts_path).active_account().map(|account| account.id.clone());
@@ -294,6 +305,12 @@ impl App {
                 Some(Box::new(move |line| log_lock(&log).push(line))),
                 |command| crate::instance_lock::spawn(command, &lock),
             );
+            if let (Some(profiler), Ok(child)) = (profiler, &result) {
+                let log = running.log.clone();
+                profiler.attach(&tool_settings, child.id(), move |message| {
+                    log_lock(&log).push(message)
+                });
+            }
             monitor_launch(running, "Minecraft", result, lock, Some(prepared));
         });
     }

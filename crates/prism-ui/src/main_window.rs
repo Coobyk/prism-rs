@@ -10,7 +10,8 @@
 use crate::dialogs::{CreateInstanceState, PromptState};
 use crate::state::{format_play_time, App, InstanceRunState};
 use gpui_kit::base::{Disableable, InteractiveElementExt};
-use gpui_kit::component::button::Button;
+use gpui_kit::component::button::{Button, DropdownButton};
+use gpui_kit::component::menu::PopupMenuItem;
 use gpui_kit::*;
 
 pub struct MainWindow {
@@ -363,8 +364,53 @@ impl MainWindow {
             })))
             .child(toolbar_separator())
             .child(
-                self.sidebar_button("launch", "Launch", enabled && !is_running)
-                    .on_click(cx.listener(Self::on_launch)),
+                DropdownButton::new("launch-options")
+                    .w_full()
+                    .button(
+                        self.sidebar_button("launch", "Launch", enabled && !is_running)
+                            .flex_1()
+                            .on_click(cx.listener(Self::on_launch)),
+                    )
+                    .disabled(!enabled || is_running)
+                    .dropdown_menu({
+                        let app = self.app.clone();
+                        move |mut menu, _, cx| {
+                            let settings = prism_core::settings::Settings::load(
+                                &app.read(cx).paths.global_config(),
+                            );
+                            for tool in [
+                                prism_core::tools::Tool::JProfiler,
+                                prism_core::tools::Tool::JVisualVM,
+                            ] {
+                                let valid = !horizon && tool.check(&tool.path(&settings)).is_ok();
+                                let app = app.clone();
+                                let label = if valid {
+                                    format!("Launch with {}", tool.name())
+                                } else {
+                                    format!(
+                                        "{} — not set up; Settings → External Tools",
+                                        tool.name()
+                                    )
+                                };
+                                menu =
+                                    menu.item(PopupMenuItem::new(label).disabled(!valid).on_click(
+                                        move |_, _, cx| {
+                                            app.update(cx, |app, cx| {
+                                                if let Some(id) = app.selected.clone() {
+                                                    app.start_launch_profiled(
+                                                        &id,
+                                                        None,
+                                                        Some(tool),
+                                                        cx,
+                                                    );
+                                                }
+                                            });
+                                        },
+                                    ));
+                            }
+                            menu
+                        }
+                    }),
             )
             .children((!horizon).then(|| {
                 self.sidebar_button("quick-play", "Quick Play…", enabled && !is_running)

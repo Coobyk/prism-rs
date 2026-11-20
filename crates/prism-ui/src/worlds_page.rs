@@ -346,6 +346,51 @@ impl InstanceWindow {
                     })),
             );
             if let Some(world) = world.cloned() {
+                let editor_world = world.clone();
+                let editor = prism_core::tools::Tool::MCEdit;
+                buttons = buttons.child(
+                    Button::new(("mcedit-world", index))
+                        .label("MCEdit")
+                        .disabled(running || busy)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            let settings = prism_core::settings::Settings::load(
+                                &this.app.read(cx).paths.global_config(),
+                            );
+                            if editor.check(&editor.path(&settings)).is_err() {
+                                this.worlds.status = Some(
+                                    "No MCEdit found or set up. Set the MCEdit path in Settings → External Tools.".into(),
+                                );
+                                cx.notify();
+                                return;
+                            }
+                            let result = this.current_world_instance(cx).and_then(|instance| {
+                                if instance.game_root() != editor_world.game_root() {
+                                    return Err(io::Error::other("The instance game folder changed"));
+                                }
+                                let lock = crate::instance_lock::acquire(
+                                    &this.app.read(cx).paths,
+                                    &instance,
+                                )
+                                .map_err(|error| {
+                                    if error.kind() == io::ErrorKind::WouldBlock {
+                                        io::Error::new(
+                                            error.kind(),
+                                            "Minecraft is running for this instance; close it before editing worlds in MCEdit.",
+                                        )
+                                    } else {
+                                        error
+                                    }
+                                })?;
+                                drop(lock);
+                                editor.open_world(&settings, &editor_world.world_path()?)
+                            });
+                            this.worlds.status = Some(match result {
+                                Ok(()) => "MCEdit started".into(),
+                                Err(error) => format!("Could not start MCEdit: {error}"),
+                            });
+                            cx.notify();
+                        })),
+                );
                 let open_world = world.clone();
                 buttons = buttons.child(
                     Button::new(("open-world", index))

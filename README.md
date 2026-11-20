@@ -197,7 +197,8 @@ Working today:
 - ATLauncher: browse and install public ATLauncher packs from Add Instance.
 
 Not yet at parity (tracked in the issue tracker of your heart): themes/translations,
-updater, profiling tools, and per-instance console window options.
+updater and per-instance console window options. External tools include JProfiler,
+JVisualVM (also via `launch <instance-id> --profiler <jprofiler|jvisualvm>`), and MCEdit.
 
 ## License
 
