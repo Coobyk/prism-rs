@@ -151,7 +151,7 @@ fn color(c: Color) -> Hsla {
 
 impl Palette {
     fn disabled_foreground(self) -> Hsla {
-        self.disabled_ink.opacity(0.5)
+        self.disabled_ink
     }
 
     pub fn get(cx: &App) -> Self {
@@ -169,9 +169,25 @@ impl Palette {
                 r: a.r + (b.r - a.r) * amount,
                 g: a.g + (b.g - a.g) * amount,
                 b: a.b + (b.b - a.b) * amount,
-                a: a.a,
+                a: a.a + (b.a - a.a) * amount,
             }
             .into()
+        };
+        let builtin = matches!(theme.id.as_str(), "system" | "dark" | "bright");
+        let faded = |name| mix(c(name), c("fadeColor"), theme.fade_amount);
+        let disabled_ink = if builtin {
+            let ink: Hsla = rgb(if theme.color("Button").is_light() {
+                0x000000
+            } else {
+                0xffffff
+            })
+            .into();
+            ink.opacity(0.5)
+        } else {
+            readable_disabled(
+                faded("ButtonText"),
+                [c("Window"), c("Button"), c("Base"), c("AlternateBase")],
+            )
         };
         Self {
             window: c("Window"),
@@ -191,17 +207,20 @@ impl Palette {
             strong_border: mix(c("Button"), c("WindowText"), 0.24),
             text: c("WindowText"),
             base_text: c("Text"),
-            base_secondary_text: mix(c("Text"), c("Base"), 0.27),
+            base_secondary_text: if builtin {
+                mix(c("Text"), c("Base"), 0.27)
+            } else {
+                faded("Text")
+            },
             base_muted_text: mix(c("Text"), c("Base"), 0.45),
             panel_text: c("ButtonText"),
-            secondary_text: mix(c("WindowText"), c("Window"), 0.27),
-            muted_text: mix(c("WindowText"), c("Window"), 0.45),
-            disabled_ink: rgb(if theme.color("Button").is_light() {
-                0x000000
+            secondary_text: if builtin {
+                mix(c("WindowText"), c("Window"), 0.27)
             } else {
-                0xffffff
-            })
-            .into(),
+                faded("WindowText")
+            },
+            muted_text: mix(c("WindowText"), c("Window"), 0.45),
+            disabled_ink,
             accent: c("Highlight"),
             selection: if light {
                 mix(c("Window"), c("Highlight"), 0.16)
@@ -221,6 +240,58 @@ impl Palette {
             overlay: black().opacity(0.5),
         }
     }
+}
+
+fn readable_disabled(foreground: Hsla, backgrounds: [Hsla; 4]) -> Hsla {
+    let luminance = |c: Rgba| {
+        let channel = |v: f32| {
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(c.r) + 0.7152 * channel(c.g) + 0.0722 * channel(c.b)
+    };
+    let contrast = |fg: Rgba| {
+        backgrounds
+            .iter()
+            .map(|bg| {
+                let bg: Rgba = (*bg).into();
+                let blended = Rgba {
+                    r: fg.r * fg.a + bg.r * (1. - fg.a),
+                    g: fg.g * fg.a + bg.g * (1. - fg.a),
+                    b: fg.b * fg.a + bg.b * (1. - fg.a),
+                    a: 1.,
+                };
+                let (a, b) = (luminance(blended), luminance(bg));
+                (a.max(b) + 0.05) / (a.min(b) + 0.05)
+            })
+            .fold(f32::INFINITY, f32::min)
+    };
+    let fg: Rgba = foreground.into();
+    if contrast(fg) >= 3. {
+        return foreground;
+    }
+    let mut best = fg;
+    for step in 1..=100 {
+        let amount = step as f32 / 100.;
+        for target in [0., 1.] {
+            let candidate = Rgba {
+                r: fg.r + (target - fg.r) * amount,
+                g: fg.g + (target - fg.g) * amount,
+                b: fg.b + (target - fg.b) * amount,
+                a: fg.a + (1. - fg.a) * amount,
+            };
+            if contrast(candidate) >= 3. {
+                return candidate.into();
+            }
+            if contrast(candidate) > contrast(best) {
+                best = candidate;
+            }
+        }
+    }
+    best.into()
 }
 
 struct Selection {
@@ -731,7 +802,7 @@ mod tests {
             super::sync_colors(&mut colors, palette);
             assert_eq!(colors.muted_foreground, palette.muted_text);
             assert_ne!(colors.muted_foreground, palette.disabled_ink);
-            assert_eq!(palette.disabled_foreground().a, 0.5);
+            assert_eq!(palette.disabled_foreground(), palette.disabled_ink);
             let ink: Rgba = palette.disabled_ink.into();
             for background in [
                 palette.window,
@@ -748,9 +819,9 @@ mod tests {
                 assert!(placeholder_contrast >= 3., "{}", theme.id);
                 assert!(placeholder_contrast < value_contrast * 0.8, "{}", theme.id);
                 let fg = Rgba {
-                    r: (ink.r + bg.r) / 2.,
-                    g: (ink.g + bg.g) / 2.,
-                    b: (ink.b + bg.b) / 2.,
+                    r: ink.r * ink.a + bg.r * (1. - ink.a),
+                    g: ink.g * ink.a + bg.g * (1. - ink.a),
+                    b: ink.b * ink.a + bg.b * (1. - ink.a),
                     a: 1.,
                 };
                 let (a, b) = (luminance(fg), luminance(bg));
@@ -767,6 +838,37 @@ mod tests {
         let button = button.disabled(false).selected(false);
         assert!(!button.disabled);
         assert!(!button.is_selected());
+    }
+
+    #[test]
+    fn custom_fade_controls_disabled_and_secondary_colors() {
+        let theme = |color, amount| {
+            ApplicationTheme::parse("custom", &format!(
+            r##"{{"colors":{{"ButtonText":"#dddddd","fadeColor":"{color}","fadeAmount":{amount}}}}}"##
+        )).unwrap()
+        };
+        let initial = Palette::from_theme(&theme("#777777", 0.25));
+        let amount = Palette::from_theme(&theme("#777777", 0.5));
+        let changed_color = Palette::from_theme(&theme("#999999", 0.5));
+        assert_ne!(initial.disabled_ink, amount.disabled_ink);
+        assert_ne!(amount.disabled_ink, changed_color.disabled_ink);
+        assert_ne!(initial.secondary_text, amount.secondary_text);
+        assert_ne!(
+            amount.base_secondary_text,
+            changed_color.base_secondary_text
+        );
+        let zero = Palette::from_theme(&theme("#777777", 0.));
+        assert_eq!(zero.disabled_ink, color(super::Color(0xffdddddd)));
+        let full = Palette::from_theme(&theme("#999999", 1.));
+        assert_eq!(full.disabled_ink, color(super::Color(0xff999999)));
+        assert_ne!(
+            Palette::from_theme(&theme("#232323", 1.)).disabled_ink,
+            color(super::Color(0xff232323))
+        );
+        for light in [false, true] {
+            let palette = Palette::from_theme(&ApplicationTheme::builtin(light));
+            assert_eq!(palette.disabled_ink.a, 0.5);
+        }
     }
 
     #[test]
