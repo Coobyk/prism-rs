@@ -3,8 +3,8 @@
 //! + instance pages.
 
 use crate::state::{App, InstanceRunState};
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;
 use prism_core::loaders::Loader;

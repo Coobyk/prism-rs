@@ -1,9 +1,10 @@
 use crate::{
     instance_window::managed_pack_page::changelog_markdown, main_window::MainWindow, state::App,
+    theme::Button,
 };
 use gpui_kit::base::Disableable;
 use gpui_kit::component::{
-    button::{Button, ButtonVariants},
+    button::ButtonVariants,
     input::{Input, InputState},
     text::TextView,
 };

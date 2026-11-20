@@ -1,9 +1,7 @@
 use super::{InstanceWindow, Page};
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::{
-    button::Button,
-    input::{Input, InputState},
-};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 use prism_core::{
     launch::Launcher,

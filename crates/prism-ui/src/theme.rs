@@ -1,5 +1,6 @@
-use gpui_kit::component::theme::{Theme, ThemeMode};
-use gpui_kit::component::ActiveTheme;
+use gpui_kit::base::{Disableable, Selectable};
+use gpui_kit::component::button::{Button as KitButton, ButtonVariant, ButtonVariants};
+use gpui_kit::component::theme::{Theme, ThemeColor, ThemeMode};
 use gpui_kit::*;
 use prism_core::themes::{ApplicationTheme, Color, ThemeCatalog};
 
@@ -146,6 +147,10 @@ fn color(c: Color) -> Hsla {
 }
 
 impl Palette {
+    fn disabled_foreground(self) -> Hsla {
+        self.disabled_ink.opacity(0.5)
+    }
+
     pub fn get(cx: &App) -> Self {
         *cx.global::<Self>()
     }
@@ -341,8 +346,90 @@ struct ButtonIcon(Icon);
 impl RenderOnce for ButtonIcon {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tint = window.text_style().color;
-        let disabled = tint == cx.theme().muted_foreground.opacity(0.5);
+        let disabled = tint == Palette::get(cx).disabled_foreground();
         icon_with_tint(self.0, tint, !disabled, cx)
+    }
+}
+
+#[derive(IntoElement)]
+pub struct Button {
+    inner: KitButton,
+    disabled: bool,
+}
+
+impl Button {
+    pub fn new(id: impl Into<ElementId>) -> Self {
+        Self {
+            inner: KitButton::new(id),
+            disabled: false,
+        }
+    }
+
+    pub fn label(mut self, label: impl Into<SharedString>) -> Self {
+        self.inner = self.inner.label(label);
+        self
+    }
+
+    pub fn accessibility_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.inner = self.inner.accessibility_label(label);
+        self
+    }
+
+    pub fn on_click(
+        mut self,
+        handler: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.inner = self.inner.on_click(handler);
+        self
+    }
+}
+
+impl Styled for Button {
+    fn style(&mut self) -> &mut StyleRefinement {
+        self.inner.style()
+    }
+}
+
+impl ParentElement for Button {
+    fn extend(&mut self, elements: impl IntoIterator<Item = AnyElement>) {
+        self.inner.extend(elements);
+    }
+}
+
+impl Disableable for Button {
+    fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self.inner = self.inner.disabled(disabled);
+        self
+    }
+}
+
+impl Selectable for Button {
+    fn selected(mut self, selected: bool) -> Self {
+        self.inner = self.inner.selected(selected);
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.inner.is_selected()
+    }
+}
+
+impl ButtonVariants for Button {
+    fn with_variant(mut self, variant: ButtonVariant) -> Self {
+        self.inner = self.inner.with_variant(variant);
+        self
+    }
+}
+
+impl RenderOnce for Button {
+    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+        if self.disabled {
+            self.inner
+                .text_color(Palette::get(cx).disabled_foreground())
+        } else {
+            self.inner
+        }
     }
 }
 
@@ -351,18 +438,16 @@ pub fn button(
     name: Icon,
     label: impl Into<SharedString>,
     _cx: &App,
-) -> gpui_kit::component::button::Button {
+) -> Button {
     let label = label.into();
-    gpui_kit::component::button::Button::new(id)
-        .accessibility_label(label.clone())
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap_2()
-                .child(div().size(px(16.)).flex_shrink_0().child(ButtonIcon(name)))
-                .child(label),
-        )
+    Button::new(id).accessibility_label(label.clone()).child(
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(div().size(px(16.)).flex_shrink_0().child(ButtonIcon(name)))
+            .child(label),
+    )
 }
 
 pub fn observe(window: &mut Window, cx: &mut App) {
@@ -394,79 +479,81 @@ fn apply(appearance: WindowAppearance, cx: &mut App) {
         cx,
     );
     cx.set_global(palette);
-    Theme::update(cx, |theme| {
-        let c = &mut theme.colors;
-        c.background = palette.window;
-        c.foreground = palette.base_text;
-        c.border = palette.border;
-        c.input = palette.strong_border;
-        c.accent = palette.selection;
-        c.accent_foreground = palette.text;
-        c.primary = palette.accent;
-        c.primary_foreground = palette.highlighted_text;
-        c.primary_hover = palette.accent;
-        c.primary_active = palette.accent;
-        c.button_primary = palette.accent;
-        c.button_primary_foreground = palette.highlighted_text;
-        c.button_primary_hover = palette.accent;
-        c.button_primary_active = palette.accent;
-        c.button = palette.panel;
-        c.button_foreground = palette.panel_text;
-        c.button_hover = palette.hover;
-        c.button_active = palette.selection;
-        c.secondary = palette.panel;
-        c.secondary_foreground = palette.text;
-        c.secondary_hover = palette.hover;
-        c.secondary_active = palette.selection;
-        c.muted = palette.alternate;
-        c.muted_foreground = palette.disabled_ink;
-        c.popover = palette.tooltip;
-        c.popover_foreground = palette.tooltip_text;
-        c.list = palette.base;
-        c.list_even = palette.alternate;
-        c.list_head = palette.panel;
-        c.list_hover = palette.hover;
-        c.list_active = palette.selection;
-        c.list_active_border = palette.accent;
-        c.table = palette.base;
-        c.table_even = palette.alternate;
-        c.table_head = palette.panel;
-        c.table_head_foreground = palette.text;
-        c.table_hover = palette.hover;
-        c.table_active = palette.selection;
-        c.table_active_border = palette.accent;
-        c.table_row_border = palette.border;
-        c.tab = palette.panel;
-        c.tab_bar = palette.panel;
-        c.tab_foreground = palette.secondary_text;
-        c.tab_active = palette.window;
-        c.tab_active_foreground = palette.text;
-        c.sidebar = palette.panel;
-        c.sidebar_foreground = palette.text;
-        c.sidebar_border = palette.border;
-        c.sidebar_accent = palette.accent;
-        c.sidebar_accent_foreground = palette.highlighted_text;
-        c.group_box = palette.panel;
-        c.group_box_foreground = palette.text;
-        c.title_bar = palette.panel;
-        c.title_bar_border = palette.border;
-        c.window_border = palette.border;
-        c.link = palette.link;
-        c.link_hover = palette.link;
-        c.link_active = palette.link;
-        c.selection = palette.accent;
-        c.caret = palette.base_text;
-        c.ring = palette.accent;
-        c.danger = palette.error;
-        c.success = palette.success;
-        c.warning = palette.warning;
-    });
+    Theme::update(cx, |theme| sync_colors(&mut theme.colors, palette));
     cx.refresh_windows();
+}
+
+fn sync_colors(c: &mut ThemeColor, palette: Palette) {
+    c.background = palette.window;
+    c.foreground = palette.base_text;
+    c.border = palette.border;
+    c.input = palette.strong_border;
+    c.accent = palette.selection;
+    c.accent_foreground = palette.text;
+    c.primary = palette.accent;
+    c.primary_foreground = palette.highlighted_text;
+    c.primary_hover = palette.accent;
+    c.primary_active = palette.accent;
+    c.button_primary = palette.accent;
+    c.button_primary_foreground = palette.highlighted_text;
+    c.button_primary_hover = palette.accent;
+    c.button_primary_active = palette.accent;
+    c.button = palette.panel;
+    c.button_foreground = palette.panel_text;
+    c.button_hover = palette.hover;
+    c.button_active = palette.selection;
+    c.secondary = palette.panel;
+    c.secondary_foreground = palette.text;
+    c.secondary_hover = palette.hover;
+    c.secondary_active = palette.selection;
+    c.muted = palette.alternate;
+    c.muted_foreground = palette.muted_text;
+    c.popover = palette.tooltip;
+    c.popover_foreground = palette.tooltip_text;
+    c.list = palette.base;
+    c.list_even = palette.alternate;
+    c.list_head = palette.panel;
+    c.list_hover = palette.hover;
+    c.list_active = palette.selection;
+    c.list_active_border = palette.accent;
+    c.table = palette.base;
+    c.table_even = palette.alternate;
+    c.table_head = palette.panel;
+    c.table_head_foreground = palette.text;
+    c.table_hover = palette.hover;
+    c.table_active = palette.selection;
+    c.table_active_border = palette.accent;
+    c.table_row_border = palette.border;
+    c.tab = palette.panel;
+    c.tab_bar = palette.panel;
+    c.tab_foreground = palette.secondary_text;
+    c.tab_active = palette.window;
+    c.tab_active_foreground = palette.text;
+    c.sidebar = palette.panel;
+    c.sidebar_foreground = palette.text;
+    c.sidebar_border = palette.border;
+    c.sidebar_accent = palette.accent;
+    c.sidebar_accent_foreground = palette.highlighted_text;
+    c.group_box = palette.panel;
+    c.group_box_foreground = palette.text;
+    c.title_bar = palette.panel;
+    c.title_bar_border = palette.border;
+    c.window_border = palette.border;
+    c.link = palette.link;
+    c.link_hover = palette.link;
+    c.link_active = palette.link;
+    c.selection = palette.accent;
+    c.caret = palette.base_text;
+    c.ring = palette.accent;
+    c.danger = palette.error;
+    c.success = palette.success;
+    c.warning = palette.warning;
 }
 
 #[cfg(test)]
 mod tests {
     use super::{color, Palette};
+    use gpui_kit::base::{Disableable, Selectable};
     use gpui_kit::Rgba;
     use prism_core::themes::{ApplicationTheme, Color};
 
@@ -583,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn disabled_button_contrast() {
+    fn placeholder_and_disabled_button_roles() {
         let custom = ApplicationTheme::parse(
             "custom",
             r##"{"colors":{"Window":"#1e1e2e","WindowText":"#cdd6f4","Base":"#181825","AlternateBase":"#242436","Button":"#313244","ButtonText":"#cdd6f4"}}"##,
@@ -606,6 +693,11 @@ mod tests {
             custom,
         ] {
             let palette = Palette::from_theme(&theme);
+            let mut colors = super::ThemeColor::default();
+            super::sync_colors(&mut colors, palette);
+            assert_eq!(colors.muted_foreground, palette.muted_text);
+            assert_ne!(colors.muted_foreground, palette.disabled_ink);
+            assert_eq!(palette.disabled_foreground().a, 0.5);
             let ink: Rgba = palette.disabled_ink.into();
             for background in [
                 palette.window,
@@ -614,7 +706,13 @@ mod tests {
                 palette.alternate,
             ] {
                 let bg: Rgba = background.into();
-                // gpui-kit applies 50% opacity to muted_foreground for disabled buttons.
+                let placeholder: Rgba = colors.muted_foreground.into();
+                let value: Rgba = colors.foreground.into();
+                let (p, v, b) = (luminance(placeholder), luminance(value), luminance(bg));
+                let placeholder_contrast = (p.max(b) + 0.05) / (p.min(b) + 0.05);
+                let value_contrast = (v.max(b) + 0.05) / (v.min(b) + 0.05);
+                assert!(placeholder_contrast >= 3., "{}", theme.id);
+                assert!(placeholder_contrast < value_contrast * 0.8, "{}", theme.id);
                 let fg = Rgba {
                     r: (ink.r + bg.r) / 2.,
                     g: (ink.g + bg.g) / 2.,
@@ -625,6 +723,16 @@ mod tests {
                 assert!((a.max(b) + 0.05) / (a.min(b) + 0.05) >= 3., "{}", theme.id);
             }
         }
+    }
+
+    #[test]
+    fn button_state_can_be_updated() {
+        let button = super::Button::new("test").disabled(true).selected(true);
+        assert!(button.disabled);
+        assert!(button.is_selected());
+        let button = button.disabled(false).selected(false);
+        assert!(!button.disabled);
+        assert!(!button.is_selected());
     }
 
     #[test]

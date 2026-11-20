@@ -1,5 +1,6 @@
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;

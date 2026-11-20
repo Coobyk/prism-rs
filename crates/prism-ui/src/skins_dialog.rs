@@ -1,10 +1,8 @@
 use crate::state::App as LauncherApp;
+use crate::theme::Button;
 use gpui_kit::{
     base::{Disableable, Radio},
-    component::{
-        button::Button,
-        input::{Input, InputState},
-    },
+    component::input::{Input, InputState},
     *,
 };
 use prism_core::skins::{MinecraftProfile, Skin, SkinClient, SkinError, SkinLibrary, SkinModel};

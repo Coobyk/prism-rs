@@ -1,6 +1,6 @@
 use crate::instance_window::InstanceWindow;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::*;

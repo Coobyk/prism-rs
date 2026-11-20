@@ -1,8 +1,8 @@
 //! Global launcher preferences persisted in `prismlauncher.cfg`.
 
 use crate::state::App;
+use crate::theme::Button;
 use gpui_kit::base::{Disableable, Selectable};
-use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectItem, SelectState};
 use gpui_kit::prelude::FluentBuilder;

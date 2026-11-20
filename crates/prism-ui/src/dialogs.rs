@@ -2,8 +2,9 @@
 
 use crate::state::App;
 use crate::main_window::MainWindow;
+use crate::theme::Button;
 use gpui_kit::base::{Disableable, Selectable};
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
@@ -687,7 +688,7 @@ impl CreateInstanceState {
                 .justify_end()
                 .gap_2()
                 .child(
-                    gpui_kit::component::button::Button::new("cancel")
+                    Button::new("cancel")
                         .label("Cancel")
                         .disabled(self.creating)
                         .on_click(cx.listener(|this: &mut MainWindow, _ev, _window, cx| {
@@ -696,7 +697,7 @@ impl CreateInstanceState {
                         })),
                 )
                 .child(
-                    gpui_kit::component::button::Button::new("ok")
+                    Button::new("ok")
                         .label(if self.creating { "Creating…" } else { "OK" })
                         .disabled(self.creating)
                         .on_click(cx.listener(confirm_create)),

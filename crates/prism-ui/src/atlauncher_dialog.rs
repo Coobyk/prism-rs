@@ -1,11 +1,12 @@
 use crate::{
     dialogs::{finish_create, CreateInstanceState},
     main_window::MainWindow,
+    theme::Button,
 };
 use gpui_kit::{
     base::Disableable,
     component::{
-        button::{Button, ButtonVariants},
+        button::ButtonVariants,
         checkbox::Checkbox,
         input::{Input, InputEvent, InputState},
         text::TextView,

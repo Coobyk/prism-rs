@@ -1,6 +1,7 @@
 use crate::state::App as LauncherApp;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::*;

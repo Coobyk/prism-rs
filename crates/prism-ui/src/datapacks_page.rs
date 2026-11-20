@@ -1,6 +1,6 @@
 use super::{Browser, BrowserTarget, InstanceWindow, Page};
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use prism_core::datapacks::{DataPack, World};
 use prism_core::modplatform::modrinth::{ModrinthApi, SearchResult};

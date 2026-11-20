@@ -3,8 +3,8 @@
 //! MSALoginDialog.
 
 use crate::state::App;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::Button;
 use gpui_kit::*;
 use std::sync::Arc;
 

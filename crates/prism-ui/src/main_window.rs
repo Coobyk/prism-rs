@@ -9,9 +9,8 @@
 
 use crate::dialogs::{CreateInstanceState, PromptState};
 use crate::state::{format_play_time, App, InstanceRunState};
-use crate::theme::Icon;
+use crate::theme::{Button, Icon};
 use gpui_kit::base::{Disableable, InteractiveElementExt};
-use gpui_kit::component::button::Button;
 use gpui_kit::*;
 
 pub struct MainWindow {

@@ -1,9 +1,7 @@
 use super::InstanceWindow;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::{
-    button::Button,
-    input::{Input, InputState},
-};
+use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::*;
 use prism_core::screenshots::{imgur_client_id, upload_to_imgur, Screenshot, IMGUR_CLIENT_ID_ENV};
 use std::{io::Cursor, path::PathBuf, sync::Arc};

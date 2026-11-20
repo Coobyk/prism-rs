@@ -1,6 +1,7 @@
 use super::InstanceWindow;
+use crate::theme::Button;
 use gpui_kit::base::Disableable;
-use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::button::ButtonVariants;
 use gpui_kit::component::text::TextView;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
