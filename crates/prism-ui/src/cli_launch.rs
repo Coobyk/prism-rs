@@ -3,7 +3,11 @@ use prism_core::launch::{LaunchSettings, Launcher};
 use prism_core::{AccountList, Instance, InstanceKind, InstanceList, Paths};
 use std::{error::Error, io, process::{Child, Command, Stdio}};
 
-pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Error>> {
+pub fn launch(
+    id: &str,
+    shortcut_token: Option<&str>,
+    profiler: Option<prism_core::tools::Tool>,
+) -> Result<i32, Box<dyn Error>> {
     let mut paths = Paths::new();
     paths.root = std::path::absolute(&paths.root)?;
     let list = InstanceList::load(&paths)?;
@@ -21,6 +25,9 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
     }
 
     if let InstanceKind::Horizon { id, home, token } = &instance.kind {
+        if profiler.is_some() {
+            return Err("Profilers are only available for Java instances".into());
+        }
         println!("Launching Horizon instance {:?}", instance.name);
         let settings = prism_core::settings::Settings::load(&paths.global_config());
         let (child, current_home) =
@@ -66,6 +73,13 @@ pub fn launch(id: &str, shortcut_token: Option<&str>) -> Result<i32, Box<dyn Err
         let child = prepared.spawn_with(None, |command| spawn_attached(command, &lock))?;
         Ok::<_, Box<dyn Error>>((child, prepared))
     })?;
+    if let Some(profiler) = profiler {
+        profiler.attach(
+            &prism_core::settings::Settings::load(&paths.global_config()),
+            child.id(),
+            |message| eprintln!("{message}"),
+        );
+    }
     let status = wait_for_game(child)?;
     if let Err(error) = prepared.run_post_exit() {
         eprintln!("Post-exit command failed: {error}");

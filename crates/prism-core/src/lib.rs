@@ -37,6 +37,7 @@ pub mod screenshots;
 pub mod skins;
 pub mod version_components;
 pub mod worlds;
+pub mod tools;
 
 pub use auth::AccountList;
 pub use instance::{Instance, InstanceGroups, InstanceKind, InstanceList};

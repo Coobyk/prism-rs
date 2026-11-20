@@ -15,6 +15,7 @@ enum Page {
     General,
     Proxy,
     ApiKeys,
+    Tools,
 }
 
 pub struct SettingsWindow {
@@ -36,6 +37,7 @@ pub struct SettingsWindow {
     imgur_id: gpui::Entity<InputState>,
     detected_java: String,
     status: String,
+    tools: Entity<crate::external_tools_page::ExternalToolsPage>,
 }
 
 impl SettingsWindow {
@@ -57,6 +59,8 @@ impl SettingsWindow {
         };
 
         SettingsWindow {
+            tools: cx
+                .new(|cx| crate::external_tools_page::ExternalToolsPage::new(&cfg, window, cx)),
             app,
             min_mem: mk("512", cfg.get_or("MinMemAlloc", "512"), window, cx),
             max_mem: mk("4096", cfg.get_or("MaxMemAlloc", "4096"), window, cx),
@@ -111,6 +115,7 @@ impl SettingsWindow {
         let mut cfg = Settings::load(&config_path);
         let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
         match self.page {
+            Page::Tools => self.tools.read(cx).save(&mut cfg, cx),
             Page::General => {
                 let args = value(&self.jvm_args);
                 prism_core::launch::split_args(&args)
@@ -206,6 +211,7 @@ impl Render for SettingsWindow {
                 .child(text)
         };
         let body = match self.page {
+            Page::Tools => div().child(self.tools.clone()),
             Page::General => div()
                 .flex()
                 .flex_col()
@@ -292,6 +298,7 @@ impl Render for SettingsWindow {
                         (Page::General, "General & Java"),
                         (Page::Proxy, "Proxy"),
                         (Page::ApiKeys, "API Keys"),
+                        (Page::Tools, "External Tools"),
                     ]
                     .into_iter()
                     .map(|(page, name)| {
