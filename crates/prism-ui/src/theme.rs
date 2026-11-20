@@ -138,6 +138,7 @@ pub struct Palette {
     pub tooltip: Hsla,
     pub tooltip_text: Hsla,
     pub transparent: Hsla,
+    pub overlay: Hsla,
 }
 
 impl Global for Palette {}
@@ -213,6 +214,7 @@ impl Palette {
             tooltip: c("ToolTipBase"),
             tooltip_text: c("ToolTipText"),
             transparent: rgba(0x00000000).into(),
+            overlay: black().opacity(0.5),
         }
     }
 }
@@ -395,6 +397,14 @@ impl ParentElement for Button {
         self.inner.extend(elements);
     }
 }
+
+impl InteractiveElement for Button {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.inner.interactivity()
+    }
+}
+
+impl gpui_kit::component::menu::DropdownMenu for Button {}
 
 impl Disableable for Button {
     fn disabled(mut self, disabled: bool) -> Self {
@@ -641,11 +651,13 @@ mod tests {
         assert!(super::custom_icon(&catalog, "missing", "new").is_none());
         let mut settings = prism_core::settings::Settings::default();
         settings.set("MinMemAlloc", "1024");
+        settings.set("JProfilerPath", "/opt/jprofiler");
         settings.save(&paths.global_config()).unwrap();
         super::persist(&paths, "ApplicationTheme", "bright").unwrap();
         super::persist(&paths, "IconTheme", "colored").unwrap();
         let mut general = prism_core::settings::Settings::load(&paths.global_config());
         assert_eq!(general.get("MinMemAlloc"), Some("1024"));
+        assert_eq!(general.get("JProfilerPath"), Some("/opt/jprofiler"));
         general.set("MaxMemAlloc", "8192");
         general.save(&paths.global_config()).unwrap();
         let result = prism_core::settings::Settings::load(&paths.global_config());
@@ -733,6 +745,15 @@ mod tests {
         let button = button.disabled(false).selected(false);
         assert!(!button.disabled);
         assert!(!button.is_selected());
+    }
+
+    #[test]
+    fn menu_trigger_retains_button_identity() {
+        let mut button = super::Button::new("launch-options");
+        assert_eq!(
+            gpui_kit::InteractiveElement::interactivity(&mut button).element_id,
+            Some("launch-options".into())
+        );
     }
 
     #[test]

@@ -17,6 +17,7 @@ enum Page {
     Proxy,
     ApiKeys,
     Appearance,
+    Tools,
 }
 
 #[derive(Clone)]
@@ -82,6 +83,7 @@ pub struct SettingsWindow {
     status: String,
     themes: Entity<ThemeSelect>,
     icon_themes: Entity<ThemeSelect>,
+    tools: Entity<crate::external_tools_page::ExternalToolsPage>,
 }
 
 impl SettingsWindow {
@@ -150,6 +152,8 @@ impl SettingsWindow {
         };
 
         SettingsWindow {
+            tools: cx
+                .new(|cx| crate::external_tools_page::ExternalToolsPage::new(&cfg, window, cx)),
             app,
             themes,
             icon_themes,
@@ -207,6 +211,7 @@ impl SettingsWindow {
         let value = |input: &Entity<InputState>| input.read(cx).value().trim().to_owned();
         match self.page {
             Page::Appearance => return Ok(()),
+            Page::Tools => self.tools.read(cx).save(&mut cfg, cx),
             Page::General => {
                 let args = value(&self.jvm_args);
                 prism_core::launch::split_args(&args)
@@ -399,6 +404,7 @@ impl Render for SettingsWindow {
                         div().text_size(px(12.)).text_color(palette.warning).child(warning.clone())
                     }))
             }
+            Page::Tools => div().child(self.tools.clone()),
             Page::General => div()
                 .flex()
                 .flex_col()
@@ -486,6 +492,7 @@ impl Render for SettingsWindow {
                         (Page::Proxy, "Proxy"),
                         (Page::ApiKeys, "API Keys"),
                         (Page::Appearance, "Appearance"),
+                        (Page::Tools, "External Tools"),
                     ]
                     .into_iter()
                     .map(|(page, name)| {

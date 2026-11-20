@@ -12,6 +12,32 @@ fn cli(paths: &Paths) -> Command {
 }
 
 #[test]
+fn prepare_self_contained_minecraft_patch_without_metadata_or_network() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = Paths { root: root.path().into() };
+    let instance = InstanceList::create(&paths, "Offline", "default", "1.20.1").unwrap();
+    fs::create_dir_all(instance.root.join("libraries")).unwrap();
+    fs::write(instance.root.join("libraries/client-1.jar"), b"local client").unwrap();
+    prism_core::version_components::Pack::load(&instance.root).unwrap().customize(
+        prism_core::version_components::MINECRAFT,
+        &serde_json::json!({"uid":"net.minecraft","formatVersion":1,"version":"1.20.1",
+            "mainClass":"offline.Main", "minecraftArguments":"--username ${auth_player_name}",
+            "mainJar":{"name":"custom:client:1","MMC-hint":"local"}}),
+    ).unwrap();
+    let output = cli(&paths).args(["prepare", "--instance", &instance.id])
+        .env("HTTP_PROXY", "http://127.0.0.1:1")
+        .env("HTTPS_PROXY", "http://127.0.0.1:1")
+        .env("ALL_PROXY", "http://127.0.0.1:1")
+        .env("NO_PROXY", "").output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{stdout}\n{}", String::from_utf8_lossy(&output.stderr));
+    assert!(stdout.contains("offline.Main"));
+    assert!(!stdout.contains("Fetching version metadata"));
+    assert!(!paths.metadata_dir().exists());
+    assert!(paths.root.join("launch-headless.sh").exists());
+}
+
+#[test]
 fn launch_requires_an_installed_instance_id() {
     let root = tempfile::tempdir().unwrap();
     let paths = Paths {

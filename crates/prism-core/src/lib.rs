@@ -6,6 +6,7 @@
 //! - [`paths`]: launcher data directory layout
 
 pub mod auth;
+pub mod component;
 pub mod copy;
 pub mod datapacks;
 pub mod export;
@@ -37,6 +38,7 @@ pub mod skins;
 pub mod themes;
 pub mod version_components;
 pub mod worlds;
+pub mod tools;
 
 pub use auth::AccountList;
 pub use instance::{Instance, InstanceGroups, InstanceKind, InstanceList};

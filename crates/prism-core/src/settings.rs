@@ -78,6 +78,10 @@ impl Default for Settings {
         ini.set("Language", "en");
         ini.set("ApplicationTheme", "system");
         ini.set("IconTheme", "default");
+        ini.set("JProfilerPath", "");
+        ini.set("JProfilerPort", "42042");
+        ini.set("MCEditPath", "");
+        ini.set("JVisualVMPath", "");
         Settings { ini }
     }
 }

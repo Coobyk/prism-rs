@@ -22,6 +22,11 @@ pub struct ResolvedLibrary {
 
 #[derive(Debug, Clone, Default)]
 pub struct LaunchProfile {
+    pub component_artifacts: Vec<ResolvedLibrary>,
+    pub component_jar_mods: Vec<ResolvedLibrary>,
+    pub component_main_jar: Option<ResolvedLibrary>,
+    pub component_jvm_args: Vec<String>,
+    pub agents: Vec<(ResolvedLibrary, String)>,
     pub(crate) client_override: Option<PathBuf>,
     pub(crate) extra_classpath: Vec<PathBuf>,
     pub(crate) natives_override: Option<PathBuf>,
@@ -97,6 +102,11 @@ impl LaunchProfile {
         }
 
         LaunchProfile {
+            component_artifacts: Vec::new(),
+            component_jar_mods: Vec::new(),
+            component_main_jar: None,
+            component_jvm_args: Vec::new(),
+            agents: Vec::new(),
             client_override: None,
             extra_classpath: Vec::new(),
             natives_override: None,
@@ -168,6 +178,28 @@ impl LaunchProfile {
         self.legacy_arguments.is_some() || self.main_class.contains("minecraft.server.MinecraftServer")
     }
 
+    pub fn apply_minecraft(&mut self, data: &VersionData) {
+        let base = Self::from_mojang(data);
+        self.minecraft_version = base.minecraft_version;
+        self.version_type = base.version_type;
+        self.assets_id = base.assets_id;
+        self.asset_index = base.asset_index;
+        self.java_component = base.java_component;
+        self.java_major = base.java_major;
+        if base.legacy_arguments.is_some() {
+            self.legacy_arguments = base.legacy_arguments;
+        }
+        self.apply_loader(data);
+    }
+
+    pub(crate) fn arguments_mut(&mut self) -> &mut meta::Arguments {
+        self.modern_arguments.get_or_insert_with(|| meta::Arguments {
+            game: self.legacy_arguments.as_deref().unwrap_or_default()
+                .split_whitespace().map(|arg| meta::ArgValue::Str(arg.into())).collect(),
+            ..Default::default()
+        })
+    }
+
     /// Overlay a loader profile: its main
     /// class, libraries and arguments are applied on top of the Mojang base.
     pub fn apply_loader(&mut self, loader_vd: &VersionData) {
@@ -182,9 +214,10 @@ impl LaunchProfile {
 
         // Merge the loader's structured arguments after the base ones.
         if let Some(loader_args) = &loader_vd.arguments {
-            let base = self.modern_arguments.get_or_insert_with(Default::default);
+            let base = self.arguments_mut();
             base.jvm.extend(loader_args.jvm.iter().cloned());
             base.game.extend(loader_args.game.iter().cloned());
+            base.default_user_jvm.extend(loader_args.default_user_jvm.iter().cloned());
         }
         if let Some(arguments) = &loader_vd.minecraft_arguments {
             self.legacy_arguments = Some(arguments.clone());

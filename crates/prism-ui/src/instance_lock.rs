@@ -58,6 +58,24 @@ mod tests {
     use std::process::Stdio;
 
     #[test]
+    fn an_instance_lock_probe_detects_contention_and_releases_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths {
+            root: dir.path().into(),
+        };
+        let instance = InstanceList::create(&paths, "World", "default", "1.20.1").unwrap();
+        drop(acquire(&paths, &instance).unwrap());
+        let lock = acquire(&paths, &instance).unwrap();
+        assert_eq!(
+            acquire(&paths, &instance).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(lock);
+        drop(acquire(&paths, &instance).unwrap());
+        assert!(acquire(&paths, &instance).is_ok());
+    }
+
+    #[test]
     fn the_game_keeps_the_lock_after_the_launcher_closes_its_file() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths {

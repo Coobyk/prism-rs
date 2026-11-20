@@ -32,6 +32,8 @@ mod screenshots_page;
 use screenshots_page::ScreenshotsPage;
 #[path = "version_page.rs"]
 mod version_page;
+#[path = "component_editor.rs"]
+mod component_editor;
 use version_page::VersionPage;
 #[path = "worlds_page.rs"]
 mod worlds_page;
