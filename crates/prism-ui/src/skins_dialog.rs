@@ -30,10 +30,87 @@ pub(crate) fn open(app: Entity<LauncherApp>, account_id: String, cx: &mut gpui::
 }
 
 struct Preview {
-    classic: Arc<RenderImage>,
-    slim: Arc<RenderImage>,
+    texture: image::RgbaImage,
     classic_thumb: Arc<RenderImage>,
     slim_thumb: Arc<RenderImage>,
+}
+
+fn back(
+    texture: &image::RgbaImage,
+    model: SkinModel,
+    cape: Option<&image::RgbaImage>,
+) -> image::RgbaImage {
+    let mut output = image::RgbaImage::new(16, 32);
+    let legacy = texture.height() == 32;
+    let arm = if model == SkinModel::Slim { 3 } else { 4 };
+    let mut part = |sx, sy, w, h, x, y, mirror| {
+        let mut region = image::imageops::crop_imm(texture, sx, sy, w, h).to_image();
+        if mirror {
+            region = image::imageops::flip_horizontal(&region);
+        }
+        image::imageops::overlay(&mut output, &region, x, y);
+    };
+    part(24, 8, 8, 8, 4, 0, false);
+    part(32, 20, 8, 12, 4, 8, false);
+    part(
+        if legacy { 48 + arm } else { 40 + arm },
+        if legacy { 20 } else { 52 },
+        arm,
+        12,
+        (4 - arm) as i64,
+        8,
+        legacy,
+    );
+    part(48 + arm, 20, arm, 12, 12, 8, false);
+    part(
+        if legacy { 12 } else { 28 },
+        if legacy { 20 } else { 52 },
+        4,
+        12,
+        4,
+        20,
+        legacy,
+    );
+    part(12, 20, 4, 12, 8, 20, false);
+    if !legacy {
+        part(32, 36, 8, 12, 4, 8, false);
+        part(56 + arm, 52, arm, 12, (4 - arm) as i64, 8, false);
+        part(48 + arm, 36, arm, 12, 12, 8, false);
+        part(12, 52, 4, 12, 4, 20, false);
+        part(12, 36, 4, 12, 8, 20, false);
+    }
+    let has_hat = !legacy || (0..32).any(|y| (32..64).any(|x| texture.get_pixel(x, y)[3] < 128));
+    if has_hat {
+        part(56, 8, 8, 8, 4, 0, false);
+    }
+    if let Some(cape) = cape.filter(|c| c.dimensions() == (64, 32)) {
+        let outer = image::imageops::crop_imm(cape, 1, 1, 10, 16).to_image();
+        image::imageops::overlay(&mut output, &outer, 3, 8);
+    }
+    output
+}
+
+fn paired_preview(
+    texture: &image::RgbaImage,
+    model: SkinModel,
+    cape: Option<&image::RgbaImage>,
+) -> image::RgbaImage {
+    let mut output = image::RgbaImage::new(36, 32);
+    image::imageops::overlay(&mut output, &front(texture, model), 0, 0);
+    image::imageops::overlay(&mut output, &back(texture, model, cape), 20, 0);
+    image::imageops::resize(&output, 288, 256, image::imageops::FilterType::Nearest)
+}
+
+fn no_cape_icon() -> image::RgbaImage {
+    let mut output = image::RgbaImage::new(20, 32);
+    for y in 8..24 {
+        for x in 2..18 {
+            if x == 2 || x == 17 || y == 8 || y == 23 || x + y == 25 {
+                output.put_pixel(x, y, image::Rgba([170, 170, 170, 255]));
+            }
+        }
+    }
+    output
 }
 
 fn front(texture: &image::RgbaImage, model: SkinModel) -> image::RgbaImage {
@@ -142,6 +219,9 @@ struct SkinsDialog {
     selected: Option<String>,
     previews: HashMap<String, Preview>,
     cape_previews: HashMap<String, Arc<RenderImage>>,
+    cape_textures: HashMap<String, image::RgbaImage>,
+    large_previews: HashMap<(String, bool, String), Arc<RenderImage>>,
+    no_cape_preview: Arc<RenderImage>,
     name_for: Option<String>,
     source: Entity<InputState>,
     name: Entity<InputState>,
@@ -182,6 +262,9 @@ impl SkinsDialog {
             selected: None,
             previews: HashMap::new(),
             cape_previews: HashMap::new(),
+            cape_textures: HashMap::new(),
+            large_previews: HashMap::new(),
+            no_cape_preview: render_image(no_cape_icon()),
             name_for: None,
             source,
             name,
@@ -223,6 +306,8 @@ impl SkinsDialog {
         };
         self.previews
             .retain(|name, _| library.list().iter().any(|s| &s.name == name));
+        self.large_previews
+            .retain(|(name, _, _), _| library.list().iter().any(|s| &s.name == name));
         for skin in library.list() {
             if self.previews.contains_key(&skin.name) {
                 continue;
@@ -238,24 +323,52 @@ impl SkinsDialog {
                 self.previews.insert(
                     skin.name.clone(),
                     Preview {
-                        classic: preview(&texture, SkinModel::Classic, 8),
-                        slim: preview(&texture, SkinModel::Slim, 8),
                         classic_thumb: preview(&texture, SkinModel::Classic, 2),
                         slim_thumb: preview(&texture, SkinModel::Slim, 2),
+                        texture,
                     },
+                );
+            }
+        }
+        for skin in library.list() {
+            let key = (
+                skin.name.clone(),
+                skin.model == SkinModel::Slim,
+                skin.cape_id.clone(),
+            );
+            if self.large_previews.contains_key(&key) {
+                continue;
+            }
+            if let Some(preview) = self.previews.get(&skin.name) {
+                let cape = self
+                    .profile
+                    .as_ref()
+                    .and_then(|p| p.capes.iter().find(|c| c.id == skin.cape_id))
+                    .and_then(|c| self.cape_textures.get(&c.url));
+                self.large_previews.insert(
+                    key,
+                    render_image(paired_preview(&preview.texture, skin.model, cape)),
                 );
             }
         }
     }
 
     fn image(&self, skin: &Skin, thumbnail: bool) -> Option<Arc<RenderImage>> {
+        if !thumbnail {
+            return self
+                .large_previews
+                .get(&(
+                    skin.name.clone(),
+                    skin.model == SkinModel::Slim,
+                    skin.cape_id.clone(),
+                ))
+                .cloned();
+        }
         self.previews
             .get(&skin.name)
             .map(|p| match (skin.model, thumbnail) {
-                (SkinModel::Classic, false) => p.classic.clone(),
-                (SkinModel::Slim, false) => p.slim.clone(),
-                (SkinModel::Classic, true) => p.classic_thumb.clone(),
-                (SkinModel::Slim, true) => p.slim_thumb.clone(),
+                (SkinModel::Classic, _) => p.classic_thumb.clone(),
+                (SkinModel::Slim, _) => p.slim_thumb.clone(),
             })
     }
 
@@ -342,8 +455,9 @@ impl SkinsDialog {
                 if !cached_capes.contains(&cape.url) {
                     if let Ok(bytes) = SkinLibrary::download_url(&cape.url).await {
                         if let Ok(texture) = image::load_from_memory(&bytes) {
-                            if let Some(front) = cape_front(&texture.into_rgba8()) {
-                                capes.push((cape.url.clone(), front));
+                            let texture = texture.into_rgba8();
+                            if texture.dimensions() == (64, 32) {
+                                capes.push((cape.url.clone(), texture));
                             }
                         }
                     }
@@ -363,7 +477,9 @@ impl SkinsDialog {
                 match result {
                     Ok((profile, download, capes)) => {
                         for (url, image) in capes {
-                            this.cape_previews.insert(url, render_image(image));
+                            this.cape_previews
+                                .insert(url.clone(), render_image(cape_front(&image).unwrap()));
+                            this.cape_textures.insert(url, image);
                         }
                         if let Some(download) = download {
                             match download {
@@ -391,6 +507,8 @@ impl SkinsDialog {
                             this.selected = Some(skin.name);
                         }
                         this.profile = Some(profile);
+                        this.large_previews.clear();
+                        this.cache_missing(cx);
                     }
                     Err(e) => this.error = Some(e),
                 }
@@ -735,7 +853,16 @@ impl Render for SkinsDialog {
                         .flex()
                         .justify_center()
                         .flex_shrink_0()
-                        .child(img(ImageSource::Render(image)).w(px(128.)).h(px(256.))),
+                        .flex_col()
+                        .gap_1()
+                        .child(img(ImageSource::Render(image)).w(px(288.)).h(px(256.)))
+                        .child(
+                            div()
+                                .flex()
+                                .gap(px(32.))
+                                .child(div().w(px(128.)).text_center().child("Front"))
+                                .child(div().w(px(128.)).text_center().child("Back")),
+                        ),
                 );
             }
             let mut models = div().flex().gap_2();
@@ -773,7 +900,11 @@ impl Render for SkinsDialog {
             for (i, (cape, alias, url)) in capes.into_iter().enumerate() {
                 let name = skin.name.clone();
                 let mut thumbnail = div().w(px(20.)).h(px(32.)).flex_shrink_0();
-                if let Some(image) = self.cape_previews.get(&url) {
+                if let Some(image) = if cape.is_empty() {
+                    Some(&self.no_cape_preview)
+                } else {
+                    self.cape_previews.get(&url)
+                } {
                     thumbnail = thumbnail.child(
                         img(ImageSource::Render(image.clone()))
                             .w(px(20.))
@@ -1013,7 +1144,88 @@ fn open_folder(path: PathBuf) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cape_front, front, skin_http_error, SkinModel};
+    use super::{
+        back, cape_front, front, no_cape_icon, paired_preview, skin_http_error, SkinModel,
+    };
+
+    #[test]
+    fn back_faces_cape_placement_and_slim_width() {
+        let mut texture = image::RgbaImage::new(64, 64);
+        for (sx, sy, w, h, color) in [
+            (24, 8, 8, 8, [1, 2, 3, 255]),
+            (32, 20, 8, 12, [4, 5, 6, 255]),
+            (43, 52, 5, 12, [7, 8, 9, 255]),
+            (51, 20, 5, 12, [10, 11, 12, 255]),
+            (28, 52, 4, 12, [13, 14, 15, 255]),
+            (12, 20, 4, 12, [16, 17, 18, 255]),
+        ] {
+            for y in sy..sy + h {
+                for x in sx..sx + w {
+                    texture.put_pixel(x, y, image::Rgba(color));
+                }
+            }
+        }
+        let slim = back(&texture, SkinModel::Slim, None);
+        let classic = back(&texture, SkinModel::Classic, None);
+        assert_eq!(slim.get_pixel(4, 0).0, [1, 2, 3, 255]);
+        assert_eq!(slim.get_pixel(4, 8).0, [4, 5, 6, 255]);
+        assert_eq!(slim.get_pixel(4, 24).0, [13, 14, 15, 255]);
+        assert_eq!(slim.get_pixel(8, 24).0, [16, 17, 18, 255]);
+        for x in 0..16 {
+            assert_eq!(slim.get_pixel(x, 10)[3] != 0, (1..15).contains(&x));
+            assert_eq!(classic.get_pixel(x, 10)[3], 255);
+        }
+        let solid = image::RgbaImage::from_pixel(64, 64, image::Rgba([1, 2, 3, 255]));
+        for view in [
+            front(&solid, SkinModel::Slim),
+            back(&solid, SkinModel::Slim, None),
+        ] {
+            for x in 0..16 {
+                assert_eq!(view.get_pixel(x, 10)[3] != 0, (1..15).contains(&x));
+            }
+        }
+        texture.put_pixel(56, 8, image::Rgba([20, 21, 22, 255]));
+        texture.put_pixel(32, 36, image::Rgba([23, 24, 25, 255]));
+        texture.put_pixel(59, 52, image::Rgba([26, 27, 28, 255]));
+        let layered = back(&texture, SkinModel::Slim, None);
+        assert_eq!(layered.get_pixel(4, 0).0, [20, 21, 22, 255]);
+        assert_eq!(layered.get_pixel(4, 8).0, [23, 24, 25, 255]);
+        assert_eq!(layered.get_pixel(1, 8).0, [26, 27, 28, 255]);
+        let mut cape = image::RgbaImage::from_pixel(64, 32, image::Rgba([255, 0, 255, 255]));
+        for y in 1..17 {
+            for x in 1..11 {
+                cape.put_pixel(x, y, image::Rgba([30, 31, 32, 255]));
+            }
+        }
+        let capped = back(&texture, SkinModel::Slim, Some(&cape));
+        for y in 0..32 {
+            for x in 0..16 {
+                if (3..13).contains(&x) && (8..24).contains(&y) {
+                    assert_eq!(capped.get_pixel(x, y).0, [30, 31, 32, 255]);
+                } else {
+                    assert_eq!(capped.get_pixel(x, y), layered.get_pixel(x, y));
+                }
+            }
+        }
+        assert_eq!(
+            back(
+                &texture,
+                SkinModel::Slim,
+                Some(&image::RgbaImage::new(0, 0))
+            ),
+            layered
+        );
+        assert!(back(&image::RgbaImage::new(64, 32), SkinModel::Slim, None)
+            .pixels()
+            .all(|p| p[3] == 0));
+        let pair = paired_preview(&texture, SkinModel::Slim, Some(&cape));
+        assert_eq!(pair.dimensions(), (288, 256));
+        assert_eq!(pair.get_pixel(23 * 8, 8 * 8).0, [30, 31, 32, 255]);
+        let icon = no_cape_icon();
+        assert_eq!(icon.dimensions(), (20, 32));
+        assert_ne!(icon.get_pixel(10, 15)[3], 0);
+        assert_eq!(icon.get_pixel(0, 0)[3], 0);
+    }
 
     #[test]
     fn cape_front_crops_and_upscales_without_blending() {
