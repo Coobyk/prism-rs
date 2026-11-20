@@ -446,7 +446,11 @@ fn validate_library(value: &Value) -> io::Result<()> {
         .as_str()
         .ok_or_else(|| invalid("Library requires a Maven name"))?;
     let parts: Vec<_> = name.split(':').collect();
-    if !(3..=4).contains(&parts.len()) || parts.iter().any(|part| version_id(part).is_err()) {
+    if !(3..=4).contains(&parts.len())
+        || parts.iter().any(|part| version_id(part).is_err())
+        || parts[0].split('.').any(str::is_empty)
+        || !meta::maven_path(name).components().all(|part| matches!(part, std::path::Component::Normal(_)))
+    {
         return Err(invalid("Invalid library Maven name"));
     }
     for key in value.as_object().unwrap().keys() {
@@ -616,6 +620,17 @@ mod tests {
             .contains("+tweakers"));
         assert!(Component::parse(r#"{"uid":"test","formatVersion":1}"#, Some("other")).is_err());
         assert!(parse(json!({"uid":"test","formatVersion":1,"libraries":[{"name":"a:b:1","MMC-filename":"../bad"}]})).unwrap().validate_launch().is_err());
+    }
+
+    #[test]
+    fn maven_coordinates_cannot_escape_the_library_root() {
+        for name in [".evil:lib:1", "..evil:lib:1", "a..b:lib:1", "a.:lib:1", "/evil:lib:1", "a:../lib:1", "a:lib:../1", "C:\\evil:lib:1"] {
+            let document = parse(json!({"uid":"test","formatVersion":1,"libraries":[{"name":name}]})).unwrap();
+            assert!(document.validate_launch().is_err(), "{name}");
+        }
+        for name in ["org.example:lib:1.0", "org.example:lib:1:natives-linux"] {
+            assert!(library(&json!({"name":name}), Path::new("/instance"), false).is_ok());
+        }
     }
 
     #[test]
