@@ -777,8 +777,24 @@ impl Launcher {
         &self,
         settings: &mut LaunchSettings,
         loader: Loader,
-        mut progress: impl FnMut(String),
+        progress: impl FnMut(String),
     ) -> Result<LaunchProfile, LaunchError> {
+        self.prepare_instance_with_loader(settings, loader, progress, |loader, version| async move {
+            loaders::fetch_loader_profile(&self.downloader.client(), &loader, &version).await
+        }).await
+    }
+
+    async fn prepare_instance_with_loader<F, Fut>(
+        &self,
+        settings: &mut LaunchSettings,
+        loader: Loader,
+        mut progress: impl FnMut(String),
+        fetch_loader: F,
+    ) -> Result<LaunchProfile, LaunchError>
+    where
+        F: Fn(Loader, String) -> Fut,
+        Fut: std::future::Future<Output = Result<VersionData, String>>,
+    {
         let mut profile = LaunchProfile {
             minecraft_version: settings.mc_version.clone(),
             assets_id: "legacy".into(),
@@ -806,13 +822,20 @@ impl Launcher {
             }))
             .collect(),
         };
+        let mut loader_applied = false;
         for (uid, version) in components {
+            let is_loader = matches!(uid.as_str(), "net.fabricmc.fabric-loader" | "org.quiltmc.quilt-loader" | "net.minecraftforge" | "net.neoforged");
+            if is_loader && loader_applied {
+                progress(format!("Warning: ignoring additional loader component {uid}; the first enabled loader takes precedence."));
+                continue;
+            }
             if let Some(patch) = pack
                 .as_ref()
                 .map(|pack| pack.patch(&uid))
                 .transpose()?
                 .flatten()
             {
+                loader_applied |= is_loader;
                 if matches!(
                     uid.as_str(),
                     version_components::LWJGL | version_components::LWJGL3
@@ -825,6 +848,13 @@ impl Launcher {
                         .retain(|lib| !lib.spec.starts_with("org.lwjgl"));
                 }
                 patch.apply(&mut profile, &settings.instance_dir)?;
+                continue;
+            }
+            if (uid != version_components::MINECRAFT && !is_loader
+                && pack.as_ref().is_some_and(|pack| pack.dependency_only(&uid)))
+                || matches!(uid.as_str(), "net.fabricmc.intermediary" | "org.quiltmc.hashed")
+            {
+                progress(format!("Using implicit dependency {uid} from the Minecraft/loader profile"));
                 continue;
             }
             if uid == version_components::MINECRAFT {
@@ -863,11 +893,12 @@ impl Launcher {
                     "org.quiltmc.quilt-loader" => Loader::Quilt { version },
                     "net.minecraftforge" => Loader::Forge { version },
                     "net.neoforged" => Loader::NeoForge { version },
-                    _ => return Err(std::io::Error::other(format!(
-                        "Component {uid} has no local patch and no supported metadata resolver."
-                    ))
-                    .into()),
+                    _ => {
+                        progress(format!("Warning: component {uid} has no local patch or supported metadata resolver; ignoring it for compatibility."));
+                        continue;
+                    }
                 };
+            loader_applied = true;
             progress(format!("Preparing loader: {loader:?}"));
             let version = settings.mc_version.clone();
             let overlay = match &loader {
@@ -890,8 +921,7 @@ impl Launcher {
                     .await
                 }
                 _ => {
-                    loaders::fetch_loader_profile(&self.downloader.client(), &loader, &version)
-                        .await
+                    fetch_loader(loader.clone(), version).await
                 }
             }
             .map_err(|message| LaunchError::Loader { loader, message })?;
@@ -1580,6 +1610,84 @@ mod tests {
             .unwrap().apply(&mut profile, &inst.root).unwrap();
         let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
         assert!(launcher.prepare_files(&profile, &settings).await.unwrap_err().to_string().contains("local artifact"));
+    }
+
+    async fn upstream_loader_profile_regression(loader: Loader, rows: serde_json::Value) {
+        use std::cell::Cell;
+        let temp = tempfile::tempdir().unwrap();
+        let paths = Paths { root: temp.path().into() };
+        let inst = crate::instance::InstanceList::create(&paths, "QA", "default", "1.20.1").unwrap();
+        let mut settings = LaunchSettings::for_instance(&inst, &paths);
+        let launcher = Launcher::new(paths.clone(), Arc::new(Downloader::new()));
+        let base = serde_json::json!({"id":"1.20.1","mainClass":"VanillaMain","assets":"legacy",
+            "arguments":{"jvm":["-Dbase=yes"],"game":["--base"]},
+            "libraries":[{"name":"org.lwjgl:lwjgl:3.3.1"}]});
+        let overlay = serde_json::json!({"mainClass":"LoaderMain",
+            "arguments":{"jvm":["-Dloader=yes"],"game":["--loader"]},
+            "libraries":[{"name":"net.fabricmc:intermediary:1.20.1"}]});
+        let cache = paths.metadata_dir().join("net.minecraft");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("1.20.1.json"), base.to_string()).unwrap();
+        std::fs::write(inst.root.join("mmc-pack.json"), serde_json::json!({"formatVersion":1,"components":rows}).to_string()).unwrap();
+        let client = launcher.client_jar_path("1.20.1");
+        std::fs::create_dir_all(client.parent().unwrap()).unwrap();
+        zip::ZipWriter::new(std::fs::File::create(&client).unwrap()).finish().unwrap();
+        let mut expected = LaunchProfile::from_mojang(&VersionData::from_json(&base).unwrap());
+        let overlay = VersionData::from_json(&overlay).unwrap();
+        expected.apply_loader(&overlay);
+        for lib in &expected.libraries {
+            let dest = paths.libraries_dir().join(&lib.path);
+            std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+            std::fs::write(dest, "fixture library").unwrap();
+        }
+        if matches!(loader, Loader::Forge { .. }) {
+            let id = "1.20.1-forge-47.2.0";
+            let dir = settings.game_dir.join("versions").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join(format!("{id}.json")), serde_json::json!({"mainClass":"LoaderMain",
+                "arguments":{"jvm":["-Dloader=yes"],"game":["--loader"]},
+                "libraries":[{"name":"net.fabricmc:intermediary:1.20.1"}]}).to_string()).unwrap();
+        }
+        let calls = Cell::new(0);
+        let mut messages = Vec::new();
+        assert_eq!(crate::instance::loader_of(&inst), loader);
+        let actual = launcher.prepare_instance_with_loader(&mut settings, Loader::None, |s| messages.push(s), |resolved, version| {
+            assert_eq!(resolved, loader);
+            assert_eq!(version, "1.20.1");
+            calls.set(calls.get() + 1);
+            std::future::ready(Ok(overlay.clone()))
+        }).await.unwrap();
+        assert_eq!(calls.get(), usize::from(!matches!(loader, Loader::Forge { .. })));
+        assert_eq!(launcher.build_command(&settings, None, &actual).command,
+            launcher.build_command(&settings, None, &expected).command);
+        assert_eq!(actual.libraries.len(), expected.libraries.len());
+        assert_eq!(actual.main_class, expected.main_class);
+        assert!(messages.iter().any(|s| s.contains("implicit dependency org.lwjgl3")));
+        assert!(messages.iter().any(|s| s.contains("ignoring it for compatibility")));
+    }
+
+    #[tokio::test]
+    async fn upstream_fabric_dependencies_do_not_add_profiles_or_duplicate_loaders() {
+        upstream_loader_profile_regression(Loader::Fabric { version: "0.16.0".into() }, serde_json::json!([
+            {"uid":"net.minecraft","version":"1.20.1","important":true},
+            {"uid":"org.lwjgl3","version":"3.3.1","dependencyOnly":true},
+            {"uid":"net.fabricmc.intermediary","version":"1.20.1"},
+            {"uid":"org.quiltmc.hashed","version":"1.20.1"},
+            {"uid":"some.upstream.dependency","version":"1","dependencyOnly":true},
+            {"uid":"net.fabricmc.fabric-loader","version":"0.16.0"},
+            {"uid":"org.quiltmc.quilt-loader","version":"0.26.0"},
+            {"uid":"unknown.unpatched","version":"1"}
+        ])).await;
+    }
+
+    #[tokio::test]
+    async fn upstream_forge_dependencies_preserve_the_installed_loader_profile() {
+        upstream_loader_profile_regression(Loader::Forge { version: "47.2.0".into() }, serde_json::json!([
+            {"uid":"net.minecraft","version":"1.20.1","important":true},
+            {"uid":"org.lwjgl3","version":"3.3.1","dependencyOnly":true},
+            {"uid":"net.minecraftforge","version":"47.2.0"},
+            {"uid":"unknown.unpatched","version":"1"}
+        ])).await;
     }
 
     #[tokio::test]

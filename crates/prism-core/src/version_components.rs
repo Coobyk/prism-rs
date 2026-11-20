@@ -215,6 +215,11 @@ impl Pack {
         self.patches.get(uid).is_some_and(Option::is_some)
     }
 
+    pub fn dependency_only(&self, uid: &str) -> bool {
+        self.data["components"].as_array().unwrap().iter()
+            .any(|row| row["uid"] == uid && row["dependencyOnly"] == true)
+    }
+
     pub fn has_meta(&self, uid: &str) -> bool {
         matches!(uid, MINECRAFT | LWJGL | LWJGL3) || LOADER_UIDS.contains(&uid)
     }
