@@ -92,7 +92,7 @@ impl MainWindow {
             .child(toolbar_separator())
             .child(Button::new("folders").label("Folders").on_click(cx.listener(Self::on_view_instances_folder)))
             .child(Button::new("settings").label("Settings").on_click(cx.listener(Self::on_open_settings)))
-            .child(Button::new("help").label("Help").on_click(|_, _, _| {}))
+            .child(crate::help_menu::button(self.app.read(cx).paths.clone()))
             .child(Button::new("check-updates").label("Check for Updates").on_click(|_, _, _| {}))
             .child(
                 Button::new("accounts")
