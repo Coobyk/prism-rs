@@ -17,7 +17,8 @@ pub struct AccountsWindow {
 }
 
 impl AccountsWindow {
-    pub fn new(app: gpui::Entity<App>) -> Self {
+    pub fn new(app: gpui::Entity<App>, cx: &mut Context<Self>) -> Self {
+        cx.observe(&app, |_, _, cx| cx.notify()).detach();
         AccountsWindow {
             app,
             name_input: None,
@@ -169,6 +170,7 @@ impl Render for AccountsWindow {
             let is_active = active.as_deref() == Some(account.id.as_str());
             let id = account.id.clone();
             let id2 = account.id.clone();
+            let skin_id = account.id.clone();
             list = list.child(
                 div()
                     .flex()
@@ -201,6 +203,18 @@ impl Render for AccountsWindow {
                                         prism_core::auth::AccountType::Offline => "Offline".to_string(),
                                     }),
                             ),
+                    )
+                    .child(
+                        Button::new(SharedString::from(format!("skins-{}", account.id)))
+                            .label(if account.account_type == prism_core::auth::AccountType::Msa {
+                                "Manage Skins"
+                            } else {
+                                "Skins require Microsoft"
+                            })
+                            .disabled(account.account_type != prism_core::auth::AccountType::Msa)
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                crate::skins_dialog::open(this.app.clone(), skin_id.clone(), cx);
+                            })),
                     )
                     .child(
                         Button::new(SharedString::from(format!("use-{}", account.id)))

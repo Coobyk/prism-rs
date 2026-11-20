@@ -4817,11 +4817,13 @@ checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 name = "prism-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "flate2",
  "fs2",
  "futures",
  "hex",
+ "image",
  "md-5",
  "regex",
  "reqwest",

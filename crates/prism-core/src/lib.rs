@@ -33,6 +33,7 @@ pub mod resources;
 pub mod settings;
 pub mod servers;
 pub mod screenshots;
+pub mod skins;
 pub mod version_components;
 pub mod worlds;
 
