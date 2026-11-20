@@ -1614,6 +1614,8 @@ mod tests {
         assert_eq!(customized.java_component, baseline.java_component);
         baseline.client_override = Some(paths.libraries_dir().join(&customized.component_main_jar.as_ref().unwrap().path));
         customized.client_override = baseline.client_override.clone();
+        assert!(customized.libraries[0].path.starts_with(inst.root.join("libraries/.component-cache")));
+        baseline.libraries[0].path = customized.libraries[0].path.clone();
         assert_eq!(launcher.build_command(&settings, None, &baseline).command,
             launcher.build_command(&settings, None, &customized).command);
         let mut ordered = LaunchProfile::default();

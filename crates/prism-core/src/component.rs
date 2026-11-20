@@ -329,12 +329,16 @@ impl Component {
                         lib.path.to_string_lossy().replace('\\', "/")
                     ));
                 }
+                scope_download(&mut lib, root);
                 profile
                     .libraries
                     .retain(|old| library_key(&old.spec) != library_key(&lib.spec));
                 profile.libraries.push(lib);
             }
-            profile.natives.extend(resolved.natives);
+            for mut native in resolved.natives {
+                scope_download(&mut native, root);
+                profile.natives.push(native);
+            }
         }
         for raw in self.0["mavenFiles"].as_array().into_iter().flatten() {
             if library_allowed(raw)? {
@@ -515,6 +519,12 @@ fn validate_library(value: &Value) -> io::Result<()> {
     Ok(())
 }
 
+fn scope_download(library: &mut ResolvedLibrary, root: &Path) {
+    if library.url.is_some() && !library.path.is_absolute() {
+        library.path = root.join("libraries/.component-cache").join(&library.path);
+    }
+}
+
 pub fn library(raw: &Value, root: &Path, jar_mod: bool) -> io::Result<ResolvedLibrary> {
     validate_library(raw)?;
     let spec = raw["name"].as_str().unwrap();
@@ -558,7 +568,7 @@ pub fn library(raw: &Value, root: &Path, jar_mod: bool) -> io::Result<ResolvedLi
                 })
             })
     };
-    Ok(ResolvedLibrary {
+    let mut library = ResolvedLibrary {
         spec: spec.into(),
         path: resolved,
         url,
@@ -566,7 +576,9 @@ pub fn library(raw: &Value, root: &Path, jar_mod: bool) -> io::Result<ResolvedLi
             .as_str()
             .map(str::to_owned),
         native: false,
-    })
+    };
+    scope_download(&mut library, root);
+    Ok(library)
 }
 
 pub fn check_local(path: &Path) -> io::Result<()> {
@@ -604,6 +616,21 @@ mod tests {
             .contains("+tweakers"));
         assert!(Component::parse(r#"{"uid":"test","formatVersion":1}"#, Some("other")).is_err());
         assert!(parse(json!({"uid":"test","formatVersion":1,"libraries":[{"name":"a:b:1","MMC-filename":"../bad"}]})).unwrap().validate_launch().is_err());
+    }
+
+    #[test]
+    fn remote_artifacts_are_scoped_to_the_instance() {
+        let document = parse(json!({"uid":"test","formatVersion":1,
+            "libraries":[{"name":"org.example:library:1","downloads":{"artifact":{"url":"https://example.invalid/custom.jar"}}}],
+            "+agents":[{"name":"org.example:agent:1","MMC-absoluteUrl":"https://example.invalid/agent.jar"}]})).unwrap();
+        for root in [Path::new("/instance-a"), Path::new("/instance-b")] {
+            let mut profile = LaunchProfile::default();
+            document.apply(&mut profile, root).unwrap();
+            for artifact in profile.libraries.iter().chain(profile.component_artifacts.iter()) {
+                assert!(artifact.path.starts_with(root.join("libraries/.component-cache")));
+                assert!(artifact.url.is_some());
+            }
+        }
     }
 
     #[test]
