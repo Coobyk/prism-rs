@@ -621,9 +621,10 @@ impl InstanceWindow {
             .min_w_0()
             .min_h_0()
             .bg(palette.base)
+            .text_color(palette.base_text)
             .font_family("monospace")
             .text_size(px(12.))
-            .text_color(palette.text)
+            .text_color(palette.base_text)
             .into_any_element()
         };
         if source == Source::Console {

@@ -376,6 +376,7 @@ impl InstanceWindow {
                                     .overflow_y_scroll()
                                     .p_3()
                                     .bg(palette.base)
+                                    .text_color(palette.base_text)
                                     .rounded_md()
                                     .text_size(px(13.))
                                     .child(render_changelog(

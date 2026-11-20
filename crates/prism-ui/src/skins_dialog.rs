@@ -839,6 +839,7 @@ impl Render for SkinsDialog {
             .p_3()
             .rounded_md()
             .bg(palette.panel)
+            .text_color(palette.panel_text)
             .flex()
             .flex_col()
             .items_center()
@@ -945,7 +946,7 @@ impl Render for SkinsDialog {
             .gap_3()
             .p_4()
             .bg(palette.base)
-            .text_color(palette.text)
+            .text_color(palette.base_text)
             .child(div().text_size(px(20.)).child("Manage Skins"));
         if self.busy {
             panel = panel.child("Loading / working…");
@@ -983,6 +984,7 @@ impl Render for SkinsDialog {
                             .p_3()
                             .rounded_md()
                             .bg(palette.panel)
+                            .text_color(palette.panel_text)
                             .child(
                                 div()
                                     .font_weight(FontWeight::SEMIBOLD)

@@ -333,6 +333,7 @@ impl QuickPlayState {
             .flex()
             .p_1()
             .bg(palette.alternate)
+            .text_color(palette.base_text)
             .rounded_md();
         for (multiplayer, label) in [(false, "Singleplayer"), (true, "Multiplayer")] {
             tabs = tabs.child(
@@ -640,6 +641,7 @@ impl CreateInstanceState {
                 .gap_y_0p5()
                 .overflow_y_scroll()
                 .bg(palette.alternate)
+                .text_color(palette.base_text)
                 .rounded_md()
                 .p_1();
             for (id, vtype) in &version_rows {

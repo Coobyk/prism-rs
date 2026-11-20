@@ -342,6 +342,7 @@ impl InstanceWindow {
                                 .w_full()
                                 .h(px(114.))
                                 .bg(palette.base)
+                                .text_color(palette.base_text)
                                 .child(preview),
                         )
                         .child(

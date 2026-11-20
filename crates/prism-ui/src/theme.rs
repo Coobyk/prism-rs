@@ -122,6 +122,8 @@ pub struct Palette {
     pub strong_border: Hsla,
     pub text: Hsla,
     pub base_text: Hsla,
+    pub base_secondary_text: Hsla,
+    pub base_muted_text: Hsla,
     pub panel_text: Hsla,
     pub secondary_text: Hsla,
     pub muted_text: Hsla,
@@ -189,6 +191,8 @@ impl Palette {
             strong_border: mix(c("Button"), c("WindowText"), 0.24),
             text: c("WindowText"),
             base_text: c("Text"),
+            base_secondary_text: mix(c("Text"), c("Base"), 0.27),
+            base_muted_text: mix(c("Text"), c("Base"), 0.45),
             panel_text: c("ButtonText"),
             secondary_text: mix(c("WindowText"), c("Window"), 0.27),
             muted_text: mix(c("WindowText"), c("Window"), 0.45),
@@ -679,6 +683,24 @@ mod tests {
         assert_eq!(palette.base_text, color(Color(0xff112233)));
         assert_eq!(palette.panel_text, color(Color(0xff445566)));
         assert_eq!(palette.accent, color(Color(0xff123456)));
+    }
+
+    #[test]
+    fn base_text_is_independent_of_window_text() {
+        let theme = ApplicationTheme::parse(
+            "contrasting",
+            r##"{"colors":{"WindowText":"#ffffff","Base":"#ffffff","AlternateBase":"#ffffff","Text":"#000000"}}"##,
+        ).unwrap();
+        let palette = Palette::from_theme(&theme);
+        let mut colors = super::ThemeColor::default();
+        super::sync_colors(&mut colors, palette);
+        assert_eq!(palette.text, color(Color(0xffffffff)));
+        assert_eq!(palette.base_text, color(Color(0xff000000)));
+        assert_eq!(colors.foreground, palette.base_text);
+        for text in [palette.base_secondary_text, palette.base_muted_text] {
+            let text: Rgba = text.into();
+            assert!(text.r < 0.5 && text.g < 0.5 && text.b < 0.5);
+        }
     }
 
     #[test]

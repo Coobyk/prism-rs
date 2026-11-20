@@ -702,6 +702,7 @@ impl MainWindow {
             .border_t_1()
             .border_color(palette.border)
             .bg(palette.base)
+            .text_color(palette.base_text)
             .child(
                 div()
                     .flex()
@@ -710,6 +711,7 @@ impl MainWindow {
                     .px_2()
                     .h(px(26.))
                     .bg(palette.alternate)
+                    .text_color(palette.base_text)
                     .child(div().text_size(px(12.)).child("Console"))
                     .child(
                         div()
@@ -731,7 +733,7 @@ impl MainWindow {
                     .p_2()
                     .font_family("monospace")
                     .text_size(px(11.))
-                    .text_color(palette.text)
+                    .text_color(palette.base_text)
                     .children(
                         lines
                             .iter()
@@ -796,8 +798,9 @@ impl MainWindow {
                     .px_2()
                     .gap_4()
                     .bg(palette.alternate)
+                    .text_color(palette.base_text)
                     .text_size(px(11.))
-                    .text_color(palette.muted_text)
+                    .text_color(palette.base_muted_text)
                     .child(description)
                     .child(div().flex_1())
                     .child(format!("Total play time: {}", format_play_time(total_played))),

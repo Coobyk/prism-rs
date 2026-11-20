@@ -238,6 +238,7 @@ impl Render for ModListDialog {
                     .min_h_0()
                     .overflow_y_scroll()
                     .bg(palette.base)
+                    .text_color(palette.base_text)
                     .rounded_md()
                     .p_3()
                     .font_family("monospace")

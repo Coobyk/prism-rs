@@ -257,6 +257,7 @@ impl TechnicWindow {
                     .p_3()
                     .rounded_md()
                     .bg(palette.base)
+                    .text_color(palette.base_text)
                     .child(
                         TextView::markdown(
                             "technic-description",

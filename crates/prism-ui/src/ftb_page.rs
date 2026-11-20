@@ -372,7 +372,7 @@ impl Render for FtbPage {
             .flex_col()
             .gap_4()
             .bg(palette.alternate)
-            .text_color(palette.text)
+            .text_color(palette.base_text)
             .font_family(cx.theme().font_family.clone())
             .text_size(px(13.))
             .child(
@@ -482,6 +482,7 @@ impl Render for FtbPage {
             .h_full()
             .rounded_md()
             .bg(palette.base)
+            .text_color(palette.base_text)
             .overflow_y_scroll();
         if self.local {
             for (i, instance) in self
@@ -607,7 +608,7 @@ impl Render for FtbPage {
                             .join(", ")
                     ),
                 ))
-                .child(div().text_color(palette.secondary_text).child(format!(
+                .child(div().text_color(palette.base_secondary_text).child(format!(
                     "{} plays  ·  {} installs",
                     count(pack.plays),
                     count(pack.installs)
@@ -621,7 +622,7 @@ impl Render for FtbPage {
                             .rounded_md()
                             .bg(palette.selection)
                             .text_size(px(11.))
-                            .text_color(palette.secondary_text)
+                            .text_color(palette.base_secondary_text)
                             .child(plain(&tag.name))
                     }),
                 ));
@@ -644,7 +645,8 @@ impl Render for FtbPage {
                 .gap_1()
                 .p_1()
                 .rounded_md()
-                .bg(palette.base);
+                .bg(palette.base)
+                .text_color(palette.base_text);
             for version in versions {
                 let id = version.id;
                 picker = picker.child(
@@ -767,7 +769,7 @@ impl Render for FtbPage {
 fn muted(palette: crate::theme::Palette, text: impl Into<SharedString>) -> Div {
     div()
         .text_size(px(12.))
-        .text_color(palette.muted_text)
+        .text_color(palette.base_muted_text)
         .child(text.into())
 }
 
@@ -787,6 +789,7 @@ fn row(palette: crate::theme::Palette, id: impl Into<ElementId>, selected: bool)
         } else {
             palette.base
         })
+        .text_color(if selected { palette.text } else { palette.base_text })
         .hover(|style| {
             style.bg(if selected {
                 palette.selection
