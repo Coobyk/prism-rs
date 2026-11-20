@@ -367,6 +367,21 @@ impl InstanceWindow {
                                 if instance.game_root() != editor_world.game_root() {
                                     return Err(io::Error::other("The instance game folder changed"));
                                 }
+                                let lock = crate::instance_lock::acquire(
+                                    &this.app.read(cx).paths,
+                                    &instance,
+                                )
+                                .map_err(|error| {
+                                    if error.kind() == io::ErrorKind::WouldBlock {
+                                        io::Error::new(
+                                            error.kind(),
+                                            "Minecraft is running for this instance; close it before editing worlds in MCEdit.",
+                                        )
+                                    } else {
+                                        error
+                                    }
+                                })?;
+                                drop(lock);
                                 editor.open_world(&settings, &editor_world.world_path()?)
                             });
                             this.worlds.status = Some(match result {
