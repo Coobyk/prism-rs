@@ -53,11 +53,17 @@ impl Locale {
     pub fn resolve(setting: Option<&str>) -> Self {
         #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
         {
-            let preferred = std::env::var("LANGUAGE").ok();
             let category = ["LC_ALL", "LC_MESSAGES", "LANG"]
                 .into_iter()
                 .filter_map(|name| std::env::var(name).ok())
                 .find(|value| !value.trim().is_empty());
+            if matches!(
+                category.as_deref().map(str::trim),
+                Some("C" | "POSIX" | "C.UTF-8")
+            ) {
+                return Self::configured(setting).unwrap_or_default();
+            }
+            let preferred = std::env::var("LANGUAGE").ok();
             Self::resolve_from(
                 setting,
                 preferred
@@ -196,6 +202,40 @@ mod tests {
             assert!(
                 output.status.success(),
                 "LC_ALL={all:?} LC_MESSAGES={messages:?}: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    #[cfg(all(unix, not(any(target_vendor = "apple", target_os = "android"))))]
+    #[test]
+    fn posix_neutral_locale_ignores_language_preference() {
+        const CHILD: &str = "PRISM_RS_TEST_POSIX_NEUTRAL_LOCALE";
+        if std::env::var_os(CHILD).is_some() {
+            assert_eq!(Locale::resolve(None), Locale::English);
+            assert_eq!(Locale::resolve(Some("fr")), Locale::French);
+            return;
+        }
+        for (all, messages, lang) in [
+            ("C", "fr_FR", "ja_JP"),
+            ("", "POSIX", "ja_JP"),
+            ("", "", "C.UTF-8"),
+        ] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "i18n::tests::posix_neutral_locale_ignores_language_preference",
+                ])
+                .env(CHILD, "1")
+                .env("LANGUAGE", "de")
+                .env("LC_ALL", all)
+                .env("LC_MESSAGES", messages)
+                .env("LANG", lang)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "LC_ALL={all:?} LC_MESSAGES={messages:?} LANG={lang:?}: {}",
                 String::from_utf8_lossy(&output.stdout)
             );
         }
