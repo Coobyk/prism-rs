@@ -480,6 +480,7 @@ impl Launcher {
         if uid != version_components::MINECRAFT {
             return Err(std::io::Error::other("Customize is only available for Minecraft; an equivalent loader component is not available.").into());
         }
+        let _metadata_lock = self.paths.lock_metadata_cache()?;
         self.fetch_version_data(version).await?;
         let path = self
             .paths
@@ -500,6 +501,7 @@ impl Launcher {
     /// Fetch and cache the Mojang version JSON for one version id.
     pub async fn fetch_version_data(&self, version_id: &str) -> Result<VersionData, LaunchError> {
         let version_id = version_components::version_id(version_id)?;
+        let _metadata_lock = self.paths.lock_metadata_cache()?;
         // Cached?
         let cache_path = self.paths.metadata_dir().join("net.minecraft").join(format!("{version_id}.json"));
         if let Ok(text) = tokio::fs::read_to_string(&cache_path).await {
@@ -537,6 +539,7 @@ impl Launcher {
         if !matches!(uid, version_components::LWJGL | version_components::LWJGL3) {
             return Err(std::io::Error::other("Unknown LWJGL component.").into());
         }
+        let _metadata_lock = self.paths.lock_metadata_cache()?;
         let cache = self.paths.metadata_dir().join(uid).join(format!("{version}.json"));
         let cached = tokio::fs::read(&cache).await.ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -663,6 +666,7 @@ impl Launcher {
 
     pub async fn prepare_files(&self, profile: &LaunchProfile, settings: &LaunchSettings) -> Result<(), LaunchError> {
         if profile.component_main_jar.is_none() {
+            let _metadata_lock = self.paths.lock_metadata_cache()?;
             self.ensure_client_jar(&profile.minecraft_version).await?;
         }
 
@@ -791,6 +795,7 @@ impl Launcher {
         loader: Loader,
         progress: impl FnMut(String),
     ) -> Result<LaunchProfile, LaunchError> {
+        let _metadata_lock = self.paths.lock_metadata_cache()?;
         self.prepare_instance_with_loader(settings, loader, progress, |loader, version| async move {
             loaders::fetch_loader_profile(&self.downloader.client(), &loader, &version).await
         }).await
