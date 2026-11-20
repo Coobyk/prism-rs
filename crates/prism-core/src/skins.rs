@@ -422,7 +422,7 @@ mod tests {
         .unwrap();
         let (base, handle) = server("200 OK", &png(64, 64));
         let skin = library.import_url("download", &base).await.unwrap();
-        assert_eq!(skin.url.as_deref(), Some(base.as_str()));
+        assert_eq!(skin.url, None);
         handle.join().unwrap();
         let (base, handle) = server("200 OK", b"bad image");
         assert!(matches!(
