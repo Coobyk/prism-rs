@@ -90,6 +90,12 @@ enum ComponentFile {
 }
 
 #[derive(Default)]
+struct ComponentLabels {
+    name: Option<String>,
+    subtitle: Option<String>,
+}
+
+#[derive(Default)]
 pub(super) struct VersionPage {
     pack: Option<Pack>,
     busy: bool,
@@ -98,7 +104,7 @@ pub(super) struct VersionPage {
     dialog_id: u64,
     customize_reason: Option<String>,
     confirmation: Option<(String, ComponentAction)>,
-    component_names: BTreeMap<String, String>,
+    component_labels: BTreeMap<String, ComponentLabels>,
 }
 
 impl VersionPage {
@@ -259,7 +265,7 @@ impl InstanceWindow {
                         }
                         Ok((
                             pack,
-                            format!("Imported {count} component(s). {}", failures.join("; ")),
+                            import_message(count, &failures),
                         ))
                     })
                     .await
@@ -301,7 +307,10 @@ impl InstanceWindow {
                 let pack = Pack::load(&root)?;
                 let names = pack.components().filter_map(|(uid, _)| {
                     let patch = pack.patch(uid).ok().flatten()?;
-                    Some((uid.to_owned(), patch.0.get("name")?.as_str()?.to_owned()))
+                    Some((uid.to_owned(), ComponentLabels {
+                        name: patch.0.get("name").and_then(|name| name.as_str()).map(str::to_owned),
+                        subtitle: local_jar_subtitle(uid, &patch.0),
+                    }))
                 }).collect::<BTreeMap<_, _>>();
                 Ok::<_, std::io::Error>((pack, names))
             });
@@ -329,7 +338,7 @@ impl InstanceWindow {
                     Ok((pack, reason, names)) => {
                         this.version_editor.pack = Some(pack);
                         this.version_editor.customize_reason = reason;
-                        this.version_editor.component_names = names;
+                        this.version_editor.component_labels = names;
                     }
                     Err(error) => {
                         this.version_editor.message = format!("Could not read components: {error}")
@@ -613,10 +622,12 @@ impl InstanceWindow {
                     let lwjgl = uid.is_empty() || matches!(uid,
                         prism_core::version_components::LWJGL | prism_core::version_components::LWJGL3);
                     let fallback = if uid == MINECRAFT { "Minecraft" } else if lwjgl { "LWJGL" } else { kind.map(LoaderKind::name).unwrap_or(uid) };
-                    let name = state.component_names.get(uid).map(String::as_str).filter(|name| !name.trim().is_empty()).unwrap_or(fallback);
+                    let labels = state.component_labels.get(uid);
+                    let name = labels.and_then(|labels| labels.name.as_deref()).filter(|name| !name.trim().is_empty()).unwrap_or(fallback);
+                    let subtitle = labels.and_then(|labels| labels.subtitle.as_deref()).unwrap_or(uid);
                     let custom = pack.is_custom(uid);
                     let reason = if uid == MINECRAFT { state.customize_reason.clone() } else { Some("Equivalent component JSON unavailable".into()) };
-                    let mut controls = component_row(name, uid, version, custom,
+                    let mut controls = component_row(name, subtitle, version, custom,
                         (!custom && !lwjgl).then_some(reason.as_deref()).flatten());
                     let edit = if uid == MINECRAFT { Some(Edit::Minecraft) } else if lwjgl { Some(Edit::Lwjgl) } else { kind.map(Edit::SetLoader) };
                     if let Some(edit) = edit {
@@ -855,14 +866,42 @@ impl InstanceWindow {
     }
 }
 
-fn component_row(name: &str, uid: &str, version: &str, custom: bool, reason: Option<&str>) -> Div {
+fn import_message(count: usize, failures: &[String]) -> String {
+    let suffix = if count == 1 { "" } else { "s" };
+    let mut message = format!("Imported {count} component{suffix}.");
+    if !failures.is_empty() {
+        message.push(' ');
+        message.push_str(&failures.join("; "));
+    }
+    message
+}
+
+fn local_jar_subtitle(uid: &str, document: &serde_json::Value) -> Option<String> {
+    let artifact = if uid.starts_with("custom.agent.") {
+        document.get("+agents")?.as_array()?.first()?
+    } else if uid == "customjar" {
+        document.get("mainJar")?
+    } else {
+        return None;
+    };
+    let name = ["MMC-displayname", "MMC-filename"].into_iter().find_map(|key| {
+        artifact.get(key)?.as_str().filter(|name| !name.trim().is_empty())
+    })?;
+    Some(if name.to_ascii_lowercase().ends_with(".jar") {
+        name.to_owned()
+    } else {
+        format!("{name}.jar")
+    })
+}
+
+fn component_row(name: &str, subtitle: &str, version: &str, custom: bool, reason: Option<&str>) -> Div {
     div().flex().items_center().gap_2().px_3().py_2().rounded_md().bg(rgb(0x2b2b2b))
         .child(div().flex_1().min_w_0().flex().flex_col().gap_1()
             .child(div().flex().items_center().gap_2()
                 .child(div().min_w_0().text_ellipsis().child(name.to_owned()))
                 .children(custom.then(|| div().text_size(px(11.)).text_color(rgb(0xaaaaaa)).child("custom"))))
             .child(div().text_size(px(12.)).text_color(rgb(0xaaaaaa)).text_ellipsis()
-                .child(if uid.is_empty() { "Provided by Minecraft".to_owned() } else { uid.to_owned() }))
+                .child(if subtitle.is_empty() { "Provided by Minecraft".to_owned() } else { subtitle.to_owned() }))
             .children(reason.map(|reason| div().text_size(px(11.)).text_color(rgb(0xaaaaaa)).text_ellipsis().child(reason.to_owned()))))
         .child(div().flex_shrink_0().text_color(rgb(0x8fb4d9)).child(version.to_owned()))
 }
@@ -884,4 +923,38 @@ fn row(name: &str, value: &str) -> Div {
                 .child(name.to_owned()),
         )
         .child(div().text_color(rgb(0x8fb4d9)).child(value.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{import_message, local_jar_subtitle};
+    use serde_json::json;
+
+    #[test]
+    fn import_counts_and_failures() {
+        assert_eq!(import_message(0, &[]), "Imported 0 components.");
+        assert_eq!(import_message(1, &[]), "Imported 1 component.");
+        assert_eq!(import_message(3, &[]), "Imported 3 components.");
+        assert_eq!(import_message(0, &["bad.json: invalid UID".into()]),
+            "Imported 0 components. bad.json: invalid UID");
+    }
+
+    #[test]
+    fn local_jar_subtitles_prefer_display_names() {
+        let document = json!({"+agents": [{"MMC-displayname": "proof-agent", "MMC-filename": "uuid.jar"}],
+            "mainJar": {"MMC-displayname": "vanilla-client.jar"}});
+        assert_eq!(local_jar_subtitle("custom.agent.uuid", &document).as_deref(), Some("proof-agent.jar"));
+        assert_eq!(local_jar_subtitle("customjar", &document).as_deref(), Some("vanilla-client.jar"));
+        assert_eq!(local_jar_subtitle("net.minecraft", &document), None);
+    }
+
+    #[test]
+    fn local_jar_subtitles_handle_missing_or_invalid_names() {
+        let uid = "custom.agent.uuid";
+        assert_eq!(local_jar_subtitle(uid, &json!({"+agents": [{"MMC-displayname": "", "MMC-filename": "original.JAR"}]})).as_deref(), Some("original.JAR"));
+        for document in [json!({}), json!({"+agents": []}), json!({"+agents": "invalid"}),
+            json!({"+agents": [{"MMC-displayname": 3}]}), json!({"+agents": [{}]})] {
+            assert_eq!(local_jar_subtitle(uid, &document), None);
+        }
+    }
 }
