@@ -182,6 +182,8 @@ Working today:
   CSV, or a custom template. Choose whether to include version, authors, URL, and file name.
 - Direct instance launch from the CLI and Linux desktop shortcuts
 - Version page: change Minecraft, loader, and LWJGL versions; manage ordered jar mods and extra classpath JARs shared by GUI and CLI launch; edit component JSON patches, customize/revert Minecraft, import or add empty components, replace Minecraft.jar, and add Java agents
+- **Technic Packs**: browse trending packs or search the Technic Platform, select a build,
+  and install Solder builds or single-ZIP packs as Java instances.
 
 - FTB: browse/search/sort the public catalog, select a version and install; import existing
   FTB App instances (worlds, JVM arguments, playtime and icon). Available from Add Instance
@@ -189,10 +191,10 @@ Working today:
   or `prism-rs import <ftb-app-instance-directory>`. Restricted CurseForge files are listed
   in `curseforge-missing-files.txt`; automatic resolution uses the configured CurseForge key.
   FTB provenance is recorded, but FTB updates are not connected to the Modrinth-only updater.
+- ATLauncher: browse and install public ATLauncher packs from Add Instance.
 
-Not yet at parity (tracked in the issue tracker of your heart): ATL/Technic pack
-import, themes/translations, updater,
-profiling tools, and per-instance console window options.
+Not yet at parity (tracked in the issue tracker of your heart): themes/translations,
+updater, profiling tools, and per-instance console window options.
 
 ## License
 

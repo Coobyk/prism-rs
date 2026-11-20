@@ -81,6 +81,13 @@ impl MainWindow {
                     .label("Import")
                     .on_click(cx.listener(Self::on_import)),
             )
+            .child(
+                Button::new("import-technic")
+                    .label("Technic Packs")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        crate::technic_window::open(this.app.clone(), cx.entity().downgrade(), cx);
+                    })),
+            )
             .child(toolbar_separator())
             .child(Button::new("folders").label("Folders").on_click(cx.listener(Self::on_view_instances_folder)))
             .child(Button::new("settings").label("Settings").on_click(cx.listener(Self::on_open_settings)))

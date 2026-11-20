@@ -14,6 +14,7 @@ mod settings_window;
 #[cfg(target_os = "linux")]
 mod shortcut;
 mod state;
+mod technic_window;
 
 use gpui_kit::*;
 use prism_core::launch::QuickPlayTarget;

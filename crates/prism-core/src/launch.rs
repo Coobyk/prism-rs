@@ -901,31 +901,33 @@ impl Launcher {
             loader_applied = true;
             progress(format!("Preparing loader: {loader:?}"));
             let version = settings.mc_version.clone();
-            let overlay = match &loader {
-                Loader::Forge { .. } | Loader::NeoForge { .. } => {
-                    progress(self.resolve_java(settings, &profile).await?);
-                    let versions_dir = settings.game_dir.join("versions").join(&version);
-                    let destination = versions_dir.join(format!("{version}.jar"));
-                    if !destination.exists() {
-                        let client = self.ensure_client_jar(&version).await?;
-                        tokio::fs::create_dir_all(&versions_dir).await?;
-                        tokio::fs::copy(client, destination).await?;
+            if !crate::modplatform::technic::apply_forge_patch(
+                &mut profile, &settings.instance_dir, &settings.game_dir, &loader,
+            ).map_err(|error| LaunchError::Loader { loader: loader.clone(), message: error.to_string() })? {
+                let overlay = match &loader {
+                    Loader::Forge { .. } | Loader::NeoForge { .. } => {
+                        progress(self.resolve_java(settings, &profile).await?);
+                        let versions_dir = settings.game_dir.join("versions").join(&version);
+                        let destination = versions_dir.join(format!("{version}.jar"));
+                        if !destination.exists() {
+                            let client = self.ensure_client_jar(&version).await?;
+                            tokio::fs::create_dir_all(&versions_dir).await?;
+                            tokio::fs::copy(client, destination).await?;
+                        }
+                        loaders::ensure_forge_installed(
+                            &settings.java_path,
+                            &loader,
+                            &version,
+                            &settings.game_dir,
+                            &self.downloader,
+                        )
+                        .await
                     }
-                    loaders::ensure_forge_installed(
-                        &settings.java_path,
-                        &loader,
-                        &version,
-                        &settings.game_dir,
-                        &self.downloader,
-                    )
-                    .await
+                    _ => fetch_loader(loader.clone(), version).await,
                 }
-                _ => {
-                    fetch_loader(loader.clone(), version).await
-                }
+                .map_err(|message| LaunchError::Loader { loader, message })?;
+                profile.apply_loader(&overlay);
             }
-            .map_err(|message| LaunchError::Loader { loader, message })?;
-            profile.apply_loader(&overlay);
         }
 
         progress(self.resolve_java(settings, &profile).await?);
@@ -1468,6 +1470,29 @@ mod tests {
             .command
             .iter()
             .any(|arg| arg.contains("quickPlay")));
+    }
+
+    #[test]
+    fn forge_legacy_profile_replaces_vanilla_game_arguments() {
+        let base = meta::VersionData::from_json(&serde_json::json!({
+            "id": "1.12.2", "mainClass": "net.minecraft.client.main.Main",
+            "minecraftArguments": "--username ${auth_player_name} --versionType release"
+        })).unwrap();
+        let forge = meta::VersionData::from_json(&serde_json::json!({
+            "id": "1.12.2-forge-14.23.5.2864", "mainClass": "net.minecraft.launchwrapper.Launch",
+            "minecraftArguments": "--username ${auth_player_name} --tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker --versionType Forge"
+        })).unwrap();
+        let mut profile = LaunchProfile::from_mojang(&base);
+        profile.apply_loader(&forge);
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths { root: dir.path().into() };
+        let instance = crate::InstanceList::create(&paths, "Forge", "default", "1.12.2").unwrap();
+        let settings = LaunchSettings::for_instance(&instance, &paths);
+        let launcher = Launcher::new(paths, Arc::new(Downloader::new()));
+        let command = launcher.build_command(&settings, None, &profile).command;
+        assert!(command.windows(2).any(|args| args == ["--tweakClass", "net.minecraftforge.fml.common.launcher.FMLTweaker"]));
+        assert!(command.windows(2).any(|args| args == ["--versionType", "Forge"]));
+        assert_eq!(command.iter().filter(|arg| *arg == "--username").count(), 1);
     }
 
     #[tokio::test]

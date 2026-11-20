@@ -192,7 +192,7 @@ impl LaunchProfile {
         self.apply_loader(data);
     }
 
-    /// Overlay a loader profile (Fabric/Quilt `profile/json`): its main
+    /// Overlay a loader profile: its main
     /// class, libraries and arguments are applied on top of the Mojang base.
     pub fn apply_loader(&mut self, loader_vd: &VersionData) {
         let features = BTreeMap::new();
@@ -210,7 +210,15 @@ impl LaunchProfile {
             base.jvm.extend(loader_args.jvm.iter().cloned());
             base.game.extend(loader_args.game.iter().cloned());
         }
-        // Loader profiles never carry legacy string args.
+        if let Some(arguments) = &loader_vd.minecraft_arguments {
+            self.legacy_arguments = Some(arguments.clone());
+            if let Some(modern) = &mut self.modern_arguments {
+                modern.game = arguments
+                    .split_whitespace()
+                    .map(|arg| meta::ArgValue::Str(arg.into()))
+                    .collect();
+            }
+        }
     }
 }
 
@@ -230,7 +238,7 @@ fn push_library(lib: &MoLibrary, libraries: &mut Vec<ResolvedLibrary>, natives: 
             sha1,
             native: false,
         });
-    } else {
+    } else if lib.natives.is_none() {
         // Older format: only a specifier + repo base url.
         let path = meta::maven_path(&lib.name);
         let url = lib.url.as_deref().map(|base| {
@@ -276,3 +284,40 @@ fn push_library(lib: &MoLibrary, libraries: &mut Vec<ResolvedLibrary>, natives: 
 
 /// Rules helper re-exported for loader components that carry their own rules.
 pub use meta::rules_allow;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn installer_forge_overlay_preserves_the_vanilla_guava() {
+        let vanilla = VersionData::from_json(&serde_json::json!({
+            "libraries": [
+                {"name": "com.google.guava:guava:33.3.1-jre"},
+                {"name": "com.google.guava:guava:15.0:classified"},
+                {"name": "org.example:unchanged:1"}
+            ]
+        }))
+        .unwrap();
+        let loader = VersionData::from_json(&serde_json::json!({
+            "libraries": [
+                {"name": "com.google.guava:guava:32.1.2-jre"},
+                {"name": "org.example:unchanged:2",
+                    "rules": [{"action":"disallow"}]}
+            ]
+        }))
+        .unwrap();
+        let mut profile = LaunchProfile::from_mojang(&vanilla);
+        profile.apply_loader(&loader);
+        let specs: Vec<_> = profile.libraries.iter().map(|lib| lib.spec.as_str()).collect();
+        assert_eq!(
+            specs,
+            [
+                "com.google.guava:guava:33.3.1-jre",
+                "com.google.guava:guava:15.0:classified",
+                "org.example:unchanged:1",
+                "com.google.guava:guava:32.1.2-jre"
+            ]
+        );
+    }
+}
