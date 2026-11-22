@@ -11,10 +11,14 @@ use prism_core::loaders::Loader;
 use prism_core::modplatform::flame::{FlameApi, FlameSearchHit, API_KEY_ENV};
 use prism_core::modplatform::modrinth::{ModrinthApi, SearchResult};
 use prism_core::modplatform::updates::{self, UpdateReport};
-use prism_core::modplatform::{LocalResource, ResourceType};
+use prism_core::modplatform::ResourceType;
+use prism_core::resources::FolderScan;
 use prism_core::servers::{ResourcePackPolicy, ServerEntry, ServerList, ServerListSnapshot};
 use prism_core::{Instance, InstanceKind};
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[path = "datapacks_page.rs"]
 pub(super) mod datapacks_page;
@@ -245,6 +249,8 @@ pub struct InstanceWindow {
     pub instance_id: String,
     pub page: Page,
     browsers: HashMap<Browser, BrowserState>,
+    resource_scans: HashMap<ResourceType, Arc<FolderScan>>,
+    resource_poll: Option<(ResourceType, PathBuf, gpui::Task<()>)>,
     resource_toggle_error: Option<(ResourceType, String)>,
     mod_updates: ModUpdates,
     // Loader install state.
@@ -270,6 +276,8 @@ impl InstanceWindow {
             instance_id,
             page: Page::Log,
             browsers: HashMap::new(),
+            resource_scans: HashMap::new(),
+            resource_poll: None,
             resource_toggle_error: None,
             mod_updates: ModUpdates::default(),
             version_editor: VersionPage::default(),
@@ -646,6 +654,9 @@ impl InstanceWindow {
     }
 
     fn render_page(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        if !matches!(self.page, Page::Mods | Page::ResourcePacks | Page::ShaderPacks) {
+            self.resource_poll = None;
+        }
         match self.page {
             Page::Log | Page::OtherLogs => self.render_logs_page(cx),
             Page::Version => self.render_version_page(cx),
@@ -687,21 +698,67 @@ impl InstanceWindow {
             )
     }
 
-    fn render_resources_page(&self, cx: &mut Context<Self>, rtype: ResourceType) -> gpui::AnyElement {
+    fn poll_resources(&mut self, cx: &mut Context<Self>, rtype: ResourceType, instance: Instance) {
+        if self
+            .resource_poll
+            .as_ref()
+            .is_some_and(|(kind, root, _)| *kind == rtype && *root == instance.root)
+        {
+            return;
+        }
+        let mut previous = self.resource_scans.get(&rtype).cloned();
+        let executor = cx.background_executor().clone();
+        let root = instance.root.clone();
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                let instance = instance.clone();
+                let snapshot = previous.clone();
+                if let Some(scan) = executor
+                    .spawn(async move {
+                        let folder = instance.game_root().join(rtype.folder());
+                        FolderScan::refresh(&folder, snapshot.as_deref())
+                    })
+                    .await
+                {
+                    let scan = Arc::new(scan);
+                    previous = Some(scan.clone());
+                    if this
+                        .update(cx, |this, cx| {
+                            this.resource_scans.insert(rtype, scan);
+                            cx.notify();
+                        })
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                executor.timer(Duration::from_millis(500)).await;
+            }
+        });
+        self.resource_poll = Some((rtype, root, task));
+    }
+
+    fn render_resources_page(&mut self, cx: &mut Context<Self>, rtype: ResourceType) -> gpui::AnyElement {
         let palette = crate::theme::Palette::get(cx);
         let inst = self.instance(cx);
         let folder = inst.game_root().join(rtype.folder());
-        let resources: Vec<LocalResource> = prism_core::resources::scan_folder(&folder, rtype);
+        self.poll_resources(cx, rtype, inst);
+        let scan = self.resource_scans.get(&rtype).filter(|scan| scan.folder() == folder);
+        let resources = scan.map(|scan| scan.rows()).unwrap_or_default();
 
         let mut list = div().flex().flex_col().gap_1().p_3();
         if resources.is_empty() {
             list = list.child(
                 div()
                     .text_color(palette.muted_text)
-                    .child(format!("No files in {}", folder.display())),
+                    .child(if scan.is_some() {
+                        format!("No files in {}", folder.display())
+                    } else {
+                        "Loading files…".into()
+                    }),
             );
         }
-        for r in &resources {
+        for r in resources {
             let path = r.path.clone();
             let file_name = r.file_name.clone();
             let enabled = !r.file_name.ends_with(".disabled");
@@ -738,7 +795,11 @@ impl InstanceWindow {
                         Button::new(SharedString::from(format!("toggle-{}", r.file_name)))
                             .label(if enabled { "Disable" } else { "Enable" })
                             .on_click(cx.listener(move |this, _, _, cx| {
-                                this.resource_toggle_error = prism_core::resources::toggle_enabled(&path)
+                                let result = prism_core::resources::toggle_enabled(&path);
+                                if result.is_ok() {
+                                    this.resource_poll = None;
+                                }
+                                this.resource_toggle_error = result
                                     .err()
                                     .map(|error| {
                                         let action = if enabled { "disable" } else { "enable" };
@@ -750,12 +811,15 @@ impl InstanceWindow {
                     .child(
                         Button::new(SharedString::from(format!("del-{}", r.file_name)))
                             .label("Delete")
-                            .on_click({
+                            .on_click(cx.listener({
                                 let p = r.path.clone();
-                                move |_, _, _| {
-                                    let _ = std::fs::remove_file(&p);
+                                move |this, _, _, cx| {
+                                    if std::fs::remove_file(&p).is_ok() {
+                                        this.resource_poll = None;
+                                        cx.notify();
+                                    }
                                 }
-                            }),
+                            })),
                     ),
             );
         }
