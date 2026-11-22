@@ -4,6 +4,7 @@
 
 use super::modplatform::{LocalResource, ResourceType};
 use serde_json::Value;
+use std::io;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -179,19 +180,68 @@ fn toml_scalar(text: &str, key: &str) -> Option<String> {
 
 /// Toggle a resource file's enabled state (`.disabled` suffix), mirroring
 /// Prism's mod toggling.
-pub fn toggle_enabled(path: &PathBuf) -> std::io::Result<PathBuf> {
-    let new_path = if let Some(stripped) = path.to_string_lossy().strip_suffix(".disabled") {
-        PathBuf::from(stripped)
-    } else {
-        PathBuf::from(format!("{}.disabled", path.to_string_lossy()))
+pub fn toggle_enabled(path: &Path) -> io::Result<PathBuf> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid resource file name"))?;
+    let target_name = match name.strip_suffix(".disabled") {
+        Some(stripped) => stripped.to_owned(),
+        None => format!("{name}.disabled"),
     };
-    std::fs::rename(path, &new_path)?;
+    let new_path = path.with_file_name(&target_name);
+    std::fs::hard_link(path, &new_path).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{target_name} already exists; neither file was changed."),
+            )
+        } else {
+            error
+        }
+    })?;
+    std::fs::remove_file(path).map_err(|error| {
+        io::Error::new(error.kind(), format!("Could not remove the old name: {error}"))
+    })?;
     Ok(new_path)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toggle_enabled_rejects_conflict_in_both_directions() {
+        let dir = tempfile::tempdir().unwrap();
+        let enabled = dir.path().join("mod.jar");
+        let disabled = dir.path().join("mod.jar.disabled");
+        std::fs::write(&enabled, b"enabled-original-payload").unwrap();
+        std::fs::write(&disabled, b"disabled-distinct-payload").unwrap();
+
+        for (source, target) in [(&enabled, &disabled), (&disabled, &enabled)] {
+            let error = toggle_enabled(source).expect_err("toggle must not overwrite another file");
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert!(error
+                .to_string()
+                .contains(target.file_name().unwrap().to_str().unwrap()));
+            assert_eq!(std::fs::read(&enabled).unwrap(), b"enabled-original-payload");
+            assert_eq!(std::fs::read(&disabled).unwrap(), b"disabled-distinct-payload");
+        }
+    }
+
+    #[test]
+    fn toggle_enabled_round_trip_without_conflict() {
+        let dir = tempfile::tempdir().unwrap();
+        let enabled = dir.path().join("mod.jar");
+        let disabled = dir.path().join("mod.jar.disabled");
+        std::fs::write(&enabled, b"original-payload").unwrap();
+
+        for (source, target) in [(&enabled, &disabled), (&disabled, &enabled)] {
+            assert_eq!(toggle_enabled(source).unwrap(), *target);
+            assert!(!source.exists());
+            assert_eq!(std::fs::read(target).unwrap(), b"original-payload");
+        }
+    }
 
     #[test]
     fn toml_scalars() {
