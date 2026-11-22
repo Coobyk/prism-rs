@@ -490,8 +490,13 @@ impl QuickPlayState {
     }
 }
 
-fn version_rows(manifest: &prism_core::meta::VersionManifest, filter: &str) -> Vec<(String, String)> {
-    manifest.versions.iter()
+fn version_rows(
+    manifest: &prism_core::meta::VersionManifest,
+    filter: &str,
+) -> Vec<(String, String)> {
+    manifest
+        .versions
+        .iter()
         .filter(|v| filter.is_empty() || v.id.to_lowercase().contains(filter))
         .take(300)
         .map(|v| (v.id.clone(), v.version_type.clone()))
@@ -540,7 +545,9 @@ impl CreateInstanceState {
         let filter = self.version_filter.read(cx).value().to_lowercase();
         let selected = self.selected_version.clone();
 
-        let version_rows = manifest.as_ref().filter(|_| !self.horizon)
+        let version_rows = manifest
+            .as_ref()
+            .filter(|_| !self.horizon)
             .map(|manifest| version_rows(manifest, &filter))
             .unwrap_or_default();
 
@@ -1211,62 +1218,65 @@ mod version_rows_tests {
     use prism_core::meta::{ManifestVersion, VersionManifest};
 
     fn manifest() -> VersionManifest {
-        let mut versions: Vec<_> = (0..925).map(|i| ManifestVersion {
-            id: format!("newest-first-{i}"),
-            version_type: "release".into(),
-            url: String::new(),
-            time: String::new(),
-            release_time: String::new(),
-            sha1: None,
-        }).collect();
-        for (index, id) in [(400, "1.18.2"), (500, "1.16.5"), (600, "1.12.2"), (700, "1.8.9")] {
+        let mut versions: Vec<_> = (0..925)
+            .map(|i| ManifestVersion {
+                id: format!("newest-first-{i}"),
+                version_type: "release".into(),
+                url: String::new(),
+                time: String::new(),
+                release_time: String::new(),
+                sha1: None,
+            })
+            .collect();
+        for (index, id) in [
+            (400, "1.18.2"),
+            (500, "1.16.5"),
+            (600, "1.12.2"),
+            (700, "1.8.9"),
+        ] {
             versions[index].id = id.into();
         }
-        VersionManifest { latest: Default::default(), versions }
+        VersionManifest {
+            latest: Default::default(),
+            versions,
+        }
     }
 
     #[test]
     fn searches_full_manifest_before_capping_rows() {
         let manifest = manifest();
         for id in ["1.18.2", "1.16.5", "1.12.2", "1.8.9"] {
-            assert_eq!(version_rows(&manifest, id), vec![(id.into(), "release".into())]);
+            assert_eq!(
+                version_rows(&manifest, id),
+                vec![(id.into(), "release".into())]
+            );
         }
-        assert_eq!(version_rows(&manifest, "1."), ["1.18.2", "1.16.5", "1.12.2", "1.8.9"]
-            .map(|id| (id.into(), "release".into())));
+        assert_eq!(
+            version_rows(&manifest, "1."),
+            ["1.18.2", "1.16.5", "1.12.2", "1.8.9"].map(|id| (id.into(), "release".into()))
+        );
     }
 
     #[test]
     fn caps_rows_in_manifest_order_and_handles_no_matches() {
         let manifest = manifest();
-        let expected: Vec<_> = manifest.versions[..300].iter()
-            .map(|v| (v.id.clone(), v.version_type.clone())).collect();
+        let expected: Vec<_> = manifest.versions[..300]
+            .iter()
+            .map(|v| (v.id.clone(), v.version_type.clone()))
+            .collect();
         assert_eq!(version_rows(&manifest, ""), expected);
         assert_eq!(version_rows(&manifest, "newest-first"), expected);
         assert!(version_rows(&manifest, "missing").is_empty());
-        assert!(version_rows(&VersionManifest { latest: Default::default(), versions: vec![] }, "").is_empty());
-    }
-
-    #[test]
-    #[ignore = "release-mode timing; run with --release --ignored --nocapture"]
-    fn timing_version_rows() {
-        use std::{hint::black_box, time::Instant};
-        let manifest = manifest();
-        let old = |manifest: &VersionManifest, filter: &str| -> Vec<(String, String)> {
-            manifest.versions.iter().take(300)
-                .filter(|v| filter.is_empty() || v.id.to_lowercase().contains(filter))
-                .map(|v| (v.id.clone(), v.version_type.clone())).collect()
-        };
-        let iterations = 100_000;
-        for filter in ["", "1.18.2"] {
-            for (name, build) in [("old", old as fn(&VersionManifest, &str) -> Vec<(String, String)>), ("new", version_rows)] {
-                let start = Instant::now();
-                for _ in 0..iterations {
-                    black_box(build(black_box(&manifest), black_box(filter)));
-                }
-                println!("{name} filter={filter:?}: {:.3} us/call ({iterations} iterations)",
-                    start.elapsed().as_secs_f64() * 1_000_000.0 / iterations as f64);
-            }
-        }
+        assert!(
+            version_rows(
+                &VersionManifest {
+                    latest: Default::default(),
+                    versions: vec![]
+                },
+                ""
+            )
+            .is_empty()
+        );
     }
 }
 
