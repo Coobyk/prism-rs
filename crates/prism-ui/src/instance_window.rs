@@ -245,6 +245,7 @@ pub struct InstanceWindow {
     pub instance_id: String,
     pub page: Page,
     browsers: HashMap<Browser, BrowserState>,
+    resource_toggle_error: Option<(ResourceType, String)>,
     mod_updates: ModUpdates,
     // Loader install state.
     version_editor: VersionPage,
@@ -269,6 +270,7 @@ impl InstanceWindow {
             instance_id,
             page: Page::Log,
             browsers: HashMap::new(),
+            resource_toggle_error: None,
             mod_updates: ModUpdates::default(),
             version_editor: VersionPage::default(),
             servers: None,
@@ -701,6 +703,7 @@ impl InstanceWindow {
         }
         for r in &resources {
             let path = r.path.clone();
+            let file_name = r.file_name.clone();
             let enabled = !r.file_name.ends_with(".disabled");
             let display_title = r.title.clone().unwrap_or_else(|| r.file_name.clone());
             let version = r.version.clone().unwrap_or_default();
@@ -734,9 +737,15 @@ impl InstanceWindow {
                     .child(
                         Button::new(SharedString::from(format!("toggle-{}", r.file_name)))
                             .label(if enabled { "Disable" } else { "Enable" })
-                            .on_click(move |_, _, _| {
-                                let _ = prism_core::resources::toggle_enabled(&path);
-                            }),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.resource_toggle_error = prism_core::resources::toggle_enabled(&path)
+                                    .err()
+                                    .map(|error| {
+                                        let action = if enabled { "disable" } else { "enable" };
+                                        (rtype, format!("Could not {action} {file_name}: {error}"))
+                                    });
+                                cx.notify();
+                            })),
                     )
                     .child(
                         Button::new(SharedString::from(format!("del-{}", r.file_name)))
@@ -788,6 +797,11 @@ impl InstanceWindow {
                     }))),
             );
         }
+        let toggle_error = self
+            .resource_toggle_error
+            .as_ref()
+            .filter(|(kind, _)| *kind == rtype)
+            .map(|(_, error)| div().px_3().pt_2().text_color(palette.error).child(error.clone()));
         div()
             .flex_1()
             .flex()
@@ -795,6 +809,7 @@ impl InstanceWindow {
             .min_w_0()
             .min_h_0()
             .child(header)
+            .children(toggle_error)
             .child(
                 div()
                     .id("resources-scroll")
