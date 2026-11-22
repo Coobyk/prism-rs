@@ -7,48 +7,103 @@ use serde_json::Value;
 use std::io;
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 /// Scan a resource folder and parse metadata for each candidate file.
-pub fn scan_folder(folder: &Path, resource_type: ResourceType) -> Vec<LocalResource> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(folder) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !is_resource_file(&path) {
-            continue;
-        }
-        let file_name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_default();
-        let metadata = read_jar_metadata(&path).unwrap_or_default();
-        out.push(LocalResource {
-            file_name,
-            path,
-            title: metadata.title,
-            version: metadata.version,
-            loader: metadata.loader,
-            description: metadata.description,
-            mod_id: metadata.mod_id,
-            authors: metadata.authors,
-            homepage: metadata.homepage,
-        });
-    }
-    // Keep .disabled entries too, marked by name, sorted by filename.
-    out.sort_by(|a, b| a.file_name.cmp(&b.file_name));
-    let _ = resource_type;
-    out
+pub fn scan_folder(folder: &Path, _resource_type: ResourceType) -> Vec<LocalResource> {
+    resource_files(folder)
+        .into_iter()
+        .map(|(path, _)| resource_row(path))
+        .collect()
 }
 
-fn is_resource_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    if path.is_dir() {
-        return false;
+/// A snapshot of a resource folder and its parsed rows.
+pub struct FolderScan {
+    folder: PathBuf,
+    files: Vec<ResourceFile>,
+    rows: Vec<LocalResource>,
+}
+
+impl FolderScan {
+    /// Return a new snapshot only if the folder or its candidate files changed.
+    pub fn refresh(folder: &Path, previous: Option<&Self>) -> Option<Self> {
+        let files = resource_files(folder);
+        if previous.is_some_and(|scan| scan.folder == folder && scan.files == files) {
+            return None;
+        }
+        let rows = files.iter().map(|(path, _)| resource_row(path.clone())).collect();
+        Some(Self { folder: folder.to_path_buf(), files, rows })
     }
+
+    pub fn folder(&self) -> &Path {
+        &self.folder
+    }
+
+    pub fn rows(&self) -> &[LocalResource] {
+        &self.rows
+    }
+}
+
+#[derive(PartialEq, Eq)]
+struct FileStamp {
+    len: u64,
+    modified: Option<SystemTime>,
+    created: Option<SystemTime>,
+    #[cfg(unix)]
+    changed: (i64, i64),
+}
+
+type ResourceFile = (PathBuf, Option<FileStamp>);
+
+fn resource_files(folder: &Path) -> Vec<ResourceFile> {
+    let mut files = Vec::new();
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return files;
+    };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_str().is_some_and(is_resource_name) {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = std::fs::metadata(&path).ok();
+        if metadata.as_ref().is_some_and(std::fs::Metadata::is_dir) {
+            continue;
+        }
+        let stamp = metadata.map(|metadata| {
+            #[cfg(unix)]
+            use std::os::unix::fs::MetadataExt;
+            FileStamp {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+                created: metadata.created().ok(),
+                #[cfg(unix)]
+                changed: (metadata.ctime(), metadata.ctime_nsec()),
+            }
+        });
+        files.push((path, stamp));
+    }
+    // Keep .disabled entries too, marked by name, sorted by filename.
+    files.sort_unstable_by(|(a, _), (b, _)| a.file_name().cmp(&b.file_name()));
+    files
+}
+
+fn resource_row(path: PathBuf) -> LocalResource {
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let metadata = read_jar_metadata(&path).unwrap_or_default();
+    LocalResource {
+        file_name,
+        path,
+        title: metadata.title,
+        version: metadata.version,
+        loader: metadata.loader,
+        description: metadata.description,
+        mod_id: metadata.mod_id,
+        authors: metadata.authors,
+        homepage: metadata.homepage,
+    }
+}
+
+fn is_resource_name(name: &str) -> bool {
     let name = name.to_lowercase();
     let name = name.strip_suffix(".disabled").unwrap_or(&name);
     name.ends_with(".jar") || name.ends_with(".zip") || name.ends_with(".litemod")
@@ -206,6 +261,62 @@ pub fn toggle_enabled(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+
+    fn write_mod(path: &Path, title: &str) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        zip.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        write!(zip, r#"{{"name":"{title}"}}"#).unwrap();
+        zip.finish().unwrap();
+    }
+
+    #[test]
+    fn folder_scan_tracks_add_replace_toggle_and_remove() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("mods");
+        let empty = FolderScan::refresh(&folder, None).unwrap();
+        assert!(empty.rows().is_empty());
+        assert!(FolderScan::refresh(&folder, Some(&empty)).is_none());
+
+        std::fs::create_dir(&folder).unwrap();
+        std::fs::write(folder.join("ignored.txt"), b"not a resource").unwrap();
+        std::fs::create_dir(folder.join("ignored.jar")).unwrap();
+        assert!(FolderScan::refresh(&folder, Some(&empty)).is_none());
+
+        let path = folder.join("example.jar");
+        write_mod(&path, "Original");
+        let added = FolderScan::refresh(&folder, Some(&empty)).unwrap();
+        assert_eq!(added.rows().len(), 1);
+        assert_eq!(added.rows()[0].title.as_deref(), Some("Original"));
+        assert!(FolderScan::refresh(&folder, Some(&added)).is_none());
+
+        write_mod(&path, "Replacement");
+        let replaced = FolderScan::refresh(&folder, Some(&added)).unwrap();
+        assert_eq!(replaced.rows()[0].title.as_deref(), Some("Replacement"));
+
+        let disabled_path = toggle_enabled(&path).unwrap();
+        let toggled = FolderScan::refresh(&folder, Some(&replaced)).unwrap();
+        assert_eq!(toggled.rows()[0].path, disabled_path);
+        assert_eq!(toggled.rows()[0].file_name, "example.jar.disabled");
+        assert_eq!(toggled.rows()[0].title.as_deref(), Some("Replacement"));
+
+        std::fs::remove_file(disabled_path).unwrap();
+        let removed = FolderScan::refresh(&folder, Some(&toggled)).unwrap();
+        assert!(removed.rows().is_empty());
+        assert!(FolderScan::refresh(&folder, Some(&removed)).is_none());
+    }
+
+    #[test]
+    fn folder_scan_does_not_reuse_a_different_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let mods = dir.path().join("mods");
+        let packs = dir.path().join("resourcepacks");
+        let scan = FolderScan::refresh(&mods, None).unwrap();
+        let other = FolderScan::refresh(&packs, Some(&scan)).unwrap();
+        assert_eq!(other.folder(), packs);
+    }
 
     #[test]
     fn toggle_enabled_rejects_conflict_in_both_directions() {
