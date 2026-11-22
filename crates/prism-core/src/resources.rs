@@ -190,19 +190,16 @@ pub fn toggle_enabled(path: &Path) -> io::Result<PathBuf> {
         None => format!("{name}.disabled"),
     };
     let new_path = path.with_file_name(&target_name);
-    std::fs::hard_link(path, &new_path).map_err(|error| {
-        if error.kind() == io::ErrorKind::AlreadyExists {
-            io::Error::new(
+    match std::fs::symlink_metadata(&new_path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        _ => {
+            return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("{target_name} already exists; neither file was changed."),
-            )
-        } else {
-            error
+            ));
         }
-    })?;
-    std::fs::remove_file(path).map_err(|error| {
-        io::Error::new(error.kind(), format!("Could not remove the old name: {error}"))
-    })?;
+    }
+    std::fs::rename(path, &new_path)?;
     Ok(new_path)
 }
 
